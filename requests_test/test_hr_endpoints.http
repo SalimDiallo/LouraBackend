@@ -1,0 +1,553 @@
+### ======================================
+### LOURA BACKEND - HR APP ENDPOINTS
+### ======================================
+### Base URL: http://localhost:8000/api/hr
+###
+### Instructions:
+### 1. D'abord créer un employee via AdminUser ou se connecter avec un employee existant
+### 2. Les tokens sont automatiquement stockés dans les cookies HTTP-only
+### 3. Utiliser les tokens dans les headers pour les endpoints protégés
+###
+### Variables à personnaliser selon vos besoins
+### ======================================
+
+@baseUrl = http://localhost:8000/api/hr
+@coreUrl = http://localhost:8000/api/core
+@employeeEmail = employee@loura.com
+@employeePassword = Employee123!
+@subdomain = louradesing
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0MTkyMDAyLCJpYXQiOjE3NjQxOTExMDIsImp0aSI6IjU5MmI1ODhlZDAzZDQ5MTA4ODg1OTk0NDMzMjlhZmIzIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.BoRh_uXAdrlI-o3mQEInkAer7nUILVEumvkQW8ntIkA
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NDc5NTkwMiwiaWF0IjoxNzY0MTkxMTAyLCJqdGkiOiIyNGQzNmMwNTA5N2M0YWRmOTAxM2Y0NjdjZWE3ZjI3MSIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.aXydOpmcqNT56btRfKSkKOYhPa5iXkGx6iV9KZ56yD0
+@employeeId = employee_id_here
+@organizationId = organization_id_here
+
+
+### ======================================
+### 1. EMPLOYEE AUTHENTICATION ENDPOINTS
+### ======================================
+
+### 1.1 Employee Login - Connexion d'un employé
+POST {{baseUrl}}/auth/login/
+Content-Type: application/json
+
+{
+  "email": "{{employeeEmail}}",
+  "password": "{{employeePassword}}",
+  "organization_subdomain": "{{subdomain}}"
+}
+
+### 1.2 Get Current Employee - Obtenir les infos de l'employé connecté
+GET {{baseUrl}}/auth/me/
+Authorization: Bearer {{accessToken}}
+
+### 1.3 Change Password - Changer le mot de passe
+POST {{baseUrl}}/auth/change-password/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "old_password": "{{employeePassword}}",
+  "new_password": "NewPassword123!",
+  "new_password_confirm": "NewPassword123!"
+}
+
+### 1.4 Employee Logout - Déconnexion
+POST {{baseUrl}}/auth/logout/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "refresh": "{{refreshToken}}"
+}
+
+
+### ======================================
+### 2. EMPLOYEE MANAGEMENT ENDPOINTS
+### ======================================
+
+### 2.1 List Employees - Liste des employés (par AdminUser ou HR Admin)
+GET {{baseUrl}}/employees/
+Authorization: Bearer {{accessToken}}
+
+### 2.2 Create Employee - Créer un nouvel employé (AdminUser ou HR Admin)
+POST {{baseUrl}}/employees/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "email": "nouvel.employe@company.com",
+  "password": "SecurePass123!",
+  "password_confirm": "SecurePass123!",
+  "first_name": "Jean",
+  "last_name": "Dupont",
+  "phone": "+224620000001",
+  "employee_id": "EMP001",
+  "role": "employee",
+  "employment_status": "active",
+  "organization": "{{organizationId}}"
+}
+
+### Exemple: Créer un HR Admin
+POST {{baseUrl}}/employees/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "email": "hr.admin@company.com",
+  "password": "AdminHR123!",
+  "password_confirm": "AdminHR123!",
+  "first_name": "Marie",
+  "last_name": "Martin",
+  "phone": "+224620000002",
+  "employee_id": "HR001",
+  "role": "admin",
+  "employment_status": "active"
+}
+
+### 2.3 Get Employee Details - Détails d'un employé
+GET {{baseUrl}}/employees/{{employeeId}}/
+Authorization: Bearer {{accessToken}}
+
+### 2.4 Update Employee (PATCH) - Mise à jour partielle
+PATCH {{baseUrl}}/employees/{{employeeId}}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "phone": "+224620999999",
+  "employment_status": "active"
+}
+
+### 2.5 Activate Employee - Activer un employé
+POST {{baseUrl}}/employees/{{employeeId}}/activate/
+Authorization: Bearer {{accessToken}}
+
+### 2.6 Deactivate Employee - Désactiver un employé
+POST {{baseUrl}}/employees/{{employeeId}}/deactivate/
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 3. DEPARTMENT ENDPOINTS
+### ======================================
+
+### 3.1 List Departments - Liste des départements
+GET {{baseUrl}}/departments/
+Authorization: Bearer {{accessToken}}
+
+### 3.2 Create Department - Créer un département
+POST {{baseUrl}}/departments/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "name": "Développement",
+  "code": "DEV",
+  "description": "Équipe de développement logiciel",
+  "is_active": true,
+  "organization": "{{organizationId}}"
+}
+
+### 3.3 Get Department Details
+GET {{baseUrl}}/departments/{id}/
+Authorization: Bearer {{accessToken}}
+
+### 3.4 Update Department
+PATCH {{baseUrl}}/departments/{id}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "description": "Équipe de développement et innovation"
+}
+
+
+### ======================================
+### 4. POSITION ENDPOINTS
+### ======================================
+
+### 4.1 List Positions - Liste des postes
+GET {{baseUrl}}/positions/
+Authorization: Bearer {{accessToken}}
+
+### 4.2 Create Position - Créer un poste
+POST {{baseUrl}}/positions/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "title": "Développeur Full Stack",
+  "code": "DEV-FS",
+  "description": "Développeur maîtrisant front-end et back-end",
+  "min_salary": 50000,
+  "max_salary": 80000,
+  "is_active": true,
+  "organization": "{{organizationId}}"
+}
+
+### 4.3 Update Position
+PATCH {{baseUrl}}/positions/{id}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "min_salary": 55000,
+  "max_salary": 85000
+}
+
+
+### ======================================
+### 5. CONTRACT ENDPOINTS
+### ======================================
+
+### 5.1 List Contracts - Liste des contrats
+GET {{baseUrl}}/contracts/
+Authorization: Bearer {{accessToken}}
+
+### 5.2 Create Contract - Créer un contrat
+POST {{baseUrl}}/contracts/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "contract_type": "cdi",
+  "start_date": "2025-01-01",
+  "base_salary": 60000,
+  "currency": "GNF",
+  "salary_period": "monthly",
+  "hours_per_week": 40,
+  "description": "Contrat CDI pour développeur",
+  "is_active": true
+}
+
+### Exemple: Contrat CDD avec date de fin
+POST {{baseUrl}}/contracts/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "contract_type": "cdd",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31",
+  "base_salary": 50000,
+  "currency": "GNF",
+  "salary_period": "monthly",
+  "hours_per_week": 35,
+  "is_active": true
+}
+
+### 5.3 Get Contract Details
+GET {{baseUrl}}/contracts/{id}/
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 6. LEAVE TYPE ENDPOINTS
+### ======================================
+
+### 6.1 List Leave Types - Liste des types de congés
+GET {{baseUrl}}/leave-types/
+Authorization: Bearer {{accessToken}}
+
+### 6.2 Create Leave Type - Créer un type de congé
+POST {{baseUrl}}/leave-types/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "name": "Congés payés",
+  "code": "CP",
+  "description": "Congés annuels payés",
+  "default_days_per_year": 25,
+  "is_paid": true,
+  "requires_approval": true,
+  "max_consecutive_days": 15,
+  "color": "#3B82F6",
+  "is_active": true,
+  "organization": "{{organizationId}}"
+}
+
+### Exemple: Congé maladie
+POST {{baseUrl}}/leave-types/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "name": "Congé maladie",
+  "code": "CM",
+  "description": "Congé pour raison médicale",
+  "default_days_per_year": 10,
+  "is_paid": true,
+  "requires_approval": false,
+  "color": "#EF4444",
+  "is_active": true
+}
+
+
+### ======================================
+### 7. LEAVE BALANCE ENDPOINTS
+### ======================================
+
+### 7.1 List Leave Balances - Liste des soldes de congés
+GET {{baseUrl}}/leave-balances/
+Authorization: Bearer {{accessToken}}
+
+### 7.2 Create/Update Leave Balance - Créer un solde de congés
+POST {{baseUrl}}/leave-balances/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "leave_type": "{leave_type_id}",
+  "year": 2025,
+  "total_days": 25,
+  "used_days": 0,
+  "pending_days": 0
+}
+
+### 7.3 Get Leave Balance
+GET {{baseUrl}}/leave-balances/{id}/
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 8. LEAVE REQUEST ENDPOINTS
+### ======================================
+
+### 8.1 List Leave Requests - Liste des demandes de congés
+GET {{baseUrl}}/leave-requests/
+Authorization: Bearer {{accessToken}}
+
+### 8.2 Create Leave Request - Créer une demande de congé
+POST {{baseUrl}}/leave-requests/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "leave_type": "{leave_type_id}",
+  "start_date": "2025-12-20",
+  "end_date": "2025-12-31",
+  "start_half_day": false,
+  "end_half_day": false,
+  "total_days": 10,
+  "reason": "Congés de fin d'année"
+}
+
+### Exemple: Congé avec demi-journées
+POST {{baseUrl}}/leave-requests/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "leave_type": "{leave_type_id}",
+  "start_date": "2025-06-15",
+  "end_date": "2025-06-16",
+  "start_half_day": true,
+  "end_half_day": true,
+  "total_days": 1,
+  "reason": "Rendez-vous médical"
+}
+
+### 8.3 Get Leave Request Details
+GET {{baseUrl}}/leave-requests/{id}/
+Authorization: Bearer {{accessToken}}
+
+### 8.4 Approve Leave Request - Approuver une demande (Manager ou HR Admin)
+POST {{baseUrl}}/leave-requests/{id}/approve/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "approved",
+  "approval_notes": "Approuvé"
+}
+
+### 8.5 Reject Leave Request - Rejeter une demande (Manager ou HR Admin)
+POST {{baseUrl}}/leave-requests/{id}/reject/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "rejected",
+  "approval_notes": "Période trop chargée, merci de reporter"
+}
+
+
+### ======================================
+### 9. PAYROLL PERIOD ENDPOINTS
+### ======================================
+
+### 9.1 List Payroll Periods - Liste des périodes de paie
+GET {{baseUrl}}/payroll-periods/
+Authorization: Bearer {{accessToken}}
+
+### 9.2 Create Payroll Period - Créer une période de paie
+POST {{baseUrl}}/payroll-periods/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "name": "Janvier 2025",
+  "start_date": "2025-01-01",
+  "end_date": "2025-01-31",
+  "payment_date": "2025-02-05",
+  "status": "draft",
+  "notes": "Période de paie de janvier",
+  "organization": "{{organizationId}}"
+}
+
+### 9.3 Update Payroll Period Status
+PATCH {{baseUrl}}/payroll-periods/{id}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "status": "processing"
+}
+
+
+### ======================================
+### 10. PAYSLIP ENDPOINTS
+### ======================================
+
+### 10.1 List Payslips - Liste des fiches de paie
+GET {{baseUrl}}/payslips/
+Authorization: Bearer {{accessToken}}
+
+### 10.2 Create Payslip - Créer une fiche de paie
+POST {{baseUrl}}/payslips/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "payroll_period": "{payroll_period_id}",
+  "base_salary": 60000,
+  "overtime_pay": 5000,
+  "bonuses": 10000,
+  "allowances": 2000,
+  "tax": 15000,
+  "social_security": 8000,
+  "other_deductions": 1000,
+  "currency": "GNF",
+  "worked_hours": 160,
+  "overtime_hours": 10,
+  "leave_days_taken": 0,
+  "payment_method": "Virement bancaire",
+  "notes": "Fiche de paie janvier 2025"
+}
+
+### 10.3 Get Payslip Details
+GET {{baseUrl}}/payslips/{id}/
+Authorization: Bearer {{accessToken}}
+
+### 10.4 Mark Payslip as Paid - Marquer comme payé
+POST {{baseUrl}}/payslips/{id}/mark_as_paid/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "payment_reference": "WIRE-2025-01-001"
+}
+
+
+### ======================================
+### 11. SCÉNARIOS DE TEST COMPLETS
+### ======================================
+
+### Scénario 1: Workflow complet d'onboarding d'un employé
+# 1. AdminUser crée une organisation (via core app)
+# 2. AdminUser crée un département
+# 3. AdminUser crée un poste
+# 4. AdminUser crée un employé
+# 5. AdminUser crée un contrat pour l'employé
+# 6. Employé se connecte avec ses credentials
+
+### Scénario 2: Workflow de demande de congé
+# 1. Employé se connecte
+# 2. Employé consulte ses soldes de congés
+# 3. Employé crée une demande de congé
+# 4. Manager/HR Admin approuve ou rejette la demande
+# 5. Le solde de congés est automatiquement mis à jour
+
+### Scénario 3: Workflow de paie
+# 1. HR Admin crée une période de paie
+# 2. HR Admin génère les fiches de paie pour tous les employés
+# 3. HR Admin marque les fiches comme payées
+# 4. Employés peuvent consulter leurs fiches de paie
+
+
+### ======================================
+### 12. TESTS D'ERREURS
+### ======================================
+
+### Test: Connexion avec mauvais subdomain
+POST {{baseUrl}}/auth/login/
+Content-Type: application/json
+
+{
+  "email": "employee@test.com",
+  "password": "test123",
+  "organization_subdomain": "nonexistent"
+}
+
+### Test: Créer un employé avec email déjà existant
+POST {{baseUrl}}/employees/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "email": "{{employeeEmail}}",
+  "password": "Test123!",
+  "password_confirm": "Test123!"
+}
+
+### Test: Demande de congé sans solde suffisant
+POST {{baseUrl}}/leave-requests/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "leave_type": "{leave_type_id}",
+  "start_date": "2025-01-01",
+  "end_date": "2025-12-31",
+  "total_days": 365,
+  "reason": "Test dépassement"
+}
+
+
+### ======================================
+### 13. NOTES IMPORTANTES
+### ======================================
+
+### Architecture multi-tenant:
+### - Les AdminUser (core app) peuvent créer et gérer les employees
+### - Les Employees appartiennent à UNE organisation
+### - Chaque employee ne voit que les données de son organisation
+
+### Rôles des employees:
+### - admin: Administrateur RH (accès complet)
+### - manager: Manager (peut approuver les congés)
+### - employee: Employé standard (accès limité à ses propres données)
+### - readonly: Lecture seule
+
+### Authentification:
+### - Les employees s'authentifient avec: email + password + subdomain organisation
+### - Les tokens sont les mêmes que pour AdminUser (JWT)
+### - Séparation des endpoints: /api/core/auth/ (AdminUser) vs /api/hr/auth/ (Employee)
+
+### Workflow de congés:
+### 1. L'organisation configure les types de congés (LeaveType)
+### 2. Les soldes sont créés pour chaque employé (LeaveBalance)
+### 3. Les employés créent des demandes (LeaveRequest)
+### 4. Les managers/HR approuvent ou rejettent
+### 5. Les soldes sont automatiquement mis à jour
+
+### Workflow de paie:
+### 1. Créer une période de paie (PayrollPeriod)
+### 2. Générer les fiches de paie (Payslip) pour chaque employé
+### 3. Les totaux (brut, net) sont calculés automatiquement
+### 4. Marquer comme "payé" une fois le virement effectué
