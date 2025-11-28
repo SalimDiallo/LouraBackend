@@ -3,8 +3,90 @@ from django.contrib.auth.password_validation import validate_password
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayslipItem
+    PayrollPeriod, Payslip, PayslipItem, Permission, Role
 )
+
+
+# ===============================
+# PERMISSION SERIALIZERS
+# ===============================
+
+class PermissionSerializer(serializers.ModelSerializer):
+    """Serializer for Permission model"""
+
+    class Meta:
+        model = Permission
+        fields = ['id', 'code', 'name', 'category', 'description', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'created_at', 'updated_at']
+
+
+class RoleSerializer(serializers.ModelSerializer):
+    """Serializer for Role model"""
+
+    permissions = PermissionSerializer(many=True, read_only=True)
+    permission_codes = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False,
+        help_text="List of permission codes to assign to this role"
+    )
+    permission_count = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Role
+        fields = [
+            'id', 'organization', 'code', 'name', 'description',
+            'permissions', 'permission_codes', 'permission_count',
+            'is_system_role', 'is_active',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'is_system_role', 'created_at', 'updated_at']
+
+    def get_permission_count(self, obj):
+        return obj.permissions.count()
+
+    def create(self, validated_data):
+        permission_codes = validated_data.pop('permission_codes', [])
+        role = Role.objects.create(**validated_data)
+
+        if permission_codes:
+            permissions = Permission.objects.filter(code__in=permission_codes)
+            role.permissions.set(permissions)
+
+        return role
+
+    def update(self, instance, validated_data):
+        permission_codes = validated_data.pop('permission_codes', None)
+
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update permissions if provided
+        if permission_codes is not None:
+            permissions = Permission.objects.filter(code__in=permission_codes)
+            instance.permissions.set(permissions)
+
+        return instance
+
+
+class RoleListSerializer(serializers.ModelSerializer):
+    """Lightweight serializer for listing roles"""
+
+    permission_count = serializers.SerializerMethodField()
+    permissions = PermissionSerializer(many=True, read_only=True)
+
+    class Meta:
+        model = Role
+        fields = ['id', 'code', 'name', 'description', 'permission_count', 'permissions', 'is_system_role', 'is_active']
+
+    def get_permission_count(self, obj):
+        return obj.permissions.count()
+
+
+# Alias for create/update operations (uses same serializer as RoleSerializer)
+RoleCreateSerializer = RoleSerializer
 
 
 # ===============================
@@ -20,14 +102,37 @@ class EmployeeSerializer(serializers.ModelSerializer):
     position_title = serializers.CharField(source='position.title', read_only=True)
     manager_name = serializers.SerializerMethodField()
 
+    # Role information
+    role = RoleListSerializer(source='assigned_role', read_only=True)
+    role_id = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        source='assigned_role',
+        write_only=True,
+        required=False,
+        allow_null=True
+    )
+
+    # All permissions (role + custom)
+    all_permissions = serializers.SerializerMethodField()
+
+    # Custom permissions
+    custom_permissions = PermissionSerializer(many=True, read_only=True)
+    custom_permission_codes = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False
+    )
+
     class Meta:
         model = Employee
         fields = [
             'id', 'email', 'first_name', 'last_name', 'full_name', 'phone',
-            'avatar_url', 'employee_id', 'organization', 'organization_name',
+            'avatar_url', 'employee_id', 'date_of_birth', 'gender', 'address', 'city', 'country',
+            'organization', 'organization_name',
             'department', 'department_name', 'position', 'position_title',
             'contract', 'hire_date', 'termination_date', 'manager', 'manager_name',
-            'role', 'employment_status', 'language', 'timezone',
+            'emergency_contact', 'role', 'role_id', 'employment_status', 'language', 'timezone',
+            'all_permissions', 'custom_permissions', 'custom_permission_codes',
             'is_active', 'email_verified', 'last_login',
             'created_at', 'updated_at'
         ]
@@ -43,6 +148,11 @@ class EmployeeSerializer(serializers.ModelSerializer):
     def get_manager_name(self, obj):
         return obj.manager.get_full_name() if obj.manager else None
 
+    def get_all_permissions(self, obj):
+        """Get all permissions (role + custom)"""
+        permissions = obj.get_all_permissions()
+        return PermissionSerializer(permissions, many=True).data
+
 
 class EmployeeCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating employees"""
@@ -54,12 +164,26 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
     )
     password_confirm = serializers.CharField(write_only=True, required=True)
 
+    role_id = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        source='assigned_role',
+        required=False,
+        allow_null=True
+    )
+
+    custom_permission_codes = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False
+    )
+
     class Meta:
         model = Employee
         fields = [
             'email', 'password', 'password_confirm', 'first_name', 'last_name',
-            'phone', 'employee_id', 'department', 'position', 'hire_date',
-            'manager', 'role', 'employment_status'
+            'phone', 'employee_id', 'date_of_birth', 'gender', 'address', 'city', 'country',
+            'department', 'position', 'hire_date', 'manager', 'emergency_contact',
+            'role_id', 'employment_status', 'custom_permission_codes'
         ]
 
     def validate(self, attrs):
@@ -72,12 +196,19 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
     def create(self, validated_data):
         validated_data.pop('password_confirm')
         password = validated_data.pop('password')
+        custom_permission_codes = validated_data.pop('custom_permission_codes', [])
 
         # Organization will be set by the view
         employee = Employee.objects.create_user(
             password=password,
             **validated_data
         )
+
+        # Add custom permissions if provided
+        if custom_permission_codes:
+            permissions = Permission.objects.filter(code__in=custom_permission_codes)
+            employee.custom_permissions.set(permissions)
+
         return employee
 
 
@@ -87,12 +218,13 @@ class EmployeeListSerializer(serializers.ModelSerializer):
     full_name = serializers.SerializerMethodField()
     department_name = serializers.CharField(source='department.name', read_only=True)
     position_title = serializers.CharField(source='position.title', read_only=True)
+    role_name = serializers.CharField(source='assigned_role.name', read_only=True)
 
     class Meta:
         model = Employee
         fields = [
             'id', 'email', 'full_name', 'employee_id',
-            'department_name', 'position_title', 'role',
+            'department_name', 'position_title', 'role_name',
             'employment_status', 'is_active'
         ]
 
@@ -103,14 +235,43 @@ class EmployeeListSerializer(serializers.ModelSerializer):
 class EmployeeUpdateSerializer(serializers.ModelSerializer):
     """Serializer for updating employees"""
 
+    role_id = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        source='assigned_role',
+        required=False,
+        allow_null=True
+    )
+
+    custom_permission_codes = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False
+    )
+
     class Meta:
         model = Employee
         fields = [
             'first_name', 'last_name', 'phone', 'avatar_url',
-            'employee_id', 'department', 'position', 'hire_date',
-            'termination_date', 'manager', 'role', 'employment_status',
-            'language', 'timezone', 'is_active'
+            'employee_id', 'date_of_birth', 'gender', 'address', 'city', 'country',
+            'department', 'position', 'hire_date',
+            'termination_date', 'manager', 'emergency_contact', 'role_id', 'employment_status',
+            'language', 'timezone', 'is_active', 'custom_permission_codes'
         ]
+
+    def update(self, instance, validated_data):
+        custom_permission_codes = validated_data.pop('custom_permission_codes', None)
+
+        # Update basic fields
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Update custom permissions if provided
+        if custom_permission_codes is not None:
+            permissions = Permission.objects.filter(code__in=custom_permission_codes)
+            instance.custom_permissions.set(permissions)
+
+        return instance
 
 
 # ===============================

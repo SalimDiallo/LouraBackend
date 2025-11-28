@@ -8,6 +8,93 @@ from core.models import Organization
 
 
 # ===============================
+# PERMISSIONS MANAGEMENT
+# ===============================
+
+class Permission(TimeStampedModel):
+    """
+    Permission: Définit les permissions granulaires pour les employés
+    """
+
+    code = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Code unique de la permission (ex: hr.view_employee)"
+    )
+    name = models.CharField(
+        max_length=200,
+        help_text="Nom lisible de la permission"
+    )
+    category = models.CharField(
+        max_length=100,
+        help_text="Catégorie de la permission (ex: Employés, Départements)"
+    )
+    description = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'hr_permissions'
+        verbose_name = "Permission"
+        verbose_name_plural = "Permissions"
+        ordering = ['category', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
+class Role(TimeStampedModel):
+    """
+    Role: Regroupe un ensemble de permissions
+    Peut être un rôle système prédéfini ou un rôle personnalisé
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='roles',
+        null=True,
+        blank=True,
+        help_text="Organisation (null pour les rôles système)"
+    )
+
+    code = models.CharField(
+        max_length=100,
+        help_text="Code unique du rôle (ex: super_admin, hr_manager)"
+    )
+    name = models.CharField(
+        max_length=200,
+        help_text="Nom du rôle"
+    )
+    description = models.TextField(blank=True)
+
+    permissions = models.ManyToManyField(
+        Permission,
+        related_name='roles',
+        blank=True,
+        help_text="Permissions associées à ce rôle"
+    )
+
+    is_system_role = models.BooleanField(
+        default=False,
+        help_text="Rôle système prédéfini (non modifiable)"
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'hr_roles'
+        verbose_name = "Rôle"
+        verbose_name_plural = "Rôles"
+        unique_together = [['organization', 'code']]
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({'Système' if self.is_system_role else self.organization.name if self.organization else 'Global'})"
+
+    def get_all_permissions(self):
+        """Retourne toutes les permissions de ce rôle"""
+        return list(self.permissions.values_list('code', flat=True))
+
+
+# ===============================
 # EMPLOYEE MANAGEMENT
 # ===============================
 
@@ -49,6 +136,25 @@ class Employee(BaseProfile):
         help_text="Identifiant unique de l'employé (matricule)"
     )
 
+    # Personal contact information
+    phone = models.CharField(max_length=20, blank=True)
+    date_of_birth = models.DateField(null=True, blank=True)
+
+    GENDER_CHOICES = [
+        ('male', 'Homme'),
+        ('female', 'Femme'),
+        ('other', 'Autre'),
+    ]
+    gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
+
+    # Address information
+    address = models.TextField(blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+
+    # Profile
+    avatar_url = models.URLField(max_length=500, blank=True, null=True)
+
     # Employment details
     department = models.ForeignKey(
         'Department',
@@ -86,18 +192,14 @@ class Employee(BaseProfile):
         related_name='subordinates'
     )
 
-    # Role/Permission field
-    ROLE_CHOICES = [
-        ('admin', 'Administrateur RH'),
-        ('manager', 'Manager'),
-        ('employee', 'Employé'),
-        ('readonly', 'Lecture seule'),
-    ]
-
-    role = models.CharField(
-        max_length=50,
-        choices=ROLE_CHOICES,
-        default='employee'
+    # Role assignment - Links to Role model
+    assigned_role = models.ForeignKey(
+        Role,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='employees',
+        help_text="Rôle attribué à cet employé"
     )
 
     # Employment status
@@ -112,6 +214,22 @@ class Employee(BaseProfile):
         max_length=20,
         choices=STATUS_CHOICES,
         default='active'
+    )
+
+    # Emergency contact information
+    emergency_contact = models.JSONField(
+        null=True,
+        blank=True,
+        default=dict,
+        help_text="Contact d'urgence (name, phone, relationship)"
+    )
+
+    # Custom permissions for this employee (overrides role permissions)
+    custom_permissions = models.ManyToManyField(
+        Permission,
+        blank=True,
+        related_name='employees_with_permission',
+        help_text="Permissions personnalisées supplémentaires pour cet employé"
     )
 
     objects = EmployeeManager()
@@ -133,6 +251,49 @@ class Employee(BaseProfile):
 
     def __str__(self):
         return f"{self.get_full_name()} ({self.organization.name})"
+
+    def has_permission(self, permission_code):
+        """
+        Vérifie si l'employé a une permission spécifique
+        Vérifie d'abord les permissions personnalisées, puis celles du rôle
+        """
+        # Check custom permissions first
+        if self.custom_permissions.filter(code=permission_code).exists():
+            return True
+
+        # Check role permissions
+        if self.assigned_role:
+            return self.assigned_role.permissions.filter(code=permission_code).exists()
+
+        return False
+
+    def get_all_permissions(self):
+        """
+        Retourne toutes les permissions de l'employé
+        Combine les permissions du rôle ET les permissions personnalisées
+        """
+        permission_codes = set()
+
+        # Get role permissions
+        if self.assigned_role:
+            permission_codes.update(
+                self.assigned_role.permissions.values_list('code', flat=True)
+            )
+
+        # Get custom permissions
+        permission_codes.update(
+            self.custom_permissions.values_list('code', flat=True)
+        )
+
+        return Permission.objects.filter(code__in=permission_codes)
+
+    def is_super_admin(self):
+        """Vérifie si l'employé est super admin"""
+        return self.assigned_role and self.assigned_role.code == 'super_admin'
+
+    def is_hr_admin(self):
+        """Vérifie si l'employé est admin RH"""
+        return self.assigned_role and self.assigned_role.code in ['super_admin', 'hr_admin']
 
 
 # ===============================
@@ -227,11 +388,11 @@ class Contract(TimeStampedModel):
     )
 
     CONTRACT_TYPE_CHOICES = [
-        ('cdi', 'CDI - Contrat à Durée Indéterminée'),
-        ('cdd', 'CDD - Contrat à Durée Déterminée'),
-        ('stage', 'Stage'),
+        ('permanent', 'CDI - Contrat à Durée Indéterminée'),
+        ('temporary', 'CDD - Contrat à Durée Déterminée'),
+        ('contract', 'Contractuel'),
+        ('internship', 'Stage'),
         ('freelance', 'Freelance/Consultant'),
-        ('apprenticeship', 'Apprentissage'),
     ]
 
     contract_type = models.CharField(max_length=20, choices=CONTRACT_TYPE_CHOICES)

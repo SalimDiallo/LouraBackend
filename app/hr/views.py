@@ -6,12 +6,13 @@ from rest_framework.views import APIView
 from rest_framework_simplejwt.tokens import RefreshToken
 from django.conf import settings
 from django.utils import timezone
+from django.db import models
 
 from core.models import Organization
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip
+    PayrollPeriod, Payslip, Permission, Role
 )
 from .serializers import (
     EmployeeSerializer, EmployeeCreateSerializer, EmployeeListSerializer,
@@ -19,7 +20,8 @@ from .serializers import (
     DepartmentSerializer, PositionSerializer, ContractSerializer,
     LeaveTypeSerializer, LeaveBalanceSerializer, LeaveRequestSerializer,
     LeaveRequestApprovalSerializer,
-    PayrollPeriodSerializer, PayslipSerializer, PayslipCreateSerializer
+    PayrollPeriodSerializer, PayslipSerializer, PayslipCreateSerializer,
+    PermissionSerializer, RoleSerializer, RoleListSerializer, RoleCreateSerializer
 )
 from .permissions import (
     IsHRAdminOrReadOnly, IsHRAdmin,
@@ -191,13 +193,36 @@ class EmployeeViewSet(viewsets.ModelViewSet):
         user = self.request.user
         from core.models import AdminUser
 
-        if isinstance(user, AdminUser):
-            org_ids = user.organizations.values_list('id', flat=True)
-            return Employee.objects.filter(organization_id__in=org_ids)
-        elif isinstance(user, Employee):
-            return Employee.objects.filter(organization=user.organization)
+        # Get organization filter from query params (subdomain or id)
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        org_id = self.request.query_params.get('organization')
 
-        return Employee.objects.none()
+        queryset = Employee.objects.none()
+
+        if isinstance(user, AdminUser):
+            # AdminUser can access employees from their organizations
+            accessible_orgs = user.organizations.all()
+
+            # If specific organization requested, filter by it
+            if org_subdomain:
+                queryset = Employee.objects.filter(
+                    organization__subdomain=org_subdomain,
+                    organization__in=accessible_orgs
+                )
+            elif org_id:
+                queryset = Employee.objects.filter(
+                    organization_id=org_id,
+                    organization__in=accessible_orgs
+                )
+            else:
+                # No specific org requested, return all employees from all user's orgs
+                queryset = Employee.objects.filter(organization__in=accessible_orgs)
+
+        elif isinstance(user, Employee):
+            # Employee can only access employees from their organization
+            queryset = Employee.objects.filter(organization=user.organization)
+
+        return queryset
 
     def get_serializer_class(self):
         if self.action == 'create':
@@ -324,7 +349,7 @@ class ContractViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return Contract.objects.filter(employee__organization_id__in=org_ids)
         elif isinstance(user, Employee):
-            if user.role == 'admin':
+            if user.is_hr_admin():
                 return Contract.objects.filter(employee__organization=user.organization)
             return Contract.objects.filter(employee=user)
         return Contract.objects.none()
@@ -376,7 +401,7 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
         elif isinstance(user, Employee):
-            if user.role == 'admin':
+            if user.is_hr_admin():
                 return LeaveBalance.objects.filter(employee__organization=user.organization)
             return LeaveBalance.objects.filter(employee=user)
         return LeaveBalance.objects.none()
@@ -394,8 +419,15 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
         elif isinstance(user, Employee):
-            if user.role in ['admin', 'manager']:
+            # HR admin or manager can see all requests in organization
+            if user.is_hr_admin():
                 return LeaveRequest.objects.filter(employee__organization=user.organization)
+            # Check if user is a manager (has subordinates or manager role)
+            if user.assigned_role and user.assigned_role.code == 'manager':
+                return LeaveRequest.objects.filter(employee__organization=user.organization)
+            if user.subordinates.exists():
+                return LeaveRequest.objects.filter(employee__organization=user.organization)
+            # Regular employees only see their own requests
             return LeaveRequest.objects.filter(employee=user)
         return LeaveRequest.objects.none()
 
@@ -509,7 +541,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return Payslip.objects.filter(employee__organization_id__in=org_ids)
         elif isinstance(user, Employee):
-            if user.role == 'admin':
+            if user.is_hr_admin():
                 return Payslip.objects.filter(employee__organization=user.organization)
             return Payslip.objects.filter(employee=user)
         return Payslip.objects.none()
@@ -523,3 +555,100 @@ class PayslipViewSet(viewsets.ModelViewSet):
         payslip.save()
 
         return Response({'message': 'Marque comme paye'}, status=status.HTTP_200_OK)
+
+
+# -------------------------------
+# PERMISSION & ROLE VIEWSETS
+# -------------------------------
+
+class PermissionViewSet(viewsets.ReadOnlyModelViewSet):
+    """ViewSet for viewing permissions (read-only)"""
+    queryset = Permission.objects.all()
+    serializer_class = PermissionSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        """All permissions are available to authenticated users"""
+        queryset = Permission.objects.all().order_by('category', 'name')
+
+        # Optional filters
+        category = self.request.query_params.get('category', None)
+        if category:
+            queryset = queryset.filter(category=category)
+
+        return queryset
+
+
+class RoleViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing roles"""
+    queryset = Role.objects.all()
+    permission_classes = [IsAuthenticated, IsHRAdminOrReadOnly]
+
+    def get_queryset(self):
+        """Filter roles by organization or system roles"""
+        user = self.request.user
+        from core.models import AdminUser
+
+        queryset = Role.objects.all()
+
+        if isinstance(user, AdminUser):
+            # Admin can see system roles + their organization's roles
+            org_ids = user.organizations.values_list('id', flat=True)
+            queryset = queryset.filter(
+                models.Q(organization__isnull=True) |  # System roles
+                models.Q(organization_id__in=org_ids)  # Org roles
+            )
+        elif isinstance(user, Employee):
+            # Employee can see system roles + their organization's roles
+            queryset = queryset.filter(
+                models.Q(organization__isnull=True) |  # System roles
+                models.Q(organization=user.organization)  # Org roles
+            )
+        else:
+            queryset = Role.objects.none()
+
+        # Filter by query params
+        is_active = self.request.query_params.get('is_active', None)
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        is_system_role = self.request.query_params.get('is_system_role', None)
+        if is_system_role is not None:
+            queryset = queryset.filter(is_system_role=is_system_role.lower() == 'true')
+
+        search = self.request.query_params.get('search', None)
+        if search:
+            queryset = queryset.filter(
+                models.Q(name__icontains=search) |
+                models.Q(code__icontains=search)
+            )
+
+        return queryset.order_by('-is_system_role', 'name')
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return RoleListSerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return RoleCreateSerializer
+        return RoleSerializer
+
+    def perform_create(self, serializer):
+        """Set organization when creating a role"""
+        user = self.request.user
+        from core.models import AdminUser
+
+        # Only non-system roles need an organization
+        if not serializer.validated_data.get('is_system_role', False):
+            if isinstance(user, AdminUser):
+                # Use the first organization of the admin
+                org = user.organizations.first()
+                if org:
+                    serializer.save(organization=org)
+                else:
+                    raise serializers.ValidationError("Admin user has no organization")
+            elif isinstance(user, Employee):
+                serializer.save(organization=user.organization)
+            else:
+                raise serializers.ValidationError("Cannot determine organization")
+        else:
+            serializer.save()

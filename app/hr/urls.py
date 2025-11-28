@@ -16,6 +16,8 @@ from .views import (
     LeaveRequestViewSet,
     PayrollPeriodViewSet,
     PayslipViewSet,
+    PermissionViewSet,
+    RoleViewSet,
 )
 
 # Create router for ViewSets
@@ -29,6 +31,8 @@ router.register(r'leave-balances', LeaveBalanceViewSet, basename='leavebalance')
 router.register(r'leave-requests', LeaveRequestViewSet, basename='leaverequest')
 router.register(r'payroll-periods', PayrollPeriodViewSet, basename='payrollperiod')
 router.register(r'payslips', PayslipViewSet, basename='payslip')
+router.register(r'permissions', PermissionViewSet, basename='permission')
+router.register(r'roles', RoleViewSet, basename='role')
 
 urlpatterns = [
     # Employee Authentication Endpoints

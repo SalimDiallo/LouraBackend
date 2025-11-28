@@ -2,16 +2,33 @@ from django.contrib import admin
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayslipItem
+    PayrollPeriod, Payslip, PayslipItem,
+    Permission, Role
 )
+
+
+@admin.register(Permission)
+class PermissionAdmin(admin.ModelAdmin):
+    list_display = ['code', 'name', 'category']
+    list_filter = ['category']
+    search_fields = ['code', 'name']
+
+
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    list_display = ['name', 'code', 'organization', 'is_system_role', 'is_active']
+    list_filter = ['organization', 'is_system_role', 'is_active']
+    search_fields = ['name', 'code']
+    filter_horizontal = ['permissions']
 
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'department', 'role', 'employment_status', 'is_active']
-    list_filter = ['organization', 'department', 'role', 'employment_status', 'is_active']
+    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'department', 'assigned_role', 'employment_status', 'is_active']
+    list_filter = ['organization', 'department', 'assigned_role', 'employment_status', 'is_active']
     search_fields = ['email', 'first_name', 'last_name', 'employee_id']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_login']
+    filter_horizontal = ['custom_permissions']
     fieldsets = (
         ('Informations de base', {
             'fields': ('email', 'first_name', 'last_name', 'phone', 'avatar_url')
@@ -20,7 +37,11 @@ class EmployeeAdmin(admin.ModelAdmin):
             'fields': ('organization', 'employee_id', 'department', 'position', 'contract')
         }),
         ('Emploi', {
-            'fields': ('hire_date', 'termination_date', 'manager', 'role', 'employment_status')
+            'fields': ('hire_date', 'termination_date', 'manager', 'assigned_role', 'employment_status')
+        }),
+        ('Permissions', {
+            'fields': ('custom_permissions',),
+            'classes': ('collapse',)
         }),
         ('Préférences', {
             'fields': ('language', 'timezone')

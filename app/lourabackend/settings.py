@@ -140,6 +140,8 @@ REST_FRAMEWORK = {
     'DEFAULT_AUTHENTICATION_CLASSES': [
         'rest_framework_simplejwt.authentication.JWTAuthentication',
     ],
+    'DEFAULT_PAGINATION_CLASS': 'lourabackend.pagination.StandardResultsSetPagination',
+    'PAGE_SIZE': 20,
 }
 
 CORS_ALLOWED_ORIGINS = [

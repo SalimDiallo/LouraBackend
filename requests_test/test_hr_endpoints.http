@@ -16,10 +16,10 @@
 @employeeEmail = employee@loura.com
 @employeePassword = Employee123!
 @subdomain = louradesing
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0MTkyMDAyLCJpYXQiOjE3NjQxOTExMDIsImp0aSI6IjU5MmI1ODhlZDAzZDQ5MTA4ODg1OTk0NDMzMjlhZmIzIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.BoRh_uXAdrlI-o3mQEInkAer7nUILVEumvkQW8ntIkA
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NDc5NTkwMiwiaWF0IjoxNzY0MTkxMTAyLCJqdGkiOiIyNGQzNmMwNTA5N2M0YWRmOTAxM2Y0NjdjZWE3ZjI3MSIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.aXydOpmcqNT56btRfKSkKOYhPa5iXkGx6iV9KZ56yD0
-@employeeId = employee_id_here
-@organizationId = organization_id_here
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0MzM3NjExLCJpYXQiOjE3NjQzMzY3MTEsImp0aSI6IjBjZGJjZGU1NDkwMTRlNmY4MzYzYzA1MzgzMjNhMDc2IiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.NN77RMi7dW-iPedenCXP-jYfSSWzoUeedN96U6zMGpo
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NDk0MTUxMSwiaWF0IjoxNzY0MzM2NzExLCJqdGkiOiI5YTkxYjgzMDE0MGE0NWY1YjBlNjM1MzBlNTVhYmU4MiIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.7P9TJx9zjzc9qEiS9XcccB7hQ8m4keZxMESfe1s5LUo
+@employeeId = b1162b84-31ef-4ae1-8a2f-9077c178deea
+@organizationId = 468ada13-476e-4e19-8f24-4fa432500e46
 
 
 ### ======================================
@@ -66,7 +66,16 @@ Authorization: Bearer {{accessToken}}
 ### ======================================
 
 ### 2.1 List Employees - Liste des employés (par AdminUser ou HR Admin)
+# Sans filtre: retourne les employés de TOUTES les organisations de l'admin
 GET {{baseUrl}}/employees/
+Authorization: Bearer {{accessToken}}
+
+### 2.1b List Employees for specific organization - Par subdomain
+GET {{baseUrl}}/employees/?organization_subdomain={{subdomain}}
+Authorization: Bearer {{accessToken}}
+
+### 2.1c List Employees for specific organization - Par ID
+GET {{baseUrl}}/employees/?organization={{organizationId}}
 Authorization: Bearer {{accessToken}}
 
 ### 2.2 Create Employee - Créer un nouvel employé (AdminUser ou HR Admin)
@@ -75,19 +84,18 @@ Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "email": "nouvel.employe@company.com",
+  "email": "employe@company.com",
   "password": "SecurePass123!",
   "password_confirm": "SecurePass123!",
   "first_name": "Jean",
   "last_name": "Dupont",
   "phone": "+224620000001",
   "employee_id": "EMP001",
-  "role": "employee",
   "employment_status": "active",
   "organization": "{{organizationId}}"
 }
 
-### Exemple: Créer un HR Admin
+### Exemple: Créer un HR Admin avec rôle
 POST {{baseUrl}}/employees/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
@@ -100,7 +108,7 @@ Authorization: Bearer {{accessToken}}
   "last_name": "Martin",
   "phone": "+224620000002",
   "employee_id": "HR001",
-  "role": "admin",
+  "role_id": "{hr_admin_role_id}",
   "employment_status": "active"
 }
 
@@ -118,6 +126,21 @@ Authorization: Bearer {{accessToken}}
   "employment_status": "active"
 }
 
+### Exemple: Mise à jour avec nouveaux champs
+PATCH {{baseUrl}}/employees/{{employeeId}}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "phone": "+224620123456",
+  "date_of_birth": "1990-05-15",
+  "gender": "male",
+  "address": "123 Avenue de la République",
+  "city": "Conakry",
+  "country": "GN",
+  "avatar_url": "https://example.com/avatars/employee.jpg"
+}
+
 ### 2.5 Activate Employee - Activer un employé
 POST {{baseUrl}}/employees/{{employeeId}}/activate/
 Authorization: Bearer {{accessToken}}
@@ -128,8 +151,125 @@ Authorization: Bearer {{accessToken}}
 
 
 ### ======================================
-### 3. DEPARTMENT ENDPOINTS
+### 3. ROLES & PERMISSIONS ENDPOINTS
 ### ======================================
+
+### 3.1 List All Permissions - Liste de toutes les permissions disponibles
+GET {{baseUrl}}/permissions/
+Authorization: Bearer {{accessToken}}
+
+### 3.2 List Permissions by Category - Filtrer par catégorie
+GET {{baseUrl}}/permissions/?category=Employés
+Authorization: Bearer {{accessToken}}
+
+### 3.3 Get Permission Details
+GET {{baseUrl}}/permissions/{permission_id}/
+Authorization: Bearer {{accessToken}}
+
+### 3.4 List Roles - Liste des rôles
+GET {{baseUrl}}/roles/
+Authorization: Bearer {{accessToken}}
+
+### 3.5 List System Roles Only - Rôles système uniquement
+GET {{baseUrl}}/roles/?is_system_role=true
+Authorization: Bearer {{accessToken}}
+
+### 3.6 List Active Custom Roles - Rôles personnalisés actifs
+GET {{baseUrl}}/roles/?is_system_role=false&is_active=true
+Authorization: Bearer {{accessToken}}
+
+### 3.7 Search Roles - Rechercher un rôle
+GET {{baseUrl}}/roles/?search=admin
+Authorization: Bearer {{accessToken}}
+
+### 3.8 Create Custom Role - Créer un rôle personnalisé
+POST {{baseUrl}}/roles/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "custom_manager",
+  "name": "Manager d'équipe",
+  "description": "Manager avec permissions limitées",
+  "permission_codes": [
+    "hr.view_employee",
+    "hr.view_department",
+    "hr.view_leaverequest",
+    "hr.approve_leaverequest"
+  ],
+  "is_active": true
+}
+
+### 3.9 Create Role with Full HR Permissions
+POST {{baseUrl}}/roles/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "code": "hr_specialist",
+  "name": "Spécialiste RH",
+  "description": "Accès complet aux données RH sauf administration",
+  "permission_codes": [
+    "hr.view_employee",
+    "hr.add_employee",
+    "hr.change_employee",
+    "hr.view_department",
+    "hr.view_position",
+    "hr.view_contract",
+    "hr.view_leaverequest",
+    "hr.approve_leaverequest",
+    "hr.view_payslip"
+  ],
+  "is_active": true
+}
+
+### 3.10 Get Role Details - Détails d'un rôle avec ses permissions
+GET {{baseUrl}}/roles/{role_id}/
+Authorization: Bearer {{accessToken}}
+
+### 3.11 Update Role - Mettre à jour un rôle
+PATCH {{baseUrl}}/roles/{role_id}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "description": "Description mise à jour",
+  "permission_codes": [
+    "hr.view_employee",
+    "hr.view_department"
+  ]
+}
+
+### 3.12 Assign Role to Employee - Attribuer un rôle à un employé
+PATCH {{baseUrl}}/employees/{{employeeId}}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "role_id": "{role_id}"
+}
+
+### 3.13 Add Custom Permissions to Employee - Permissions personnalisées
+PATCH {{baseUrl}}/employees/{{employeeId}}/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "custom_permission_codes": [
+    "hr.view_payslip",
+    "hr.view_contract"
+  ]
+}
+
+### 3.14 Delete Role - Supprimer un rôle personnalisé
+DELETE {{baseUrl}}/roles/{role_id}/
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 4. DEPARTMENT ENDPOINTS
+### ======================================
+@id = bee6f90b-a9b2-4d26-a40c-47b55b8cd701
 
 ### 3.1 List Departments - Liste des départements
 GET {{baseUrl}}/departments/
@@ -204,14 +344,14 @@ Authorization: Bearer {{accessToken}}
 GET {{baseUrl}}/contracts/
 Authorization: Bearer {{accessToken}}
 
-### 5.2 Create Contract - Créer un contrat
+### 5.2 Create Contract - Créer un contrat permanent (CDI)
 POST {{baseUrl}}/contracts/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
   "employee": "{{employeeId}}",
-  "contract_type": "cdi",
+  "contract_type": "permanent",
   "start_date": "2025-01-01",
   "base_salary": 60000,
   "currency": "GNF",
@@ -221,14 +361,14 @@ Authorization: Bearer {{accessToken}}
   "is_active": true
 }
 
-### Exemple: Contrat CDD avec date de fin
+### Exemple: Contrat temporaire (CDD) avec date de fin
 POST {{baseUrl}}/contracts/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
   "employee": "{{employeeId}}",
-  "contract_type": "cdd",
+  "contract_type": "temporary",
   "start_date": "2025-01-01",
   "end_date": "2025-12-31",
   "base_salary": 50000,
@@ -238,8 +378,44 @@ Authorization: Bearer {{accessToken}}
   "is_active": true
 }
 
+### Exemple: Contrat de stage
+POST {{baseUrl}}/contracts/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "contract_type": "internship",
+  "start_date": "2025-03-01",
+  "end_date": "2025-08-31",
+  "base_salary": 15000,
+  "currency": "GNF",
+  "salary_period": "monthly",
+  "hours_per_week": 35,
+  "description": "Stage de 6 mois",
+  "is_active": true
+}
+
+### Exemple: Contrat freelance
+POST {{baseUrl}}/contracts/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "contract_type": "freelance",
+  "start_date": "2025-01-01",
+  "end_date": "2025-06-30",
+  "base_salary": 80000,
+  "currency": "GNF",
+  "salary_period": "monthly",
+  "hours_per_week": 40,
+  "description": "Mission freelance développement",
+  "is_active": true
+}
+
 ### 5.3 Get Contract Details
-GET {{baseUrl}}/contracts/{id}/
+GET {{baseUrl}}/contracts/34317dae-8660-4b3e-8755-185cd2b9a1c0/
 Authorization: Bearer {{accessToken}}
 
 
@@ -528,11 +704,32 @@ Authorization: Bearer {{accessToken}}
 ### - Les Employees appartiennent à UNE organisation
 ### - Chaque employee ne voit que les données de son organisation
 
-### Rôles des employees:
-### - admin: Administrateur RH (accès complet)
-### - manager: Manager (peut approuver les congés)
-### - employee: Employé standard (accès limité à ses propres données)
-### - readonly: Lecture seule
+### Système de Rôles et Permissions:
+### Les employés ont un système de rôles basé sur le modèle Role avec permissions granulaires.
+###
+### Rôles système prédéfinis (is_system_role=True):
+### - super_admin: Accès total au système (toutes permissions)
+### - hr_admin: Administrateur RH (gestion complète du module HR)
+### - manager: Manager (peut gérer son équipe et approuver les congés)
+###
+### Rôles personnalisés:
+### Les organisations peuvent créer des rôles personnalisés avec des permissions spécifiques.
+### Chaque rôle contient une liste de permissions (codes) comme:
+### - hr.view_employee, hr.add_employee, hr.change_employee, hr.delete_employee
+### - hr.view_department, hr.add_department, etc.
+### - hr.view_leaverequest, hr.approve_leaverequest
+### - hr.view_payslip, hr.add_payslip
+###
+### Attribution des rôles:
+### - Chaque employé peut avoir UN rôle (assigned_role)
+### - Chaque employé peut avoir des permissions personnalisées supplémentaires (custom_permissions)
+### - Les permissions finales = permissions du rôle + permissions personnalisées
+###
+### Méthodes utiles sur Employee:
+### - employee.has_permission('hr.view_employee') -> True/False
+### - employee.get_all_permissions() -> QuerySet de toutes les permissions
+### - employee.is_super_admin() -> True si rôle = super_admin
+### - employee.is_hr_admin() -> True si rôle = super_admin ou hr_admin
 
 ### Authentification:
 ### - Les employees s'authentifient avec: email + password + subdomain organisation
@@ -551,3 +748,25 @@ Authorization: Bearer {{accessToken}}
 ### 2. Générer les fiches de paie (Payslip) pour chaque employé
 ### 3. Les totaux (brut, net) sont calculés automatiquement
 ### 4. Marquer comme "payé" une fois le virement effectué
+###
+### Types de contrats (contract_type):
+### - permanent: CDI - Contrat à Durée Indéterminée
+### - temporary: CDD - Contrat à Durée Déterminée
+### - contract: Contractuel
+### - internship: Stage
+### - freelance: Freelance/Consultant
+###
+### Nouveaux champs Employee (ajoutés):
+### - phone: Numéro de téléphone
+### - date_of_birth: Date de naissance
+### - gender: Genre (male/female/other)
+### - address: Adresse complète
+### - city: Ville
+### - country: Code pays (2 lettres, ex: GN)
+### - avatar_url: URL de la photo de profil
+###
+### Champs Employment Status:
+### - active: Actif
+### - on_leave: En congé
+### - suspended: Suspendu
+### - terminated: Terminé
