@@ -432,6 +432,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
+        print(serializer)
         if isinstance(self.request.user, Employee):
             serializer.save(employee=self.request.user)
         else:
