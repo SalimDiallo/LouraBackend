@@ -432,11 +432,62 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
-        print(serializer)
+        from core.models import AdminUser
+
         if isinstance(self.request.user, Employee):
-            serializer.save(employee=self.request.user)
+            # Employee creating their own leave request
+            leave_request = serializer.save(employee=self.request.user)
+        elif isinstance(self.request.user, AdminUser):
+            # AdminUser creating a leave request for an employee
+            # The employee must be specified in the request data
+            employee_id = self.request.data.get('employee')
+            if not employee_id:
+                raise serializers.ValidationError({
+                    'employee': 'L\'employé est requis pour créer une demande de congé'
+                })
+
+            try:
+                employee = Employee.objects.get(id=employee_id)
+                # Verify admin has access to this employee's organization
+                if not self.request.user.organizations.filter(id=employee.organization_id).exists():
+                    raise serializers.ValidationError({
+                        'employee': 'Vous n\'avez pas accès à cet employé'
+                    })
+                leave_request = serializer.save(employee=employee)
+            except Employee.DoesNotExist:
+                raise serializers.ValidationError({
+                    'employee': 'Employé introuvable'
+                })
         else:
-            raise serializers.ValidationError({'user': 'Seuls les employees peuvent creer des demandes'})
+            raise serializers.ValidationError({
+                'user': 'Seuls les employés et administrateurs peuvent créer des demandes'
+            })
+
+        # Mettre à jour le solde de congé (pending_days)
+        year = leave_request.start_date.year
+        balance, _ = LeaveBalance.objects.get_or_create(
+            employee=leave_request.employee,
+            leave_type=leave_request.leave_type,
+            year=year
+        )
+        balance.pending_days += leave_request.total_days
+        balance.save()
+
+    def perform_destroy(self, instance):
+        # Si la demande est en attente, décrémenter pending_days
+        if instance.status == 'pending':
+            year = instance.start_date.year
+            balance = LeaveBalance.objects.filter(
+                employee=instance.employee,
+                leave_type=instance.leave_type,
+                year=year
+            ).first()
+
+            if balance:
+                balance.pending_days -= instance.total_days
+                balance.save()
+
+        instance.delete()
 
     @action(detail=True, methods=['post'], permission_classes=[IsManagerOrHRAdmin])
     def approve(self, request, pk=None):
@@ -445,7 +496,10 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         if serializer.is_valid():
             leave_request.status = 'approved'
+
+            # Set approver using GenericForeignKey (supports both Employee and AdminUser)
             leave_request.approver = request.user
+
             leave_request.approval_date = timezone.now()
             leave_request.approval_notes = serializer.validated_data.get('approval_notes', '')
             leave_request.save()
@@ -471,7 +525,10 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         if serializer.is_valid():
             leave_request.status = 'rejected'
+
+            # Set approver using GenericForeignKey (supports both Employee and AdminUser)
             leave_request.approver = request.user
+
             leave_request.approval_date = timezone.now()
             leave_request.approval_notes = serializer.validated_data.get('approval_notes', '')
             leave_request.save()

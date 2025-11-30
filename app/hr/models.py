@@ -1,5 +1,7 @@
 from django.db import models
 from django.contrib.auth.models import BaseUserManager
+from django.contrib.contenttypes.fields import GenericForeignKey
+from django.contrib.contenttypes.models import ContentType
 from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 
@@ -598,17 +600,29 @@ class LeaveRequest(TimeStampedModel):
         default='pending'
     )
 
-    # Approval workflow
-    approver = models.ForeignKey(
-        Employee,
+    # Approval workflow - Generic Foreign Key to support both Employee and AdminUser
+    approver_content_type = models.ForeignKey(
+        'contenttypes.ContentType',
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='approved_leaves'
+        related_name='leave_approvers'
     )
+    approver_object_id = models.UUIDField(null=True, blank=True)
+    approver = GenericForeignKey('approver_content_type', 'approver_object_id')
 
     approval_date = models.DateTimeField(null=True, blank=True)
     approval_notes = models.TextField(blank=True)
+
+    def get_approver_name(self):
+        """Retourne le nom de l'approbateur, qu'il soit Employee ou AdminUser"""
+        if self.approver:
+            if hasattr(self.approver, 'get_full_name'):
+                return self.approver.get_full_name()
+            elif hasattr(self.approver, 'full_name'):
+                return self.approver.full_name
+            return str(self.approver)
+        return None
 
     class Meta:
         db_table = 'leave_requests'

@@ -387,16 +387,17 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'id', 'employee', 'employee_name', 'leave_type', 'leave_type_name',
             'leave_type_color', 'start_date', 'end_date', 'start_half_day',
             'end_half_day', 'total_days', 'reason', 'attachment_url',
-            'status', 'status_display', 'approver', 'approver_name',
+            'status', 'status_display', 'approver_name',
             'approval_date', 'approval_notes', 'created_at', 'updated_at'
         ]
         read_only_fields = [
-            'id', 'employee', 'status', 'approver', 'approval_date',
+            'id', 'employee', 'status', 'approval_date',
             'approval_notes', 'created_at', 'updated_at'
         ]
 
     def get_approver_name(self, obj):
-        return obj.approver.get_full_name() if obj.approver else None
+        """Retourne le nom de l'approbateur (Employee ou AdminUser)"""
+        return obj.get_approver_name()
 
     def validate(self, attrs):
         """Validate leave request dates and availability"""
@@ -414,7 +415,6 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
 class LeaveRequestApprovalSerializer(serializers.Serializer):
     """Serializer for approving/rejecting leave requests"""
 
-    status = serializers.ChoiceField(choices=['approved', 'rejected'])
     approval_notes = serializers.CharField(required=False, allow_blank=True)
 
 

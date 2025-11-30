@@ -16,8 +16,8 @@
 @employeeEmail = employee@loura.com
 @employeePassword = Employee123!
 @subdomain = louradesing
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0MzM3NjExLCJpYXQiOjE3NjQzMzY3MTEsImp0aSI6IjBjZGJjZGU1NDkwMTRlNmY4MzYzYzA1MzgzMjNhMDc2IiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.NN77RMi7dW-iPedenCXP-jYfSSWzoUeedN96U6zMGpo
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NDk0MTUxMSwiaWF0IjoxNzY0MzM2NzExLCJqdGkiOiI5YTkxYjgzMDE0MGE0NWY1YjBlNjM1MzBlNTVhYmU4MiIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.7P9TJx9zjzc9qEiS9XcccB7hQ8m4keZxMESfe1s5LUo
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0NDYxMTc1LCJpYXQiOjE3NjQ0NjAyNzUsImp0aSI6ImY5ZTM4YTEzMTU2ODQ4OGVhN2Q5MmIxZDIyMGE3YzNlIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.b7JSvas_0oRzZ6juVpRAuS3GS4iMymqVWIsJELsCUEg
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NTA2NDE0NiwiaWF0IjoxNzY0NDU5MzQ2LCJqdGkiOiJmYzc5ZDY0YjVlMDQ0MWExODllZWJhOWE0MDUyOTE0YiIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.4Xi2VqOFdbRC4aYPUnTd9XgdHVk6qePOCthv7vPbhK4
 @employeeId = b1162b84-31ef-4ae1-8a2f-9077c178deea
 @organizationId = 468ada13-476e-4e19-8f24-4fa432500e46
 
@@ -433,17 +433,18 @@ Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "name": "Congés payés",
-  "code": "CP",
-  "description": "Congés annuels payés",
-  "default_days_per_year": 25,
+  "name": "Congé maternité",
+  "code": "CMAT",
+  "description": "Congé de maternité selon la législation en vigueur",
+  "default_days_per_year": 98,
   "is_paid": true,
   "requires_approval": true,
-  "max_consecutive_days": 15,
-  "color": "#3B82F6",
+  "max_consecutive_days": 98,
+  "color": "#F59E42",
   "is_active": true,
   "organization": "{{organizationId}}"
 }
+
 
 ### Exemple: Congé maladie
 POST {{baseUrl}}/leave-types/
@@ -451,14 +452,15 @@ Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "name": "Congé maladie",
-  "code": "CM",
+  "name": "Congé ferie",
+  "code": "CM2",
   "description": "Congé pour raison médicale",
   "default_days_per_year": 10,
   "is_paid": true,
   "requires_approval": false,
   "color": "#EF4444",
-  "is_active": true
+  "is_active": true,
+  "organization" : "{{organizationId}}"
 }
 
 
@@ -477,9 +479,9 @@ Authorization: Bearer {{accessToken}}
 
 {
   "employee": "{{employeeId}}",
-  "leave_type": "{leave_type_id}",
-  "year": 2025,
-  "total_days": 25,
+  "leave_type": "d7b5f980-5da3-494a-b31e-9bc4bd8e80bc",
+  "year": 2024,
+  "total_days": 15,
   "used_days": 0,
   "pending_days": 0
 }
