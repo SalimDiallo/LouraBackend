@@ -18,6 +18,11 @@ from .views import (
     PayslipViewSet,
     PermissionViewSet,
     RoleViewSet,
+    AttendanceViewSet,
+    # Stats views
+    PayrollStatsView,
+    HROverviewStatsView,
+    DepartmentStatsView,
 )
 
 # Create router for ViewSets
@@ -33,6 +38,7 @@ router.register(r'payroll-periods', PayrollPeriodViewSet, basename='payrollperio
 router.register(r'payslips', PayslipViewSet, basename='payslip')
 router.register(r'permissions', PermissionViewSet, basename='permission')
 router.register(r'roles', RoleViewSet, basename='role')
+router.register(r'attendances', AttendanceViewSet, basename='attendance')
 
 urlpatterns = [
     # Employee Authentication Endpoints
@@ -40,6 +46,11 @@ urlpatterns = [
     path('auth/logout/', EmployeeLogoutView.as_view(), name='employee-logout'),
     path('auth/me/', EmployeeMeView.as_view(), name='employee-me'),
     path('auth/change-password/', EmployeeChangePasswordView.as_view(), name='employee-change-password'),
+
+    # Stats Endpoints
+    path('stats/payroll/', PayrollStatsView.as_view(), name='payroll-stats'),
+    path('stats/overview/', HROverviewStatsView.as_view(), name='hr-overview-stats'),
+    path('stats/departments/', DepartmentStatsView.as_view(), name='department-stats'),
 
     path('', include(router.urls)),
 ]

@@ -138,10 +138,16 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'lourabackend.authentication.MultiUserJWTAuthentication',
     ],
     'DEFAULT_PAGINATION_CLASS': 'lourabackend.pagination.StandardResultsSetPagination',
     'PAGE_SIZE': 20,
+    # Use custom JSON renderer to handle UUIDs and other Django types
+    'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S.%fZ',
+    'DEFAULT_RENDERER_CLASSES': [
+        'lourabackend.renderers.UUIDJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
+    ],
 }
 
 CORS_ALLOWED_ORIGINS = [
@@ -150,6 +156,20 @@ CORS_ALLOWED_ORIGINS = [
 
 # Autoriser cookies / authentification (si besoin) Si tu utilises JWT avec cookies, sessions ou authentification cross-domain :
 CORS_ALLOW_CREDENTIALS = True
+
+# Allow custom headers
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'x-organization-slug',  # Custom header for organization context
+]
 
 # JWT Configuration
 

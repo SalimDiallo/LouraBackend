@@ -207,6 +207,48 @@ PERMISSIONS = {
         'category': 'Rapports',
         'description': 'Peut exporter les rapports en PDF/Excel'
     },
+
+    # Attendance Permissions
+    'can_view_attendance': {
+        'name': 'Voir les pointages',
+        'category': 'Pointages',
+        'description': 'Peut consulter les pointages'
+    },
+    'can_view_all_attendance': {
+        'name': 'Voir tous les pointages',
+        'category': 'Pointages',
+        'description': 'Peut consulter les pointages de tous les employés'
+    },
+    'can_create_attendance': {
+        'name': 'Créer des pointages',
+        'category': 'Pointages',
+        'description': 'Peut créer des enregistrements de pointage'
+    },
+    'can_update_attendance': {
+        'name': 'Modifier des pointages',
+        'category': 'Pointages',
+        'description': 'Peut modifier les pointages'
+    },
+    'can_delete_attendance': {
+        'name': 'Supprimer des pointages',
+        'category': 'Pointages',
+        'description': 'Peut supprimer des pointages'
+    },
+    'can_approve_attendance': {
+        'name': 'Approuver des pointages',
+        'category': 'Pointages',
+        'description': 'Peut approuver ou rejeter des pointages'
+    },
+    'can_manual_checkin': {
+        'name': 'Pointage manuel',
+        'category': 'Pointages',
+        'description': 'Peut effectuer un pointage manuel sans QR code (réservé aux administrateurs)'
+    },
+    'can_create_qr_session': {
+        'name': 'Créer session QR',
+        'category': 'Pointages',
+        'description': 'Peut générer des QR codes pour le pointage des employés'
+    },
 }
 
 
@@ -250,6 +292,10 @@ PREDEFINED_ROLES = {
             'can_assign_role',
             # Reports
             'can_view_reports', 'can_export_reports',
+            # Attendance
+            'can_view_attendance', 'can_view_all_attendance', 'can_create_attendance',
+            'can_update_attendance', 'can_delete_attendance', 'can_approve_attendance',
+            'can_manual_checkin', 'can_create_qr_session',
         ],
         'is_system_role': True,
     },
@@ -275,6 +321,9 @@ PREDEFINED_ROLES = {
             'can_view_role',
             # Reports
             'can_view_reports', 'can_export_reports',
+            # Attendance
+            'can_view_attendance', 'can_view_all_attendance', 'can_approve_attendance',
+            'can_create_qr_session',
         ],
         'is_system_role': True,
     },
@@ -291,6 +340,8 @@ PREDEFINED_ROLES = {
             'can_view_leave', 'can_create_leave', 'can_approve_leave',
             # Reports
             'can_view_reports',
+            # Attendance (team)
+            'can_view_attendance', 'can_view_all_attendance', 'can_approve_attendance',
         ],
         'is_system_role': True,
     },
@@ -306,6 +357,8 @@ PREDEFINED_ROLES = {
             'can_view_leave', 'can_create_leave',
             # Payroll (own)
             'can_view_payroll',
+            # Attendance (own)
+            'can_view_attendance',
         ],
         'is_system_role': True,
     },

@@ -13,11 +13,11 @@
 
 @baseUrl = http://localhost:8000/api/hr
 @coreUrl = http://localhost:8000/api/core
-@employeeEmail = employee@loura.com
-@employeePassword = Employee123!
+@employeeEmail = bah@gmail.com
+@employeePassword = Bah2019@
 @subdomain = louradesing
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0NDYxMTc1LCJpYXQiOjE3NjQ0NjAyNzUsImp0aSI6ImY5ZTM4YTEzMTU2ODQ4OGVhN2Q5MmIxZDIyMGE3YzNlIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.b7JSvas_0oRzZ6juVpRAuS3GS4iMymqVWIsJELsCUEg
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NTA2NDE0NiwiaWF0IjoxNzY0NDU5MzQ2LCJqdGkiOiJmYzc5ZDY0YjVlMDQ0MWExODllZWJhOWE0MDUyOTE0YiIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.4Xi2VqOFdbRC4aYPUnTd9XgdHVk6qePOCthv7vPbhK4
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY0OTUyODUzLCJpYXQiOjE3NjQ5NTE5NTMsImp0aSI6IjY0NzViMDE2NTA2YzQ1Mjg5YzFkOTE3MmMzZDk1ZWQ2IiwidXNlcl9pZCI6IjI1NjgzZjA0LTZjYWUtNGEwYy1iZTYyLWNhOGMwNzIzNWNhNSIsImVtYWlsIjoiYmFoQGdtYWlsLmNvbSIsInVzZXJfdHlwZSI6ImVtcGxveWVlIn0.o5oBk9eU3QJqAt2fH8nbWnlnPjljIYo4J51zC0zHvfI
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NTU1Njc1MywiaWF0IjoxNzY0OTUxOTUzLCJqdGkiOiJiYjllODc3NTRhMTQ0ZWJmOTUwNGE1MjM4ZmQyZjkxYiIsInVzZXJfaWQiOiIyNTY4M2YwNC02Y2FlLTRhMGMtYmU2Mi1jYThjMDcyMzVjYTUiLCJlbWFpbCI6ImJhaEBnbWFpbC5jb20iLCJ1c2VyX3R5cGUiOiJlbXBsb3llZSJ9.cLkDjfp3Ae8RBL7QGgjA93DXPjuGSswQmHtxKm4TtK8
 @employeeId = b1162b84-31ef-4ae1-8a2f-9077c178deea
 @organizationId = 468ada13-476e-4e19-8f24-4fa432500e46
 
@@ -281,8 +281,8 @@ Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "name": "Développement",
-  "code": "DEV",
+  "name": "Techniques",
+  "code": "techniques",
   "description": "Équipe de développement logiciel",
   "is_active": true,
   "organization": "{{organizationId}}"
@@ -503,7 +503,6 @@ Authorization: Bearer {{accessToken}}
 POST {{baseUrl}}/leave-requests/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
-
 {
   "leave_type": "{leave_type_id}",
   "start_date": "2025-12-20",
@@ -595,7 +594,7 @@ Authorization: Bearer {{accessToken}}
 GET {{baseUrl}}/payslips/
 Authorization: Bearer {{accessToken}}
 
-### 10.2 Create Payslip - Créer une fiche de paie
+### 10.2 Create Payslip - Créer une fiche de paie (NOUVELLE STRUCTURE)
 POST {{baseUrl}}/payslips/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
@@ -603,19 +602,56 @@ Authorization: Bearer {{accessToken}}
 {
   "employee": "{{employeeId}}",
   "payroll_period": "{payroll_period_id}",
-  "base_salary": 60000,
-  "overtime_pay": 5000,
-  "bonuses": 10000,
-  "allowances": 2000,
-  "tax": 15000,
-  "social_security": 8000,
-  "other_deductions": 1000,
+  "base_salary": 500000,
+  "allowances": [
+    {"name": "Prime de transport", "amount": 25000},
+    {"name": "Prime de logement", "amount": 50000},
+    {"name": "Prime d'ancienneté", "amount": 30000}
+  ],
+  "deductions": [
+    {"name": "Cotisation sociale (CNPS)", "amount": 18000},
+    {"name": "Impôt sur le revenu", "amount": 50000},
+    {"name": "Avance sur salaire", "amount": 20000}
+  ],
+  "currency": "GNF",
+  "worked_hours": 160,
+  "overtime_hours": 0,
+  "leave_days_taken": 0,
+  "payment_method": "Virement bancaire",
+  "notes": "Paie du mois de janvier 2025"
+}
+
+### Exemple: Fiche de paie avec salaire horaire
+POST {{baseUrl}}/payslips/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "payroll_period": "{payroll_period_id}",
+  "base_salary": 300000,
+  "allowances": [
+    {"name": "Heures supplémentaires (10h à 5000/h)", "amount": 50000}
+  ],
+  "deductions": [
+    {"name": "Retenue CNSS", "amount": 12600}
+  ],
   "currency": "GNF",
   "worked_hours": 160,
   "overtime_hours": 10,
-  "leave_days_taken": 0,
-  "payment_method": "Virement bancaire",
-  "notes": "Fiche de paie janvier 2025"
+  "payment_method": "Espèces"
+}
+
+### Exemple: Fiche de paie simple (sans primes ni déductions)
+POST {{baseUrl}}/payslips/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "employee": "{{employeeId}}",
+  "payroll_period": "{payroll_period_id}",
+  "base_salary": 400000,
+  "currency": "GNF"
 }
 
 ### 10.3 Get Payslip Details
@@ -630,6 +666,51 @@ Authorization: Bearer {{accessToken}}
 {
   "payment_reference": "WIRE-2025-01-001"
 }
+
+### 10.5 Export Payslip as PDF - Exporter en PDF
+GET {{baseUrl}}/payslips/{id}/export_pdf/
+Authorization: Bearer {{accessToken}}
+
+### 10.6 Generate Payslips for Period - Génération groupée
+POST {{baseUrl}}/payslips/generate_for_period/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "payroll_period": "{payroll_period_id}"
+}
+
+### Exemple: Génération avec filtres (par département)
+POST {{baseUrl}}/payslips/generate_for_period/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "payroll_period": "{payroll_period_id}",
+  "employee_filters": {
+    "department": "{department_id}"
+  }
+}
+
+### Exemple: Génération avec filtres (par poste)
+POST {{baseUrl}}/payslips/generate_for_period/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "payroll_period": "{payroll_period_id}",
+  "employee_filters": {
+    "position": "{position_id}"
+  }
+}
+
+### 10.7 Get Payroll Statistics - Obtenir les statistiques de paie
+GET {{baseUrl}}/stats/payroll/?organization_subdomain={{subdomain}}
+Authorization: Bearer {{accessToken}}
+
+### 10.8 Get Payroll Statistics with Filters - Statistiques filtrées par année et mois
+GET {{baseUrl}}/stats/payroll/?organization_subdomain={{subdomain}}&year=2025&month=1
+Authorization: Bearer {{accessToken}}
 
 
 ### ======================================

@@ -119,7 +119,6 @@ class PayslipAdmin(admin.ModelAdmin):
 
 @admin.register(PayslipItem)
 class PayslipItemAdmin(admin.ModelAdmin):
-    list_display = ['payslip', 'item_type', 'description', 'amount', 'quantity', 'total']
-    list_filter = ['item_type']
-    search_fields = ['description']
-    readonly_fields = ['total']
+    list_display = ['payslip', 'name', 'amount', 'is_deduction']
+    list_filter = ['is_deduction']
+    search_fields = ['name']

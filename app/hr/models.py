@@ -701,76 +701,37 @@ class Payslip(TimeStampedModel):
         related_name='payslips'
     )
 
-    # Salary components
+    # Salaire de base
     base_salary = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        validators=[MinValueValidator(Decimal('0.00'))]
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Salaire de base mensuel"
     )
 
-    # Earnings (additions)
-    overtime_pay = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    bonuses = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    allowances = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    # Deductions
-    tax = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    social_security = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    other_deductions = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        default=0,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    # Calculated totals
+    # Montants calculés automatiquement à partir des items (PayslipItem)
     gross_salary = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        help_text="Salaire brut (base + primes + indemnités)"
+        default=0,
+        help_text="Salaire brut = base + primes"
     )
 
     total_deductions = models.DecimalField(
         max_digits=12,
         decimal_places=2,
+        default=0,
         help_text="Total des déductions"
     )
 
     net_salary = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        help_text="Salaire net à payer"
+        default=0,
+        help_text="Salaire net = brut - déductions"
     )
 
+    # Informations complémentaires
     currency = models.CharField(max_length=3, default='GNF')
 
     # Working hours
@@ -778,20 +739,23 @@ class Payslip(TimeStampedModel):
         max_digits=6,
         decimal_places=2,
         null=True,
-        blank=True
+        blank=True,
+        help_text="Heures travaillées dans la période"
     )
 
     overtime_hours = models.DecimalField(
         max_digits=6,
         decimal_places=2,
-        default=0
+        default=0,
+        help_text="Heures supplémentaires"
     )
 
     # Leave days
     leave_days_taken = models.DecimalField(
         max_digits=5,
         decimal_places=2,
-        default=0
+        default=0,
+        help_text="Jours de congé pris pendant la période"
     )
 
     # Payment status
@@ -828,31 +792,35 @@ class Payslip(TimeStampedModel):
     def __str__(self):
         return f"{self.employee.get_full_name()} - {self.payroll_period.name}"
 
-    def save(self, *args, **kwargs):
-        """Calculate totals before saving"""
-        # Calculate gross salary
-        self.gross_salary = (
-            self.base_salary +
-            self.overtime_pay +
-            self.bonuses +
-            self.allowances
+    def calculate_totals(self):
+        """Calcule les totaux à partir des items"""
+        # Récupérer tous les items
+        items = self.items.all()
+
+        # Calculer total des primes (is_deduction=False)
+        total_allowances = sum(
+            item.amount for item in items if not item.is_deduction
         )
 
-        # Calculate total deductions
-        self.total_deductions = (
-            self.tax +
-            self.social_security +
-            self.other_deductions
+        # Calculer total des déductions (is_deduction=True)
+        total_deductions = sum(
+            item.amount for item in items if item.is_deduction
         )
 
-        # Calculate net salary
+        # Salaire brut = base + primes
+        self.gross_salary = self.base_salary + Decimal(str(total_allowances))
+
+        # Total déductions
+        self.total_deductions = Decimal(str(total_deductions))
+
+        # Salaire net = brut - déductions
         self.net_salary = self.gross_salary - self.total_deductions
 
-        super().save(*args, **kwargs)
+        self.save()
 
 
 class PayslipItem(TimeStampedModel):
-    """Ligne de détail d'une fiche de paie (pour les éléments personnalisés)"""
+    """Ligne de détail d'une fiche de paie (primes et déductions)"""
 
     payslip = models.ForeignKey(
         Payslip,
@@ -860,43 +828,351 @@ class PayslipItem(TimeStampedModel):
         related_name='items'
     )
 
-    ITEM_TYPE_CHOICES = [
-        ('earning', 'Gain'),
-        ('deduction', 'Déduction'),
-    ]
-
-    item_type = models.CharField(max_length=10, choices=ITEM_TYPE_CHOICES)
-    description = models.CharField(max_length=255)
-
+    name = models.CharField(max_length=255, help_text="Nom de l'élément (ex: Prime de transport)")
     amount = models.DecimalField(
         max_digits=12,
         decimal_places=2,
-        validators=[MinValueValidator(Decimal('0.00'))]
+        validators=[MinValueValidator(Decimal('0.00'))],
+        help_text="Montant de l'élément"
     )
-
-    quantity = models.DecimalField(
-        max_digits=8,
-        decimal_places=2,
-        default=1,
-        validators=[MinValueValidator(Decimal('0.00'))]
-    )
-
-    total = models.DecimalField(
-        max_digits=12,
-        decimal_places=2,
-        help_text="Montant total (amount * quantity)"
+    is_deduction = models.BooleanField(
+        default=False,
+        help_text="True si c'est une déduction, False si c'est une prime"
     )
 
     class Meta:
         db_table = 'payslip_items'
         verbose_name = "Ligne de fiche de paie"
         verbose_name_plural = "Lignes de fiches de paie"
-        ordering = ['item_type', 'description']
+        ordering = ['is_deduction', 'name']
 
     def __str__(self):
-        return f"{self.description} - {self.total}"
+        return f"{self.name} - {self.amount} ({'Déduction' if self.is_deduction else 'Prime'})"
+
+
+# ===============================
+# ATTENDANCE MANAGEMENT
+# ===============================
+
+class Attendance(TimeStampedModel):
+    """Enregistrement de pointage des employés et admins"""
+
+    # Support both Employee and AdminUser using GenericForeignKey
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='attendances',
+        null=True,
+        blank=True,
+        help_text="Employé (pour les comptes Employee)"
+    )
+
+    # GenericForeignKey to support AdminUser
+    content_type = models.ForeignKey(
+        ContentType,
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        help_text="Type d'utilisateur (Employee ou AdminUser)"
+    )
+    object_id = models.UUIDField(
+        null=True,
+        blank=True,
+        help_text="ID de l'utilisateur"
+    )
+    user = GenericForeignKey('content_type', 'object_id')
+
+    # Organization for filtering
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='attendances',
+        null=True,
+        blank=True,
+        help_text="Organisation"
+    )
+
+    # User info cached for performance
+    user_email = models.EmailField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Email de l'utilisateur (cached)"
+    )
+    user_full_name = models.CharField(
+        max_length=255,
+        blank=True,
+        default='',
+        help_text="Nom complet de l'utilisateur (cached)"
+    )
+
+    date = models.DateField(help_text="Date du pointage")
+
+    # Check-in time
+    check_in = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Heure d'arrivée"
+    )
+
+    check_in_location = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Localisation du pointage d'arrivée"
+    )
+
+    check_in_notes = models.TextField(
+        blank=True,
+        help_text="Notes lors du pointage d'arrivée"
+    )
+
+    # Check-out time
+    check_out = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Heure de départ"
+    )
+
+    check_out_location = models.CharField(
+        max_length=255,
+        blank=True,
+        help_text="Localisation du pointage de départ"
+    )
+
+    check_out_notes = models.TextField(
+        blank=True,
+        help_text="Notes lors du pointage de départ"
+    )
+
+    # Break times (optional)
+    break_start = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Début de pause"
+    )
+
+    break_end = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Fin de pause"
+    )
+
+    # Calculated fields
+    total_hours = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Heures totales travaillées"
+    )
+
+    break_duration = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        null=True,
+        blank=True,
+        help_text="Durée de pause en heures"
+    )
+
+    # Status
+    STATUS_CHOICES = [
+        ('present', 'Présent'),
+        ('absent', 'Absent'),
+        ('late', 'En retard'),
+        ('half_day', 'Demi-journée'),
+        ('on_leave', 'En congé'),
+    ]
+
+    status = models.CharField(
+        max_length=20,
+        choices=STATUS_CHOICES,
+        default='present'
+    )
+
+    # Approval fields
+    APPROVAL_STATUS_CHOICES = [
+        ('pending', 'En attente'),
+        ('approved', 'Approuvé'),
+        ('rejected', 'Rejeté'),
+    ]
+
+    approval_status = models.CharField(
+        max_length=20,
+        choices=APPROVAL_STATUS_CHOICES,
+        default='pending',
+        help_text="Statut d'approbation du pointage"
+    )
+
+    is_approved = models.BooleanField(
+        default=False,
+        help_text="Pointage approuvé par le manager"
+    )
+
+    approved_by = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_attendances',
+        help_text="Employé qui a approuvé/rejeté"
+    )
+
+    approved_by_admin = models.ForeignKey(
+        'core.AdminUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_attendances',
+        help_text="Admin qui a approuvé/rejeté"
+    )
+
+    approval_date = models.DateTimeField(null=True, blank=True)
+
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Raison du rejet (optionnel)"
+    )
+
+    # Additional info
+    notes = models.TextField(blank=True)
+    is_overtime = models.BooleanField(default=False)
+    overtime_hours = models.DecimalField(
+        max_digits=5,
+        decimal_places=2,
+        default=0,
+        help_text="Heures supplémentaires"
+    )
+
+    class Meta:
+        db_table = 'attendances'
+        verbose_name = "Pointage"
+        verbose_name_plural = "Pointages"
+        # Remove unique_together for employee+date since we now support both employee and generic user
+        ordering = ['-date', '-check_in']
+        indexes = [
+            models.Index(fields=['employee', 'date']),
+            models.Index(fields=['organization', 'date']),
+            models.Index(fields=['date', 'status']),
+            models.Index(fields=['user_email', 'date']),
+            models.Index(fields=['content_type', 'object_id', 'date']),
+        ]
+        constraints = [
+            # Ensure one attendance per user per day
+            models.UniqueConstraint(
+                fields=['organization', 'user_email', 'date'],
+                name='unique_user_date_attendance'
+            )
+        ]
+
+    def __str__(self):
+        return f"{self.user_full_name or self.user_email} - {self.date} ({self.status})"
+
+    def get_user(self):
+        """Get the user (Employee or AdminUser)"""
+        if self.employee:
+            return self.employee
+        return self.user
+
+    def calculate_hours(self):
+        """Calcule les heures travaillées"""
+        if self.check_in and self.check_out:
+            # Calculate total time
+            total_time = self.check_out - self.check_in
+            total_hours = total_time.total_seconds() / 3600
+
+            # Calculate break duration if exists
+            break_hours = 0
+            if self.break_start and self.break_end:
+                break_time = self.break_end - self.break_start
+                break_hours = break_time.total_seconds() / 3600
+                self.break_duration = Decimal(str(round(break_hours, 2)))
+
+            # Net working hours
+            self.total_hours = Decimal(str(round(total_hours - break_hours, 2)))
+
+            # Check for overtime (assuming 8 hours standard workday)
+            if self.total_hours > 8:
+                self.is_overtime = True
+                self.overtime_hours = self.total_hours - 8
+            else:
+                self.is_overtime = False
+                self.overtime_hours = 0
 
     def save(self, *args, **kwargs):
-        """Calculate total before saving"""
-        self.total = self.amount * self.quantity
+        """Calculate hours before saving"""
+        self.calculate_hours()
         super().save(*args, **kwargs)
+
+
+# ===============================
+# QR CODE ATTENDANCE SYSTEM
+# ===============================
+
+class QRCodeSession(TimeStampedModel):
+    """
+    Session QR Code pour le pointage
+    Chaque session est liée à un employé spécifique et expire après un certain temps
+    """
+    import uuid
+
+    id = models.UUIDField(primary_key=True, default=uuid.uuid4, editable=False)
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='qr_sessions',
+        help_text="Organisation de la session"
+    )
+    session_token = models.CharField(
+        max_length=64,
+        unique=True,
+        db_index=True,
+        help_text="Token unique pour cette session"
+    )
+    employee = models.ForeignKey(
+        'Employee',
+        on_delete=models.CASCADE,
+        related_name='qr_sessions',
+        help_text="Employé pour qui ce QR est généré"
+    )
+    created_by = models.ForeignKey(
+        'core.AdminUser',
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='created_qr_sessions',
+        help_text="Administrateur qui a créé cette session"
+    )
+    expires_at = models.DateTimeField(
+        help_text="Date et heure d'expiration de la session"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Si False, la session ne peut plus être utilisée"
+    )
+
+    class Meta:
+        db_table = 'hr_qr_code_sessions'
+        verbose_name = "Session QR Code"
+        verbose_name_plural = "Sessions QR Code"
+        ordering = ['-created_at']
+        indexes = [
+            models.Index(fields=['session_token']),
+            models.Index(fields=['expires_at']),
+            models.Index(fields=['is_active']),
+        ]
+
+    def __str__(self):
+        return f"QR Session for {self.employee.get_full_name()} - {self.session_token[:8]}..."
+
+    def is_expired(self):
+        """Vérifie si la session est expirée"""
+        from django.utils import timezone
+        return timezone.now() > self.expires_at
+
+    def get_qr_code_data(self):
+        """Retourne les données à encoder dans le QR code"""
+        import json
+        return json.dumps({
+            'session_token': self.session_token,
+            'employee_name': self.employee.get_full_name(),
+            'employee_id': str(self.employee.id),
+        })

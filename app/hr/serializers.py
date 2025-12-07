@@ -3,7 +3,8 @@ from django.contrib.auth.password_validation import validate_password
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayslipItem, Permission, Role
+    PayrollPeriod, Payslip, PayslipItem, Permission, Role,
+    Attendance, QRCodeSession
 )
 
 
@@ -14,15 +15,23 @@ from .models import (
 class PermissionSerializer(serializers.ModelSerializer):
     """Serializer for Permission model"""
 
+    id = serializers.SerializerMethodField()
+
     class Meta:
         model = Permission
         fields = ['id', 'code', 'name', 'category', 'description', 'created_at', 'updated_at']
         read_only_fields = ['id', 'created_at', 'updated_at']
 
+    def get_id(self, obj):
+        """Convert UUID to string"""
+        return str(obj.id) if obj.id else None
+
 
 class RoleSerializer(serializers.ModelSerializer):
     """Serializer for Role model"""
 
+    id = serializers.SerializerMethodField()
+    organization = serializers.SerializerMethodField()
     permissions = PermissionSerializer(many=True, read_only=True)
     permission_codes = serializers.ListField(
         child=serializers.CharField(),
@@ -41,6 +50,14 @@ class RoleSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'is_system_role', 'created_at', 'updated_at']
+
+    def get_id(self, obj):
+        """Convert UUID to string"""
+        return str(obj.id) if obj.id else None
+
+    def get_organization(self, obj):
+        """Convert UUID to string"""
+        return str(obj.organization.id) if obj.organization else None
 
     def get_permission_count(self, obj):
         return obj.permissions.count()
@@ -74,12 +91,17 @@ class RoleSerializer(serializers.ModelSerializer):
 class RoleListSerializer(serializers.ModelSerializer):
     """Lightweight serializer for listing roles"""
 
+    id = serializers.SerializerMethodField()
     permission_count = serializers.SerializerMethodField()
     permissions = PermissionSerializer(many=True, read_only=True)
 
     class Meta:
         model = Role
         fields = ['id', 'code', 'name', 'description', 'permission_count', 'permissions', 'is_system_role', 'is_active']
+
+    def get_id(self, obj):
+        """Convert UUID to string"""
+        return str(obj.id) if obj.id else None
 
     def get_permission_count(self, obj):
         return obj.permissions.count()
@@ -96,11 +118,19 @@ RoleCreateSerializer = RoleSerializer
 class EmployeeSerializer(serializers.ModelSerializer):
     """Serializer for Employee model - Full details"""
 
+    id = serializers.SerializerMethodField()
     full_name = serializers.SerializerMethodField()
+    organization = serializers.SerializerMethodField()
     organization_name = serializers.CharField(source='organization.name', read_only=True)
+    organization_subdomain = serializers.CharField(source='organization.subdomain', read_only=True)
+    department = serializers.SerializerMethodField()
     department_name = serializers.CharField(source='department.name', read_only=True)
+    position = serializers.SerializerMethodField()
     position_title = serializers.CharField(source='position.title', read_only=True)
+    contract = serializers.SerializerMethodField()
+    manager = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
+    emergency_contact = serializers.SerializerMethodField()
 
     # Role information
     role = RoleListSerializer(source='assigned_role', read_only=True)
@@ -128,7 +158,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'first_name', 'last_name', 'full_name', 'phone',
             'avatar_url', 'employee_id', 'date_of_birth', 'gender', 'address', 'city', 'country',
-            'organization', 'organization_name',
+            'organization', 'organization_name', 'organization_subdomain',
             'department', 'department_name', 'position', 'position_title',
             'contract', 'hire_date', 'termination_date', 'manager', 'manager_name',
             'emergency_contact', 'role', 'role_id', 'employment_status', 'language', 'timezone',
@@ -141,6 +171,34 @@ class EmployeeSerializer(serializers.ModelSerializer):
             'password': {'write_only': True},
             'organization': {'required': False},  # Will be set by view
         }
+
+    def get_id(self, obj):
+        """Convert UUID to string"""
+        return str(obj.id) if obj.id else None
+
+    def get_organization(self, obj):
+        """Convert UUID to string"""
+        return str(obj.organization.id) if obj.organization else None
+
+    def get_department(self, obj):
+        """Convert UUID to string"""
+        return str(obj.department.id) if obj.department else None
+
+    def get_position(self, obj):
+        """Convert UUID to string"""
+        return str(obj.position.id) if obj.position else None
+
+    def get_contract(self, obj):
+        """Convert UUID to string"""
+        return str(obj.contract.id) if obj.contract else None
+
+    def get_manager(self, obj):
+        """Convert UUID to string"""
+        return str(obj.manager.id) if obj.manager else None
+
+    def get_emergency_contact(self, obj):
+        """Ensure emergency_contact JSONField is properly serializable"""
+        return obj.emergency_contact if obj.emergency_contact else None
 
     def get_full_name(self, obj):
         return obj.get_full_name()
@@ -448,58 +506,72 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
 
 
 class PayslipItemSerializer(serializers.ModelSerializer):
-    """Serializer for PayslipItem model"""
-
-    item_type_display = serializers.CharField(source='get_item_type_display', read_only=True)
+    """Serializer pour les items de paie (primes et déductions)"""
 
     class Meta:
         model = PayslipItem
-        fields = [
-            'id', 'payslip', 'item_type', 'item_type_display',
-            'description', 'amount', 'quantity', 'total',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'total', 'created_at', 'updated_at']
+        fields = ['id', 'name', 'amount', 'is_deduction']
+        read_only_fields = ['id']
 
 
 class PayslipSerializer(serializers.ModelSerializer):
-    """Serializer for Payslip model"""
+    """Serializer complet pour lecture de fiches de paie"""
 
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
     employee_id = serializers.CharField(source='employee.employee_id', read_only=True)
     payroll_period_name = serializers.CharField(source='payroll_period.name', read_only=True)
+    period_start = serializers.DateField(source='payroll_period.start_date', read_only=True)
+    period_end = serializers.DateField(source='payroll_period.end_date', read_only=True)
     status_display = serializers.CharField(source='get_status_display', read_only=True)
-    items = PayslipItemSerializer(many=True, read_only=True)
+
+    # Inclure les items (primes et déductions) via des méthodes
+    allowances = serializers.SerializerMethodField()
+    deductions = serializers.SerializerMethodField()
+
+    # Détails de l'employé
+    employee_details = EmployeeListSerializer(source='employee', read_only=True)
 
     class Meta:
         model = Payslip
         fields = [
             'id', 'employee', 'employee_name', 'employee_id',
-            'payroll_period', 'payroll_period_name', 'base_salary',
-            'overtime_pay', 'bonuses', 'allowances', 'tax',
-            'social_security', 'other_deductions', 'gross_salary',
-            'total_deductions', 'net_salary', 'currency',
-            'worked_hours', 'overtime_hours', 'leave_days_taken',
+            'payroll_period', 'payroll_period_name', 'period_start', 'period_end',
+            'base_salary', 'allowances', 'deductions',
+            'gross_salary', 'total_deductions', 'net_salary',
+            'currency', 'worked_hours', 'overtime_hours', 'leave_days_taken',
             'status', 'status_display', 'payment_method', 'payment_date',
-            'payment_reference', 'notes', 'payslip_file_url',
-            'items', 'created_at', 'updated_at'
+            'payment_reference', 'payslip_file_url', 'notes',
+            'created_at', 'updated_at', 'employee_details'
         ]
         read_only_fields = [
             'id', 'gross_salary', 'total_deductions', 'net_salary',
             'created_at', 'updated_at'
         ]
 
+    def get_allowances(self, obj):
+        """Retourner seulement les items qui sont des primes (is_deduction=False)"""
+        items = obj.items.filter(is_deduction=False)
+        return PayslipItemSerializer(items, many=True).data
+
+    def get_deductions(self, obj):
+        """Retourner seulement les items qui sont des déductions (is_deduction=True)"""
+        items = obj.items.filter(is_deduction=True)
+        return PayslipItemSerializer(items, many=True).data
+
 
 class PayslipCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating payslips"""
+    """Serializer pour création/modification de fiches de paie"""
+
+    allowances = PayslipItemSerializer(many=True, required=False)
+    deductions = PayslipItemSerializer(many=True, required=False)
 
     class Meta:
         model = Payslip
         fields = [
-            'employee', 'payroll_period', 'base_salary', 'overtime_pay',
-            'bonuses', 'allowances', 'tax', 'social_security',
-            'other_deductions', 'currency', 'worked_hours',
-            'overtime_hours', 'leave_days_taken', 'payment_method', 'notes'
+            'employee', 'payroll_period', 'base_salary',
+            'allowances', 'deductions',
+            'currency', 'worked_hours', 'overtime_hours', 'leave_days_taken',
+            'payment_method', 'notes'
         ]
 
     def validate(self, attrs):
@@ -515,6 +587,81 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 
         return attrs
 
+    def create(self, validated_data):
+        # Extraire les items (primes et déductions)
+        allowances_data = validated_data.pop('allowances', [])
+        deductions_data = validated_data.pop('deductions', [])
+
+        # Créer le payslip
+        payslip = Payslip.objects.create(**validated_data)
+
+        # Créer les primes (is_deduction=False)
+        for allowance in allowances_data:
+            # Remove is_deduction from allowance data to avoid duplicate argument
+            allowance_copy = {k: v for k, v in allowance.items() if k != 'is_deduction'}
+            PayslipItem.objects.create(
+                payslip=payslip,
+                is_deduction=False,
+                **allowance_copy
+            )
+
+        # Créer les déductions (is_deduction=True)
+        for deduction in deductions_data:
+            # Remove is_deduction from deduction data to avoid duplicate argument
+            deduction_copy = {k: v for k, v in deduction.items() if k != 'is_deduction'}
+            PayslipItem.objects.create(
+                payslip=payslip,
+                is_deduction=True,
+                **deduction_copy
+            )
+
+        # Calculer les totaux
+        payslip.calculate_totals()
+
+        return payslip
+
+    def update(self, instance, validated_data):
+        # Extraire les items
+        allowances_data = validated_data.pop('allowances', None)
+        deductions_data = validated_data.pop('deductions', None)
+
+        # Mettre à jour les champs de base
+        for attr, value in validated_data.items():
+            setattr(instance, attr, value)
+        instance.save()
+
+        # Si des allowances/deductions sont fournis, les remplacer complètement
+        if allowances_data is not None or deductions_data is not None:
+            # Supprimer tous les anciens items
+            instance.items.all().delete()
+
+            # Recréer les primes
+            if allowances_data:
+                for allowance in allowances_data:
+                    # Remove is_deduction from allowance data to avoid duplicate argument
+                    allowance_copy = {k: v for k, v in allowance.items() if k != 'is_deduction'}
+                    PayslipItem.objects.create(
+                        payslip=instance,
+                        is_deduction=False,
+                        **allowance_copy
+                    )
+
+            # Recréer les déductions
+            if deductions_data:
+                for deduction in deductions_data:
+                    # Remove is_deduction from deduction data to avoid duplicate argument
+                    deduction_copy = {k: v for k, v in deduction.items() if k != 'is_deduction'}
+                    PayslipItem.objects.create(
+                        payslip=instance,
+                        is_deduction=True,
+                        **deduction_copy
+                    )
+
+        # Recalculer les totaux
+        instance.calculate_totals()
+
+        return instance
+
 
 # ===============================
 # AUTHENTICATION SERIALIZERS
@@ -525,32 +672,28 @@ class EmployeeLoginSerializer(serializers.Serializer):
 
     email = serializers.EmailField()
     password = serializers.CharField(write_only=True)
-    organization_subdomain = serializers.CharField(
-        help_text="Subdomain de l'organisation"
-    )
 
     def validate(self, attrs):
-        from core.models import Organization
-
         email = attrs.get('email')
         password = attrs.get('password')
-        organization_subdomain = attrs.get('organization_subdomain')
 
-        # Get organization
+        # Get employee by email (there should be only one active employee with this email)
         try:
-            organization = Organization.objects.get(subdomain=organization_subdomain)
-        except Organization.DoesNotExist:
-            raise serializers.ValidationError({
-                'organization_subdomain': 'Organisation non trouvée.'
-            })
-
-        # Get employee
-        try:
-            employee = Employee.objects.get(email=email, organization=organization)
+            employee = Employee.objects.select_related('organization').get(email=email, is_active=True)
         except Employee.DoesNotExist:
             raise serializers.ValidationError({
                 'email': 'Identifiants invalides.'
             })
+        except Employee.MultipleObjectsReturned:
+            # Si plusieurs employés avec le même email existent (cas rare), prendre le premier actif
+            employee = Employee.objects.select_related('organization').filter(
+                email=email,
+                is_active=True
+            ).first()
+            if not employee:
+                raise serializers.ValidationError({
+                    'email': 'Identifiants invalides.'
+                })
 
         # Check password
         if not employee.check_password(password):
@@ -558,16 +701,10 @@ class EmployeeLoginSerializer(serializers.Serializer):
                 'password': 'Identifiants invalides.'
             })
 
-        # Check if employee is active
-        if not employee.is_active:
-            raise serializers.ValidationError({
-                'email': 'Ce compte est désactivé.'
-            })
-
         # Check if organization is active
-        if not organization.is_active:
+        if not employee.organization.is_active:
             raise serializers.ValidationError({
-                'organization_subdomain': 'Cette organisation est désactivée.'
+                'email': 'L\'organisation associée à ce compte est désactivée.'
             })
 
         attrs['employee'] = employee
@@ -597,3 +734,279 @@ class EmployeeChangePasswordSerializer(serializers.Serializer):
         if not user.check_password(value):
             raise serializers.ValidationError("L'ancien mot de passe est incorrect.")
         return value
+
+
+# ===============================
+# ATTENDANCE SERIALIZERS
+# ===============================
+
+class AttendanceSerializer(serializers.ModelSerializer):
+    """Serializer for Attendance model"""
+
+    id = serializers.SerializerMethodField()
+    employee = serializers.SerializerMethodField()
+    employee_name = serializers.SerializerMethodField()
+    employee_id_number = serializers.SerializerMethodField()
+    department_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.SerializerMethodField()
+    approved_by_admin_name = serializers.SerializerMethodField()
+    is_on_break = serializers.SerializerMethodField()
+
+    class Meta:
+        model = Attendance
+        fields = [
+            'id', 'employee', 'employee_name', 'employee_id_number', 'department_name',
+            'user_email', 'user_full_name',
+            'date', 'check_in', 'check_in_location', 'check_in_notes',
+            'check_out', 'check_out_location', 'check_out_notes',
+            'break_start', 'break_end', 'is_on_break', 'total_hours', 'break_duration',
+            'status', 'approval_status', 'is_approved',
+            'approved_by', 'approved_by_name', 'approved_by_admin', 'approved_by_admin_name',
+            'approval_date', 'rejection_reason', 'notes', 'is_overtime', 'overtime_hours',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = [
+            'id', 'total_hours', 'break_duration', 'is_overtime',
+            'overtime_hours', 'created_at', 'updated_at'
+        ]
+
+    def get_id(self, obj):
+        return str(obj.id) if obj.id else None
+
+    def get_employee(self, obj):
+        return str(obj.employee.id) if obj.employee else None
+
+    def get_employee_name(self, obj):
+        return obj.employee.get_full_name() if obj.employee else None
+
+    def get_employee_id_number(self, obj):
+        return obj.employee.employee_id if obj.employee else None
+
+    def get_department_name(self, obj):
+        return obj.employee.department.name if obj.employee and obj.employee.department else None
+
+    def get_approved_by_name(self, obj):
+        return obj.approved_by.get_full_name() if obj.approved_by else None
+
+    def get_approved_by_admin_name(self, obj):
+        return obj.approved_by_admin.get_full_name() if obj.approved_by_admin else None
+
+    def get_is_on_break(self, obj):
+        """Check if currently on break"""
+        return bool(obj.break_start and not obj.break_end)
+
+
+class AttendanceCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating attendance records"""
+
+    class Meta:
+        model = Attendance
+        fields = [
+            'employee', 'date', 'check_in', 'check_in_location', 'check_in_notes',
+            'check_out', 'check_out_location', 'check_out_notes',
+            'break_start', 'break_end', 'status', 'notes'
+        ]
+
+    def validate(self, attrs):
+        # Validate check times
+        check_in = attrs.get('check_in')
+        check_out = attrs.get('check_out')
+        break_start = attrs.get('break_start')
+        break_end = attrs.get('break_end')
+
+        if check_out and check_in and check_out <= check_in:
+            raise serializers.ValidationError({
+                'check_out': 'L\'heure de sortie doit être après l\'heure d\'entrée.'
+            })
+
+        if break_end and break_start and break_end <= break_start:
+            raise serializers.ValidationError({
+                'break_end': 'L\'heure de fin de pause doit être après l\'heure de début.'
+            })
+
+        if break_start and check_in and break_start < check_in:
+            raise serializers.ValidationError({
+                'break_start': 'La pause doit commencer après le pointage d\'entrée.'
+            })
+
+        if break_end and check_out and break_end > check_out:
+            raise serializers.ValidationError({
+                'break_end': 'La pause doit finir avant le pointage de sortie.'
+            })
+
+        return attrs
+
+
+class AttendanceCheckInSerializer(serializers.Serializer):
+    """Serializer for employee check-in"""
+
+    location = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class AttendanceCheckOutSerializer(serializers.Serializer):
+    """Serializer for employee check-out"""
+
+    location = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class AttendanceApprovalSerializer(serializers.Serializer):
+    """Serializer for approving/rejecting attendance"""
+
+    action = serializers.ChoiceField(choices=['approve', 'reject'], required=True)
+    rejection_reason = serializers.CharField(required=False, allow_blank=True)
+
+
+class AttendanceBreakSerializer(serializers.Serializer):
+    """Serializer for break start/end"""
+
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class AttendanceStatsSerializer(serializers.Serializer):
+    """Serializer for attendance statistics"""
+
+    total_days = serializers.IntegerField()
+    present_days = serializers.IntegerField()
+    absent_days = serializers.IntegerField()
+    late_days = serializers.IntegerField()
+    half_days = serializers.IntegerField()
+    on_leave_days = serializers.IntegerField()
+    total_hours = serializers.DecimalField(max_digits=8, decimal_places=2)
+    overtime_hours = serializers.DecimalField(max_digits=8, decimal_places=2)
+    average_hours_per_day = serializers.DecimalField(max_digits=5, decimal_places=2)
+
+
+# ===============================
+# QR CODE ATTENDANCE SERIALIZERS
+# ===============================
+
+class QRCodeSessionSerializer(serializers.ModelSerializer):
+    """Serializer for QRCodeSession model"""
+
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    employee_email = serializers.EmailField(source='employee.email', read_only=True)
+    created_by_name = serializers.SerializerMethodField()
+    qr_code_data = serializers.SerializerMethodField()
+
+    class Meta:
+        model = QRCodeSession
+        fields = [
+            'id', 'organization', 'session_token', 'qr_code_data',
+            'employee', 'employee_name', 'employee_email',
+            'created_by', 'created_by_name',
+            'expires_at', 'is_active', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'session_token', 'organization', 'created_by', 'created_at', 'updated_at']
+
+    def get_created_by_name(self, obj):
+        if obj.created_by:
+            return obj.created_by.get_full_name()
+        return None
+
+    def get_qr_code_data(self, obj):
+        return obj.get_qr_code_data()
+
+
+class QRCodeSessionCreateSerializer(serializers.Serializer):
+    """Serializer for creating a QR code session"""
+
+    employee = serializers.UUIDField()
+    expires_in_minutes = serializers.IntegerField(default=5, min_value=1, max_value=60)
+
+    def validate_employee(self, value):
+        from hr.models import Employee
+        try:
+            employee = Employee.objects.get(id=value, organization=self.context['organization'])
+            if not employee.is_active:
+                raise serializers.ValidationError("Cet employé n'est pas actif")
+            return employee
+        except Employee.DoesNotExist:
+            raise serializers.ValidationError("Employé introuvable")
+
+    def create(self, validated_data):
+        import secrets
+        from datetime import timedelta
+        from django.utils import timezone
+        from hr.models import QRCodeSession
+
+        employee = validated_data['employee']
+        expires_in_minutes = validated_data['expires_in_minutes']
+
+        # Générer un token unique
+        session_token = secrets.token_urlsafe(32)
+
+        # Calculer l'expiration
+        expires_at = timezone.now() + timedelta(minutes=expires_in_minutes)
+
+        # Créer la session
+        session = QRCodeSession.objects.create(
+            organization=self.context['organization'],
+            employee=employee,
+            session_token=session_token,
+            expires_at=expires_at,
+            created_by=self.context['request'].user if hasattr(self.context['request'].user, 'adminuser') else None,
+            is_active=True
+        )
+
+        return session
+
+
+class QRAttendanceCheckInSerializer(serializers.Serializer):
+    """Serializer for checking in via QR code"""
+
+    session_token = serializers.CharField()
+    location = serializers.CharField(required=False, allow_blank=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate_session_token(self, value):
+        from hr.models import QRCodeSession
+        try:
+            session = QRCodeSession.objects.get(
+                session_token=value,
+                is_active=True
+            )
+
+            if session.is_expired():
+                raise serializers.ValidationError("Cette session QR a expiré")
+
+            return session
+        except QRCodeSession.DoesNotExist:
+            raise serializers.ValidationError("Session QR invalide")
+
+    def create(self, validated_data):
+        from hr.models import Attendance
+        from django.utils import timezone
+
+        session = validated_data['session_token']
+        location = validated_data.get('location', '')
+        notes = validated_data.get('notes', '')
+
+        # Créer ou récupérer le pointage du jour
+        today = timezone.now().date()
+        attendance, created = Attendance.objects.get_or_create(
+            employee=session.employee,
+            date=today,
+            defaults={
+                'check_in': timezone.now(),
+                'check_in_location': location,
+                'check_in_notes': notes,
+                'status': 'present',
+            }
+        )
+
+        if not created:
+            # Si le pointage existe déjà, mise à jour
+            if not attendance.check_in:
+                attendance.check_in = timezone.now()
+                attendance.check_in_location = location
+                attendance.check_in_notes = notes
+                attendance.status = 'present'
+                attendance.save()
+
+        # Désactiver la session après utilisation
+        session.is_active = False
+        session.save()
+
+        return attendance

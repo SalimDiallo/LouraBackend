@@ -215,7 +215,18 @@ class CurrentUserView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        serializer = UserSerializer(request.user)
+        user = request.user
+
+        # Check if user is an Employee
+        from hr.models import Employee
+        if isinstance(user, Employee):
+            # Use Employee serializer
+            from hr.serializers import EmployeeSerializer
+            serializer = EmployeeSerializer(user)
+        else:
+            # Use AdminUser serializer
+            serializer = UserSerializer(user)
+
         return Response(serializer.data, status=status.HTTP_200_OK)
 
 
