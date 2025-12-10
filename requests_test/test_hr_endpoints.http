@@ -778,6 +778,10 @@ Authorization: Bearer {{accessToken}}
 }
 
 
+
+
+
+
 ### ======================================
 ### 13. NOTES IMPORTANTES
 ### ======================================
@@ -853,3 +857,6 @@ Authorization: Bearer {{accessToken}}
 ### - on_leave: En congé
 ### - suspended: Suspendu
 ### - terminated: Terminé
+
+GET {{baseUrl}}/permissions/
+Content-Type: application/json

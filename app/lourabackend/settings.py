@@ -43,7 +43,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',  # JWT authentication
     'rest_framework_simplejwt.token_blacklist',  # JWT token blacklist
-    'core',  # Added core app
+    'core', 
     'hr',
 ]
 
