@@ -18,7 +18,7 @@ from core.models import Organization
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, Permission, Role, Attendance
+    PayrollPeriod, Payslip, PayrollAdvance, Permission, Role, Attendance
 )
 from .serializers import (
     EmployeeSerializer, EmployeeCreateSerializer, EmployeeListSerializer,
@@ -27,6 +27,8 @@ from .serializers import (
     LeaveTypeSerializer, LeaveBalanceSerializer, LeaveRequestSerializer,
     LeaveRequestApprovalSerializer,
     PayrollPeriodSerializer, PayslipSerializer, PayslipCreateSerializer,
+    PayrollAdvanceSerializer, PayrollAdvanceCreateSerializer, PayrollAdvanceListSerializer,
+    PayrollAdvanceApprovalSerializer,
     PermissionSerializer, RoleSerializer, RoleListSerializer, RoleCreateSerializer,
     AttendanceSerializer, AttendanceCreateSerializer, AttendanceCheckInSerializer,
     AttendanceCheckOutSerializer, AttendanceApprovalSerializer, AttendanceStatsSerializer
@@ -325,23 +327,49 @@ class EmployeeViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         from core.models import AdminUser
+        import logging
+        logger = logging.getLogger(__name__)
 
         if isinstance(user, AdminUser):
-            org_id = self.request.data.get('organization')
-            if not org_id:
-                raise serializers.ValidationError({'organization': 'Organisation requise'})
+            # Essayer d'abord avec organization_subdomain
+            org_subdomain = self.request.query_params.get('organization_subdomain')
 
-            organization = Organization.objects.filter(id=org_id, admin=user).first()
-            if not organization:
-                raise serializers.ValidationError({'organization': 'Organisation non autorisee'})
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                    logger.info(f"Creating employee for organization: {organization.name}")
+                except Organization.DoesNotExist:
+                    logger.error(f"Organization with subdomain {org_subdomain} not found")
+                    raise serializers.ValidationError({
+                        'organization': f'Organisation avec le subdomain "{org_subdomain}" non trouvée'
+                    })
+            else:
+                # Fallback: utiliser organization ID depuis request.data
+                org_id = self.request.data.get('organization')
+                if not org_id:
+                    logger.error("No organization_subdomain or organization ID provided")
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation requise (organization_subdomain ou organization)'
+                    })
+
+                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                if not organization:
+                    logger.error(f"Organization with ID {org_id} not found or unauthorized")
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation non trouvée ou accès refusé'
+                    })
 
         elif isinstance(user, Employee):
             if not user.has_permission("can_create_employee"):
+                logger.warning(f"Employee {user.email} lacks permission to create employees")
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
+            logger.info(f"Creating employee for organization: {organization.name}")
         else:
-            raise serializers.ValidationError({'user': 'Type utilisateur non autorise'})
+            logger.error(f"Unauthorized user type: {type(user)}")
+            raise serializers.ValidationError({'user': 'Type utilisateur non autorisé'})
 
+        logger.info(f"Saving employee for organization: {organization.name}")
         serializer.save(organization=organization)
 
     @action(detail=True, methods=['post'])
@@ -387,27 +415,80 @@ class DepartmentViewSet(viewsets.ModelViewSet):
         user = self.request.user
         from core.models import AdminUser
 
+        queryset = Department.objects.all()
+
+        # Récupérer l'organisation depuis les paramètres de requête
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        org_id = self.request.query_params.get('organization')
+
         if isinstance(user, AdminUser):
-            org_ids = user.organizations.values_list('id', flat=True)
-            return Department.objects.filter(organization_id__in=org_ids)
+            # Si un subdomain ou ID d'organisation est fourni, filtrer par cette organisation
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(
+                        subdomain=org_subdomain,
+                        admin=user
+                    )
+                    queryset = Department.objects.filter(organization=organization)
+                except Organization.DoesNotExist:
+                    queryset = Department.objects.none()
+            elif org_id:
+                try:
+                    organization = Organization.objects.get(
+                        id=org_id,
+                        admin=user
+                    )
+                    queryset = Department.objects.filter(organization=organization)
+                except Organization.DoesNotExist:
+                    queryset = Department.objects.none()
+            else:
+                # Pas d'organisation spécifiée, retourner les départements de toutes les organisations de l'admin
+                org_ids = user.organizations.values_list('id', flat=True)
+                queryset = Department.objects.filter(organization_id__in=org_ids)
         elif isinstance(user, Employee):
             if user.has_permission("can_view_department"):
-                return Department.objects.filter(organization=user.organization)
-        return Department.objects.none()
+                queryset = Department.objects.filter(organization=user.organization)
+            else:
+                queryset = Department.objects.none()
+        else:
+            queryset = Department.objects.none()
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user
         from core.models import AdminUser
+        import logging
+        logger = logging.getLogger(__name__)
 
         if isinstance(user, AdminUser):
-            org_id = self.request.data.get('organization')
-            organization = Organization.objects.filter(id=org_id, admin=user).first()
+            org_subdomain = self.request.query_params.get('organization_subdomain')
+
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                except Organization.DoesNotExist:
+                    raise serializers.ValidationError({
+                        'organization': f'Organisation "{org_subdomain}" non trouvée'
+                    })
+            else:
+                org_id = self.request.data.get('organization')
+                if not org_id:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation requise'
+                    })
+                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                if not organization:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation non trouvée ou accès refusé'
+                    })
         elif isinstance(user, Employee):
             if not user.has_permission("can_create_department"):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
         else:
-            raise serializers.ValidationError({'user': 'Non autorise'})
+            raise serializers.ValidationError({'user': 'Non autorisé'})
+
         serializer.save(organization=organization)
 
 
@@ -433,16 +514,36 @@ class PositionViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         from core.models import AdminUser
+        import logging
+        logger = logging.getLogger(__name__)
 
         if isinstance(user, AdminUser):
-            org_id = self.request.data.get('organization')
-            organization = Organization.objects.filter(id=org_id, admin=user).first()
+            org_subdomain = self.request.query_params.get('organization_subdomain')
+
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                except Organization.DoesNotExist:
+                    raise serializers.ValidationError({
+                        'organization': f'Organisation "{org_subdomain}" non trouvée'
+                    })
+            else:
+                org_id = self.request.data.get('organization')
+                if not org_id:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation requise'
+                    })
+                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                if not organization:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation non trouvée ou accès refusé'
+                    })
         elif isinstance(user, Employee):
             if not user.has_permission("can_create_position"):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
         else:
-            raise serializers.ValidationError({'user': 'Non autorise'})
+            raise serializers.ValidationError({'user': 'Non autorisé'})
 
         serializer.save(organization=organization)
 
@@ -465,6 +566,22 @@ class ContractViewSet(viewsets.ModelViewSet):
                     return Contract.objects.filter(employee__organization=user.organization)
                 return Contract.objects.filter(employee=user)
         return Contract.objects.none()
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, pk=None):
+        """Export a contract as PDF"""
+        from .pdf_generator import generate_contract_pdf
+        
+        contract = self.get_object()
+        pdf_buffer = generate_contract_pdf(contract)
+        
+        employee_name = contract.employee.get_full_name().replace(' ', '_')
+        contract_type = contract.contract_type.upper()
+        filename = f"Contrat_{contract_type}_{employee_name}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
 
 
 # -------------------------------
@@ -493,14 +610,32 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         from core.models import AdminUser
 
         if isinstance(user, AdminUser):
-            org_id = self.request.data.get('organization')
-            organization = Organization.objects.filter(id=org_id, admin=user).first()
+            org_subdomain = self.request.query_params.get('organization_subdomain')
+
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                except Organization.DoesNotExist:
+                    raise serializers.ValidationError({
+                        'organization': f'Organisation "{org_subdomain}" non trouvée'
+                    })
+            else:
+                org_id = self.request.data.get('organization')
+                if not org_id:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation requise'
+                    })
+                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                if not organization:
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation non trouvée ou accès refusé'
+                    })
         elif isinstance(user, Employee):
             if not user.has_permission("can_manage_leave_types"):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
         else:
-            raise serializers.ValidationError({'user': 'Non autorise'})
+            raise serializers.ValidationError({'user': 'Non autorisé'})
 
         serializer.save(organization=organization)
 
@@ -655,6 +790,21 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, pk=None):
+        """Export a leave request as PDF"""
+        from .pdf_generator import generate_leave_request_pdf
+        
+        leave_request = self.get_object()
+        pdf_buffer = generate_leave_request_pdf(leave_request)
+        
+        employee_name = leave_request.employee.get_full_name().replace(' ', '_')
+        filename = f"Conge_{employee_name}_{leave_request.start_date.strftime('%Y%m%d')}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
 # -------------------------------
 # PAYROLL VIEWS
 # -------------------------------
@@ -679,17 +829,52 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         from core.models import AdminUser
+        import logging
+        logger = logging.getLogger(__name__)
 
         if isinstance(user, AdminUser):
-            org_id = self.request.data.get('organization')
-            organization = Organization.objects.filter(id=org_id, admin=user).first()
+            # Essayer d'abord avec organization_subdomain (depuis query params)
+            org_subdomain = self.request.query_params.get('organization_subdomain')
+
+            if org_subdomain:
+                logger.info(f"Looking for organization with subdomain: {org_subdomain}")
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                    logger.info(f"Organization found: {organization.name}")
+                except Organization.DoesNotExist:
+                    logger.error(f"Organization with subdomain {org_subdomain} not found for user {user.email}")
+                    raise serializers.ValidationError({
+                        'organization': f'Organisation avec le subdomain "{org_subdomain}" non trouvée'
+                    })
+            else:
+                # Fallback: essayer avec organization ID depuis request.data
+                org_id = self.request.data.get('organization')
+                logger.info(f"Looking for organization with ID: {org_id}")
+
+                if not org_id:
+                    logger.error("No organization_subdomain or organization ID provided")
+                    raise serializers.ValidationError({
+                        'organization': 'L\'identifiant de l\'organisation est requis (organization_subdomain ou organization)'
+                    })
+
+                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                if not organization:
+                    logger.error(f"Organization with ID {org_id} not found for user {user.email}")
+                    raise serializers.ValidationError({
+                        'organization': 'Organisation non trouvée ou accès refusé'
+                    })
+
         elif isinstance(user, Employee):
             if not user.has_permission("can_create_payroll"):
+                logger.warning(f"Employee {user.email} lacks permission to create payroll")
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
+            logger.info(f"Using employee's organization: {organization.name}")
         else:
-            raise serializers.ValidationError({'user': 'Non autorise'})
+            logger.error(f"Unauthorized user type: {type(user)}")
+            raise serializers.ValidationError({'user': 'Type d\'utilisateur non autorisé'})
 
+        logger.info(f"Creating payroll period for organization: {organization.name}")
         serializer.save(organization=organization)
 
 
@@ -706,14 +891,28 @@ class PayslipViewSet(viewsets.ModelViewSet):
         user = self.request.user
         from core.models import AdminUser
 
+        # Base queryset selon le type d'utilisateur
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
-            return Payslip.objects.filter(employee__organization_id__in=org_ids)
+            queryset = Payslip.objects.filter(employee__organization_id__in=org_ids)
         elif isinstance(user, Employee):
             if user.has_permission("can_view_payroll") or user.is_hr_admin():
-                return Payslip.objects.filter(employee__organization=user.organization)
-            return Payslip.objects.filter(employee=user)
-        return Payslip.objects.none()
+                queryset = Payslip.objects.filter(employee__organization=user.organization)
+            else:
+                queryset = Payslip.objects.filter(employee=user)
+        else:
+            queryset = Payslip.objects.none()
+
+        # Filtrage supplémentaire par paramètres de requête
+        employee_id = self.request.query_params.get('employee')
+        if employee_id:
+            queryset = queryset.filter(employee_id=employee_id)
+
+        status_filter = self.request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset
 
     @action(detail=True, methods=['post'], permission_classes=[IsHRAdmin])
     def mark_as_paid(self, request, pk=None):
@@ -737,13 +936,20 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], permission_classes=[IsHRAdmin])
     def generate_for_period(self, request):
+        """Génération intelligente de fiches de paie avec déduction automatique des avances"""
+        import logging
+        logger = logging.getLogger(__name__)
+
         payroll_period_id = request.data.get('payroll_period')
         employee_filters = request.data.get('employee_filters', {})
+        auto_deduct_advances = request.data.get('auto_deduct_advances', True)  # ✨ Nouveau paramètre
+
         if not payroll_period_id:
             return Response(
                 {'error': 'payroll_period est requis'},
                 status=status.HTTP_400_BAD_REQUEST
             )
+
         try:
             payroll_period = PayrollPeriod.objects.get(id=payroll_period_id)
         except PayrollPeriod.DoesNotExist:
@@ -756,6 +962,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
             organization=payroll_period.organization,
             employment_status='active'
         )
+
         if employee_filters.get('department'):
             employees = employees.filter(department_id=employee_filters['department'])
         if employee_filters.get('position'):
@@ -763,35 +970,113 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
         created_count = 0
         skipped_count = 0
+        advances_deducted = 0
         errors = []
+
         for employee in employees:
+            # Vérifier si fiche existe déjà
             if Payslip.objects.filter(employee=employee, payroll_period=payroll_period).exists():
                 skipped_count += 1
+                logger.info(f"Payslip already exists for {employee.get_full_name()}")
                 continue
+
             try:
+                # Récupérer le contrat actif
                 contract = employee.contracts.filter(is_active=True).first()
                 if not contract:
                     errors.append(f"{employee.get_full_name()}: Pas de contrat actif")
                     continue
-                Payslip.objects.create(
+
+                base_salary = contract.base_salary
+                currency = contract.currency
+
+                # ✨ NOUVEAU : Récupérer les avances payées non déduites
+                paid_advances = []
+                advance_deduction_items = []
+                total_advance_amount = Decimal('0')
+
+                if auto_deduct_advances:
+                    paid_advances = PayrollAdvance.objects.filter(
+                        employee=employee,
+                        status=PayrollAdvance.AdvanceStatus.PAID,
+                        payslip__isnull=True  # Pas encore liée à une fiche
+                    )
+
+                    for advance in paid_advances:
+                        advance_deduction_items.append({
+                            'name': f'Remboursement avance - {advance.reason[:30]}',
+                            'amount': advance.amount,
+                            'is_deduction': True,
+                        })
+                        total_advance_amount += advance.amount
+                        logger.info(f"Auto-deducting advance {advance.id} ({advance.amount}) for {employee.get_full_name()}")
+
+                # ✨ NOUVEAU : Ajouter déductions standards (CNPS, Impôts)
+                standard_deductions = []
+
+                # CNPS - 3.6% du salaire brut
+                cnps_amount = (base_salary * Decimal('0.036')).quantize(Decimal('0.01'))
+                standard_deductions.append({
+                    'name': 'Cotisation CNPS (3.6%)',
+                    'amount': cnps_amount,
+                    'is_deduction': True,
+                })
+
+                # Impôt sur le revenu - 10% (simplifié)
+                tax_amount = (base_salary * Decimal('0.10')).quantize(Decimal('0.01'))
+                standard_deductions.append({
+                    'name': 'Impôt sur le revenu (10%)',
+                    'amount': tax_amount,
+                    'is_deduction': True,
+                })
+
+                # Calculer totaux
+                gross_salary = base_salary
+                total_deductions = cnps_amount + tax_amount + total_advance_amount
+                net_salary = gross_salary - total_deductions
+
+                # Créer la fiche de paie
+                payslip = Payslip.objects.create(
                     employee=employee,
                     payroll_period=payroll_period,
-                    base_salary=contract.base_salary,
-                    currency=contract.currency,
-                    gross_salary=contract.base_salary,
-                    total_deductions=Decimal('0'),
-                    net_salary=contract.base_salary,
+                    base_salary=base_salary,
+                    currency=currency,
+                    gross_salary=gross_salary,
+                    total_deductions=total_deductions,
+                    net_salary=net_salary,
                     status='draft'
                 )
+
+                # Créer les items de déduction
+                all_deductions = standard_deductions + advance_deduction_items
+                for deduction in all_deductions:
+                    PayslipItem.objects.create(
+                        payslip=payslip,
+                        **deduction
+                    )
+
+                # ✨ NOUVEAU : Lier les avances à la fiche et marquer comme déduites
+                if auto_deduct_advances and paid_advances:
+                    for advance in paid_advances:
+                        advance.status = PayrollAdvance.AdvanceStatus.DEDUCTED
+                        advance.payslip = payslip
+                        advance.deduction_month = payroll_period.end_date
+                        advance.save()
+                        advances_deducted += 1
+
                 created_count += 1
+                logger.info(f"Created payslip for {employee.get_full_name()} with {len(paid_advances)} advances deducted")
+
             except Exception as e:
+                logger.exception(f"Error creating payslip for {employee.get_full_name()}")
                 errors.append(f"{employee.get_full_name()}: {str(e)}")
 
         return Response({
-            'message': f'{created_count} fiches de paie créées',
+            'message': f'{created_count} fiches de paie créées avec {advances_deducted} avance(s) déduite(s) automatiquement',
             'created': created_count,
             'skipped': skipped_count,
             'total_employees': employees.count(),
+            'advances_deducted': advances_deducted,
             'errors': errors
         }, status=status.HTTP_201_CREATED)
 
@@ -1051,6 +1336,244 @@ class DepartmentStatsView(APIView):
 
         return Response(stats, status=status.HTTP_200_OK)
 
+class PayrollAdvanceViewSet(viewsets.ModelViewSet):
+    """ViewSet for managing payroll advance requests"""
+    permission_classes = [IsAdminUserOrEmployee]
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return PayrollAdvanceListSerializer
+        elif self.action == 'create':
+            return PayrollAdvanceCreateSerializer
+        return PayrollAdvanceSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        from core.models import AdminUser
+
+        # Récupérer l'organisation depuis les paramètres de requête
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        status_filter = self.request.query_params.get('status')
+        employee_filter = self.request.query_params.get('employee')
+
+        queryset = PayrollAdvance.objects.all()
+
+        if isinstance(user, AdminUser):
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(
+                        subdomain=org_subdomain,
+                        admin=user
+                    )
+                    queryset = queryset.filter(employee__organization=organization)
+                except Organization.DoesNotExist:
+                    queryset = PayrollAdvance.objects.none()
+            else:
+                org_ids = user.organizations.values_list('id', flat=True)
+                queryset = queryset.filter(employee__organization_id__in=org_ids)
+        elif isinstance(user, Employee):
+            # Les employés ne voient que leurs propres demandes ou celles qu'ils peuvent gérer
+            if user.has_permission("can_view_payroll") or user.is_hr_admin():
+                queryset = queryset.filter(employee__organization=user.organization)
+            else:
+                queryset = queryset.filter(employee=user)
+        else:
+            queryset = PayrollAdvance.objects.none()
+
+        # Filtrer par employé si spécifié
+        if employee_filter:
+            queryset = queryset.filter(employee_id=employee_filter)
+
+        # Filtrer par statut si spécifié
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+
+        return queryset.select_related('employee', 'approved_by', 'payslip')
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
+    def approve(self, request, pk=None):
+        """Approuver une demande d'avance"""
+        advance = self.get_object()
+        user = request.user
+
+        # Vérifier que l'utilisateur a la permission d'approuver
+        if isinstance(user, Employee):
+            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+                return Response(
+                    {'error': 'Vous n\'avez pas la permission d\'approuver des demandes d\'avance'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if advance.status != 'pending':
+            return Response(
+                {'error': 'Seules les demandes en attente peuvent être approuvées'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = PayrollAdvanceApprovalSerializer(data={'action': 'approve', **request.data})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        advance.status = 'approved'
+        advance.approved_by = user if isinstance(user, Employee) else None
+        advance.approved_date = timezone.now()
+        advance.payment_date = data.get('payment_date')
+        advance.deduction_month = data.get('deduction_month')
+        if data.get('notes'):
+            advance.notes = data['notes']
+        advance.save()
+
+        return Response(
+            PayrollAdvanceSerializer(advance).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
+    def reject(self, request, pk=None):
+        """Rejeter une demande d'avance"""
+        advance = self.get_object()
+        user = request.user
+
+        # Vérifier que l'utilisateur a la permission de rejeter
+        if isinstance(user, Employee):
+            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+                return Response(
+                    {'error': 'Vous n\'avez pas la permission de rejeter des demandes d\'avance'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if advance.status != 'pending':
+            return Response(
+                {'error': 'Seules les demandes en attente peuvent être rejetées'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        serializer = PayrollAdvanceApprovalSerializer(data={'action': 'reject', **request.data})
+        if not serializer.is_valid():
+            return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+        data = serializer.validated_data
+        advance.status = 'rejected'
+        advance.approved_by = user if isinstance(user, Employee) else None
+        advance.approved_date = timezone.now()
+        advance.rejection_reason = data.get('rejection_reason', '')
+        advance.save()
+
+        return Response(
+            PayrollAdvanceSerializer(advance).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
+    def mark_as_paid(self, request, pk=None):
+        """Marquer une avance comme payée"""
+        advance = self.get_object()
+        user = request.user
+
+        # Vérifier que l'utilisateur a la permission
+        if isinstance(user, Employee):
+            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+                return Response(
+                    {'error': 'Vous n\'avez pas la permission de marquer les avances comme payées'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if advance.status != 'approved':
+            return Response(
+                {'error': 'Seules les avances approuvées peuvent être marquées comme payées'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        advance.status = 'paid'
+        advance.payment_date = request.data.get('payment_date', timezone.now().date())
+        advance.save()
+
+        return Response(
+            PayrollAdvanceSerializer(advance).data,
+            status=status.HTTP_200_OK
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
+    def deduct_from_payslip(self, request, pk=None):
+        """Déduire l'avance d'une fiche de paie (fermer l'avance)"""
+        import logging
+        logger = logging.getLogger(__name__)
+
+        advance = self.get_object()
+        user = request.user
+
+        # Log de débogage
+        logger.info(f"Deduct from payslip called for advance {advance.id}")
+        logger.info(f"Request data: {request.data}")
+        logger.info(f"Advance status: {advance.status}")
+
+        # Vérifier que l'utilisateur a la permission
+        if isinstance(user, Employee):
+            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+                logger.warning(f"User {user.email} lacks permission to deduct advances")
+                return Response(
+                    {'error': 'Vous n\'avez pas la permission de déduire des avances'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        if advance.status != 'paid':
+            logger.warning(f"Advance {advance.id} has status {advance.status}, expected 'paid'")
+            return Response(
+                {'error': f'Seules les avances payées peuvent être déduites. Statut actuel: {advance.get_status_display()}'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        payslip_id = request.data.get('payslip_id')
+        logger.info(f"Payslip ID received: {payslip_id}")
+
+        if not payslip_id:
+            logger.error("No payslip_id provided in request")
+            return Response(
+                {'error': 'L\'ID de la fiche de paie est requis (payslip_id)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            logger.info(f"Looking for payslip with ID: {payslip_id}")
+            payslip = Payslip.objects.get(id=payslip_id)
+            logger.info(f"Payslip found: {payslip.id} for employee {payslip.employee.get_full_name()}")
+
+            # Vérifier que la fiche de paie appartient au même employé
+            if payslip.employee != advance.employee:
+                logger.error(f"Employee mismatch: payslip employee {payslip.employee.id} != advance employee {advance.employee.id}")
+                return Response(
+                    {'error': 'La fiche de paie doit appartenir au même employé que l\'avance'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
+            # Marquer l'avance comme déduite
+            logger.info(f"Marking advance {advance.id} as deducted")
+            advance.status = 'deducted'
+            advance.payslip = payslip
+            advance.deduction_month = payslip.payroll_period.end_date
+            advance.save()
+            logger.info(f"Advance {advance.id} successfully marked as deducted")
+
+            return Response(
+                PayrollAdvanceSerializer(advance).data,
+                status=status.HTTP_200_OK
+            )
+
+        except Payslip.DoesNotExist:
+            logger.error(f"Payslip with ID {payslip_id} not found")
+            return Response(
+                {'error': f'Fiche de paie non trouvée (ID: {payslip_id})'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        except Exception as e:
+            logger.exception(f"Unexpected error while deducting advance: {str(e)}")
+            return Response(
+                {'error': f'Erreur inattendue: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+
 # -------------------------------
 # PERMISSION & ROLE VIEWSETS
 # -------------------------------
@@ -1079,13 +1602,47 @@ class RoleViewSet(viewsets.ModelViewSet):
         from core.models import AdminUser
 
         queryset = Role.objects.all()
+
+        # Récupérer l'organisation depuis les paramètres de requête
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        org_id = self.request.query_params.get('organization')
+
         if isinstance(user, AdminUser):
-            org_ids = user.organizations.values_list('id', flat=True)
-            queryset = queryset.filter(
-                models.Q(organization__isnull=True) |
-                models.Q(organization_id__in=org_ids)
-            )
+            # Si un subdomain ou ID d'organisation est fourni, filtrer par cette organisation
+            if org_subdomain:
+                try:
+                    organization = Organization.objects.get(
+                        subdomain=org_subdomain,
+                        admin=user
+                    )
+                    queryset = queryset.filter(
+                        models.Q(organization__isnull=True) |
+                        models.Q(organization=organization)
+                    )
+                except Organization.DoesNotExist:
+                    # Organisation non trouvée ou l'admin n'y a pas accès
+                    queryset = Role.objects.none()
+            elif org_id:
+                try:
+                    organization = Organization.objects.get(
+                        id=org_id,
+                        admin=user
+                    )
+                    queryset = queryset.filter(
+                        models.Q(organization__isnull=True) |
+                        models.Q(organization=organization)
+                    )
+                except Organization.DoesNotExist:
+                    queryset = Role.objects.none()
+            else:
+                # Pas d'organisation spécifiée, retourner les rôles de toutes les organisations de l'admin
+                org_ids = user.organizations.values_list('id', flat=True)
+                queryset = queryset.filter(
+                    models.Q(organization__isnull=True) |
+                    models.Q(organization_id__in=org_ids)
+                )
         elif isinstance(user, Employee):
+            # Pour les employés, toujours filtrer par leur organisation
             queryset = queryset.filter(
                 models.Q(organization__isnull=True) |
                 models.Q(organization=user.organization)
@@ -1119,18 +1676,45 @@ class RoleViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         from core.models import AdminUser
+        import logging
+        logger = logging.getLogger(__name__)
+
         if not serializer.validated_data.get('is_system_role', False):
             if isinstance(user, AdminUser):
-                org = user.organizations.first()
-                if org:
-                    serializer.save(organization=org)
+                # Essayer d'abord avec organization_subdomain
+                org_subdomain = self.request.query_params.get('organization_subdomain')
+
+                if org_subdomain:
+                    try:
+                        org = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                        logger.info(f"Creating role for organization: {org.name}")
+                        serializer.save(organization=org)
+                    except Organization.DoesNotExist:
+                        logger.error(f"Organization with subdomain {org_subdomain} not found for user {user.email}")
+                        raise serializers.ValidationError({
+                            'organization': f'Organisation avec le subdomain "{org_subdomain}" non trouvée'
+                        })
                 else:
-                    raise serializers.ValidationError("Admin user has no organization")
+                    # Fallback: utiliser la première organisation de l'admin
+                    org = user.organizations.first()
+                    if org:
+                        logger.info(f"Creating role for admin's first organization: {org.name}")
+                        serializer.save(organization=org)
+                    else:
+                        logger.error(f"Admin user {user.email} has no organization")
+                        raise serializers.ValidationError({
+                            'organization': "L'administrateur n'a aucune organisation"
+                        })
             elif isinstance(user, Employee):
+                logger.info(f"Creating role for employee's organization: {user.organization.name}")
                 serializer.save(organization=user.organization)
             else:
-                raise serializers.ValidationError("Cannot determine organization")
+                logger.error(f"Cannot determine organization for user type: {type(user)}")
+                raise serializers.ValidationError({
+                    'organization': "Impossible de déterminer l'organisation"
+                })
         else:
+            logger.info("Creating system role (no organization)")
             serializer.save()
 
 # -------------------------------
@@ -1799,8 +2383,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-    @action(detail=False, methods=['post'], url_path='qr-check-in', permission_classes=[])
+    @action(detail=False, methods=['post'], url_path='qr-check-in')
     def qr_check_in(self, request):
+        """
+        QR code attendance endpoint - handles both check-in and check-out automatically.
+        Requires authentication - employee is identified from their login session.
+        Returns action type and message for user feedback.
+        """
         organization_slug = request.headers.get('X-Organization-Slug')
         if not organization_slug:
             return Response(
@@ -1817,11 +2406,26 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         from .serializers import QRAttendanceCheckInSerializer
 
-        serializer = QRAttendanceCheckInSerializer(data=request.data)
+        # Pass request in context so serializer can identify the logged-in user
+        serializer = QRAttendanceCheckInSerializer(
+            data=request.data,
+            context={'request': request}
+        )
         if serializer.is_valid():
             attendance = serializer.save()
             from .serializers import AttendanceSerializer
-            response_serializer = AttendanceSerializer(attendance)
-            return Response(response_serializer.data, status=status.HTTP_201_CREATED)
+            attendance_data = AttendanceSerializer(attendance).data
+            
+            # Build response with action and message
+            response_data = {
+                'success': True,
+                'action': getattr(attendance, '_qr_action', 'check_in'),
+                'message': getattr(attendance, '_qr_message', 'Pointage enregistré avec succès'),
+                'attendance': attendance_data,
+                'employee_name': attendance.user_full_name or (attendance.employee.get_full_name() if attendance.employee else ''),
+            }
+            
+            return Response(response_data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+

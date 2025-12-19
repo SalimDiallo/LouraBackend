@@ -3,7 +3,7 @@ from django.contrib.auth.password_validation import validate_password
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayslipItem, Permission, Role,
+    PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role,
     Attendance, QRCodeSession
 )
 
@@ -564,12 +564,20 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 
     allowances = PayslipItemSerializer(many=True, required=False)
     deductions = PayslipItemSerializer(many=True, required=False)
+    
+    # IDs des avances à lier à cette fiche de paie
+    advance_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        write_only=True,
+        help_text="Liste des IDs d'avances à déduire de cette fiche de paie"
+    )
 
     class Meta:
         model = Payslip
         fields = [
             'employee', 'payroll_period', 'base_salary',
-            'allowances', 'deductions',
+            'allowances', 'deductions', 'advance_ids',
             'currency', 'worked_hours', 'overtime_hours', 'leave_days_taken',
             'payment_method', 'notes'
         ]
@@ -585,12 +593,26 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
                     'employee': "L'employé doit appartenir à la même organisation que la période de paie."
                 })
 
+        # Validate advance_ids if provided
+        advance_ids = attrs.get('advance_ids', [])
+        if advance_ids:
+            advances = PayrollAdvance.objects.filter(
+                id__in=advance_ids,
+                employee=employee,
+                status=PayrollAdvance.AdvanceStatus.PAID
+            )
+            if advances.count() != len(advance_ids):
+                raise serializers.ValidationError({
+                    'advance_ids': "Certaines avances sont invalides ou ne sont pas dans le statut 'payée'."
+                })
+
         return attrs
 
     def create(self, validated_data):
         # Extraire les items (primes et déductions)
         allowances_data = validated_data.pop('allowances', [])
         deductions_data = validated_data.pop('deductions', [])
+        advance_ids = validated_data.pop('advance_ids', [])
 
         # Créer le payslip
         payslip = Payslip.objects.create(**validated_data)
@@ -613,6 +635,17 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
                 payslip=payslip,
                 is_deduction=True,
                 **deduction_copy
+            )
+
+        # Lier les avances au payslip et mettre à jour leur statut
+        if advance_ids:
+            PayrollAdvance.objects.filter(
+                id__in=advance_ids,
+                employee=payslip.employee,
+                status=PayrollAdvance.AdvanceStatus.PAID
+            ).update(
+                payslip=payslip,
+                status=PayrollAdvance.AdvanceStatus.DEDUCTED
             )
 
         # Calculer les totaux
@@ -883,18 +916,24 @@ class AttendanceStatsSerializer(serializers.Serializer):
 # ===============================
 
 class QRCodeSessionSerializer(serializers.ModelSerializer):
-    """Serializer for QRCodeSession model"""
+    """Serializer for QRCodeSession model - supports single and multiple employees"""
 
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
     employee_email = serializers.EmailField(source='employee.email', read_only=True)
     created_by_name = serializers.SerializerMethodField()
     qr_code_data = serializers.SerializerMethodField()
+    
+    # Multi-employee support
+    all_employees = serializers.SerializerMethodField()
+    employee_count = serializers.SerializerMethodField()
+    mode = serializers.SerializerMethodField()
 
     class Meta:
         model = QRCodeSession
         fields = [
             'id', 'organization', 'session_token', 'qr_code_data',
             'employee', 'employee_name', 'employee_email',
+            'all_employees', 'employee_count', 'mode',
             'created_by', 'created_by_name',
             'expires_at', 'is_active', 'created_at', 'updated_at'
         ]
@@ -905,108 +944,413 @@ class QRCodeSessionSerializer(serializers.ModelSerializer):
             return obj.created_by.get_full_name()
         return None
 
+    def get_all_employees(self, obj):
+        """Return list of all employees this QR is valid for"""
+        if hasattr(obj, '_all_employees') and obj._all_employees:
+            return [
+                {
+                    'id': str(emp.id),
+                    'full_name': emp.get_full_name(),
+                    'email': emp.email,
+                    'employee_id': emp.employee_id,
+                }
+                for emp in obj._all_employees
+            ]
+        # Fallback for single employee
+        return [
+            {
+                'id': str(obj.employee.id),
+                'full_name': obj.employee.get_full_name(),
+                'email': obj.employee.email,
+                'employee_id': obj.employee.employee_id,
+            }
+        ] if obj.employee else []
+    
+    def get_employee_count(self, obj):
+        """Return number of employees this QR is valid for"""
+        if hasattr(obj, '_all_employees') and obj._all_employees:
+            return len(obj._all_employees)
+        return 1 if obj.employee else 0
+    
+    def get_mode(self, obj):
+        """Return the attendance mode (auto, check_in, check_out)"""
+        if hasattr(obj, '_mode'):
+            return obj._mode
+        return 'auto'
+
     def get_qr_code_data(self, obj):
-        return obj.get_qr_code_data()
+        """
+        Generate QR code data - SIMPLIFIED to just session_token.
+        Keeping it simple ensures the QR code is easy to scan.
+        All other info (employees, mode) is fetched from API during check-in.
+        """
+        # Just return the session token - it's all we need!
+        # The backend will look up all details from this token
+        return obj.session_token
 
 
 class QRCodeSessionCreateSerializer(serializers.Serializer):
-    """Serializer for creating a QR code session"""
+    """
+    Serializer for creating a QR code session.
+    Supports both single employee and multiple employees (bulk mode).
+    """
 
-    employee = serializers.UUIDField()
+    # Single employee (backward compatible)
+    employee = serializers.UUIDField(required=False, allow_null=True)
+    
+    # Multiple employees (new feature)
+    employee_ids = serializers.ListField(
+        child=serializers.UUIDField(),
+        required=False,
+        allow_empty=True,
+        help_text="Liste des IDs d'employés pour lesquels ce QR est valable"
+    )
+    
     expires_in_minutes = serializers.IntegerField(default=5, min_value=1, max_value=60)
+    
+    # Mode: 'auto' (default), 'check_in', 'check_out'
+    mode = serializers.ChoiceField(
+        choices=['auto', 'check_in', 'check_out'],
+        default='auto',
+        help_text="Mode de pointage: auto (détection automatique), check_in (arrivée uniquement), check_out (départ uniquement)"
+    )
 
-    def validate_employee(self, value):
+    def validate(self, attrs):
+        employee = attrs.get('employee')
+        employee_ids = attrs.get('employee_ids', [])
+        
+        # Ensure at least one employee is specified
+        if not employee and not employee_ids:
+            raise serializers.ValidationError({
+                'employee_ids': "Au moins un employé doit être spécifié"
+            })
+        
+        # Normalize: if single employee, add to list
+        if employee and not employee_ids:
+            employee_ids = [employee]
+        
+        # Validate all employees exist and are active
         from hr.models import Employee
-        try:
-            employee = Employee.objects.get(id=value, organization=self.context['organization'])
-            if not employee.is_active:
-                raise serializers.ValidationError("Cet employé n'est pas actif")
-            return employee
-        except Employee.DoesNotExist:
-            raise serializers.ValidationError("Employé introuvable")
+        valid_employees = []
+        
+        for emp_id in employee_ids:
+            try:
+                emp = Employee.objects.get(
+                    id=emp_id, 
+                    organization=self.context['organization'],
+                    is_active=True
+                )
+                valid_employees.append(emp)
+            except Employee.DoesNotExist:
+                raise serializers.ValidationError({
+                    'employee_ids': f"Employé {emp_id} introuvable ou inactif"
+                })
+        
+        attrs['validated_employees'] = valid_employees
+        return attrs
 
     def create(self, validated_data):
         import secrets
         from datetime import timedelta
         from django.utils import timezone
         from hr.models import QRCodeSession
-
-        employee = validated_data['employee']
+        
+        employees = validated_data['validated_employees']
         expires_in_minutes = validated_data['expires_in_minutes']
-
-        # Générer un token unique
+        
+        # Generate unique token
         session_token = secrets.token_urlsafe(32)
-
-        # Calculer l'expiration
+        
+        # Calculate expiration
         expires_at = timezone.now() + timedelta(minutes=expires_in_minutes)
-
-        # Créer la session
+        
+        # Create session with first employee as primary (for backward compat)
         session = QRCodeSession.objects.create(
             organization=self.context['organization'],
-            employee=employee,
+            employee=employees[0],  # Primary employee
             session_token=session_token,
             expires_at=expires_at,
-            created_by=self.context['request'].user if hasattr(self.context['request'].user, 'adminuser') else None,
+            created_by=self.context['request'].user if hasattr(self.context['request'].user, 'email') else None,
             is_active=True
         )
-
+        
+        # Add all employees to allowed_employees M2M
+        session.allowed_employees.set(employees)
+        
+        # Store for serialization
+        session._all_employees = employees
+        
         return session
 
 
 class QRAttendanceCheckInSerializer(serializers.Serializer):
-    """Serializer for checking in via QR code"""
+    """
+    Serializer for QR code attendance - handles both check-in and check-out.
+    Supports:
+    - Single employee QR (backward compatible)
+    - Multi-employee QR (employee must identify themselves)
+    - Mode: auto (detect), check_in (force arrival), check_out (force departure)
+    """
 
     session_token = serializers.CharField()
-    location = serializers.CharField(required=False, allow_blank=True)
-    notes = serializers.CharField(required=False, allow_blank=True)
+    employee_id = serializers.UUIDField(
+        required=False, 
+        allow_null=True,
+        help_text="ID de l'employé qui pointe (requis pour QR multi-employés)"
+    )
+    location = serializers.CharField(required=False, allow_blank=True, default='')
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
 
-    def validate_session_token(self, value):
-        from hr.models import QRCodeSession
+    def validate(self, attrs):
+        from hr.models import QRCodeSession, Employee
+        from core.models import AdminUser
+        
+        session_token = attrs.get('session_token')
+        request = self.context.get('request')
+        
+        # Validate session
         try:
-            session = QRCodeSession.objects.get(
-                session_token=value,
+            session = QRCodeSession.objects.select_related('employee', 'organization').prefetch_related('allowed_employees').get(
+                session_token=session_token,
                 is_active=True
             )
 
             if session.is_expired():
-                raise serializers.ValidationError("Cette session QR a expiré")
-
-            return session
+                session.is_active = False
+                session.save()
+                raise serializers.ValidationError({
+                    'session_token': "Cette session QR a expiré. Demandez un nouveau QR code."
+                })
+                
+            attrs['session'] = session
+            
         except QRCodeSession.DoesNotExist:
-            raise serializers.ValidationError("Session QR invalide")
+            raise serializers.ValidationError({
+                'session_token': "Session QR invalide ou expirée. Demandez un nouveau QR code."
+            })
+        
+        # Get the logged-in user
+        user = request.user if request else None
+        
+        if not user or not user.is_authenticated:
+            raise serializers.ValidationError({
+                'session_token': "Vous devez être connecté pour pointer"
+            })
+        
+        # Get user's email to find their employee record
+        user_email = getattr(user, 'email', None)
+        
+        if not user_email:
+            raise serializers.ValidationError({
+                'session_token': "Impossible d'identifier votre compte"
+            })
+        
+        # Find the employee record for this user
+        try:
+            employee = Employee.objects.get(
+                organization=session.organization,
+                email=user_email,
+                is_active=True
+            )
+        except Employee.DoesNotExist:
+            raise serializers.ValidationError({
+                'session_token': f"Aucun employé trouvé avec l'email {user_email}"
+            })
+        
+        # Get allowed employees from M2M relation
+        allowed_employees = list(session.allowed_employees.all())
+        
+        # Fallback to legacy employee field if no allowed_employees
+        if not allowed_employees and session.employee:
+            allowed_employees = [session.employee]
+        
+        # Check if the logged-in employee is in the allowed list
+        employee_ids = [str(emp.id) for emp in allowed_employees]
+        
+        if str(employee.id) not in employee_ids:
+            raise serializers.ValidationError({
+                'session_token': f"{employee.get_full_name()}, vous n'êtes pas autorisé à pointer avec ce QR code"
+            })
+        
+        attrs['mode'] = 'auto'
+        attrs['employee'] = employee
+        return attrs
 
     def create(self, validated_data):
         from hr.models import Attendance
         from django.utils import timezone
 
-        session = validated_data['session_token']
+        session = validated_data['session']
+        employee = validated_data['employee']
+        mode = validated_data.get('mode', 'auto')
         location = validated_data.get('location', '')
         notes = validated_data.get('notes', '')
+        organization = session.organization
+        now = timezone.now()
+        today = now.date()
 
-        # Créer ou récupérer le pointage du jour
-        today = timezone.now().date()
-        attendance, created = Attendance.objects.get_or_create(
-            employee=session.employee,
-            date=today,
-            defaults={
-                'check_in': timezone.now(),
-                'check_in_location': location,
-                'check_in_notes': notes,
-                'status': 'present',
-            }
-        )
+        # Check for existing attendance today
+        existing_attendance = Attendance.objects.filter(
+            employee=employee,
+            organization=organization,
+            date=today
+        ).first()
 
-        if not created:
-            # Si le pointage existe déjà, mise à jour
-            if not attendance.check_in:
-                attendance.check_in = timezone.now()
-                attendance.check_in_location = location
-                attendance.check_in_notes = notes
-                attendance.status = 'present'
-                attendance.save()
+        action = None
+        message = None
 
-        # Désactiver la session après utilisation
-        session.is_active = False
-        session.save()
+        if existing_attendance:
+            if existing_attendance.check_out:
+                # Already checked out
+                raise serializers.ValidationError({
+                    'session_token': f"{employee.get_full_name()}, vous avez déjà pointé votre départ aujourd'hui. À demain !"
+                })
+            elif existing_attendance.check_in:
+                # Already checked in
+                if mode == 'check_in':
+                    # Mode is check_in only, but already checked in
+                    raise serializers.ValidationError({
+                        'session_token': f"{employee.get_full_name()}, vous avez déjà pointé votre arrivée aujourd'hui."
+                    })
+                else:
+                    # Mode is auto or check_out - do CHECK-OUT
+                    existing_attendance.check_out = now
+                    existing_attendance.check_out_location = location
+                    existing_attendance.check_out_notes = notes
+                    existing_attendance.save()
+                    action = 'check_out'
+                    message = f"Départ enregistré à {now.strftime('%H:%M')}. Bonne soirée {employee.first_name} !"
+                    attendance = existing_attendance
+            else:
+                # Record exists but no check-in (edge case)
+                existing_attendance.check_in = now
+                existing_attendance.check_in_location = location
+                existing_attendance.check_in_notes = notes
+                existing_attendance.status = 'present'
+                existing_attendance.save()
+                action = 'check_in'
+                message = f"Arrivée enregistrée à {now.strftime('%H:%M')}. Bonne journée {employee.first_name} !"
+                attendance = existing_attendance
+        else:
+            # No attendance record today
+            if mode == 'check_out':
+                # Mode is check_out only, but no check-in exists
+                raise serializers.ValidationError({
+                    'session_token': f"{employee.get_full_name()}, vous devez d'abord pointer votre arrivée."
+                })
+            else:
+                # Mode is auto or check_in - do CHECK-IN
+                attendance = Attendance.objects.create(
+                    employee=employee,
+                    organization=organization,
+                    user_email=employee.email,
+                    user_full_name=employee.get_full_name(),
+                    date=today,
+                    check_in=now,
+                    check_in_location=location,
+                    check_in_notes=notes,
+                    status='present',
+                    approval_status='pending'
+                )
+                action = 'check_in'
+                message = f"Arrivée enregistrée à {now.strftime('%H:%M')}. Bienvenue {employee.first_name} et bonne journée !"
 
+        # Store action and message on the attendance object for response
+        attendance._qr_action = action
+        attendance._qr_message = message
+
+        # Keep session active for other employees/check-out
         return attendance
+
+
+# ===============================
+# PAYROLL ADVANCE SERIALIZERS
+# ===============================
+
+class PayrollAdvanceSerializer(serializers.ModelSerializer):
+    """Serializer complet pour les demandes d'avance sur salaire"""
+
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    employee_id_number = serializers.CharField(source='employee.employee_id', read_only=True)
+    employee_details = EmployeeListSerializer(source='employee', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True, allow_null=True)
+    payslip_reference = serializers.CharField(source='payslip.id', read_only=True, allow_null=True)
+
+    class Meta:
+        model = PayrollAdvance
+        fields = [
+            'id', 'employee', 'employee_name', 'employee_id_number', 'employee_details',
+            'amount', 'reason', 'request_date', 'status', 'status_display',
+            'approved_by', 'approved_by_name', 'approved_date', 'rejection_reason',
+            'payment_date', 'payslip', 'payslip_reference', 'deduction_month',
+            'notes', 'created_at', 'updated_at'
+        ]
+        read_only_fields = ['request_date', 'approved_date', 'created_at', 'updated_at']
+
+
+class PayrollAdvanceCreateSerializer(serializers.ModelSerializer):
+    """Serializer pour créer une demande d'avance"""
+
+    class Meta:
+        model = PayrollAdvance
+        fields = ['employee', 'amount', 'reason', 'notes']
+
+    def validate_amount(self, value):
+        """Valider que le montant est positif et raisonnable"""
+        if value <= 0:
+            raise serializers.ValidationError("Le montant doit être supérieur à 0")
+
+        # Optionnel : vérifier que l'avance ne dépasse pas le salaire mensuel
+        employee = self.initial_data.get('employee')
+        if employee:
+            from hr.models import Employee
+            try:
+                emp = Employee.objects.get(id=employee)
+                # Vous pouvez ajouter une logique pour vérifier le salaire de base
+                # if value > emp.base_salary:
+                #     raise serializers.ValidationError("L'avance ne peut pas dépasser le salaire mensuel")
+            except Employee.DoesNotExist:
+                pass
+
+        return value
+
+
+class PayrollAdvanceApprovalSerializer(serializers.Serializer):
+    """Serializer pour approuver ou rejeter une demande d'avance"""
+
+    action = serializers.ChoiceField(choices=['approve', 'reject'], required=True)
+    rejection_reason = serializers.CharField(required=False, allow_blank=True)
+    payment_date = serializers.DateField(required=False, allow_null=True)
+    deduction_month = serializers.DateField(required=False, allow_null=True)
+    notes = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, data):
+        if data['action'] == 'reject' and not data.get('rejection_reason'):
+            raise serializers.ValidationError({
+                'rejection_reason': "Une raison de rejet est requise"
+            })
+
+        if data['action'] == 'approve' and not data.get('payment_date'):
+            # Par défaut, la date de paiement est aujourd'hui
+            from django.utils import timezone
+            data['payment_date'] = timezone.now().date()
+
+        return data
+
+
+class PayrollAdvanceListSerializer(serializers.ModelSerializer):
+    """Serializer light pour les listes d'avances"""
+
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    employee_id_number = serializers.CharField(source='employee.employee_id', read_only=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    approved_by_name = serializers.CharField(source='approved_by.get_full_name', read_only=True, allow_null=True)
+
+    class Meta:
+        model = PayrollAdvance
+        fields = [
+            'id', 'employee', 'employee_name', 'employee_id_number',
+            'amount', 'reason', 'request_date', 'status', 'status_display',
+            'approved_by_name', 'approved_date', 'payment_date', 'payslip', 'created_at'
+        ]

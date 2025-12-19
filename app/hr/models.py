@@ -297,6 +297,16 @@ class Employee(BaseProfile):
         """Vérifie si l'employé est admin RH"""
         return self.assigned_role and self.assigned_role.code in ['super_admin', 'hr_admin']
 
+    def get_full_name(self):
+        """Retourne le nom complet de l'employé"""
+        if self.first_name and self.last_name:
+            return f"{self.first_name} {self.last_name}"
+        elif self.first_name:
+            return self.first_name
+        elif self.last_name:
+            return self.last_name
+        return self.user.email if hasattr(self, 'user') and self.user else self.employee_id
+
 
 # ===============================
 # HR CONFIGURATION MODELS
@@ -850,6 +860,104 @@ class PayslipItem(TimeStampedModel):
         return f"{self.name} - {self.amount} ({'Déduction' if self.is_deduction else 'Prime'})"
 
 
+class PayrollAdvance(TimeStampedModel):
+    """Demande d'avance sur salaire"""
+
+    class AdvanceStatus(models.TextChoices):
+        PENDING = 'pending', 'En attente'
+        APPROVED = 'approved', 'Approuvée'
+        REJECTED = 'rejected', 'Rejetée'
+        PAID = 'paid', 'Payée'
+        DEDUCTED = 'deducted', 'Déduite (Close)'
+
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='payroll_advances',
+        help_text="Employé demandant l'avance"
+    )
+
+    amount = models.DecimalField(
+        max_digits=12,
+        decimal_places=2,
+        validators=[MinValueValidator(Decimal('0.01'))],
+        help_text="Montant de l'avance demandée"
+    )
+
+    reason = models.TextField(
+        help_text="Raison de la demande d'avance"
+    )
+
+    request_date = models.DateField(
+        auto_now_add=True,
+        help_text="Date de la demande"
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=AdvanceStatus.choices,
+        default=AdvanceStatus.PENDING,
+        help_text="Statut de la demande"
+    )
+
+    approved_by = models.ForeignKey(
+        Employee,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='approved_advances',
+        help_text="Employé ayant approuvé la demande"
+    )
+
+    approved_date = models.DateTimeField(
+        null=True,
+        blank=True,
+        help_text="Date d'approbation/rejet"
+    )
+
+    rejection_reason = models.TextField(
+        blank=True,
+        help_text="Raison du rejet (si applicable)"
+    )
+
+    payment_date = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Date du paiement effectif"
+    )
+
+    payslip = models.ForeignKey(
+        Payslip,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='advances_deducted',
+        help_text="Fiche de paie où l'avance a été déduite"
+    )
+
+    deduction_month = models.DateField(
+        null=True,
+        blank=True,
+        help_text="Mois prévu pour la déduction"
+    )
+
+    notes = models.TextField(
+        blank=True,
+        help_text="Notes supplémentaires"
+    )
+
+    class Meta:
+        ordering = ['-request_date', '-created_at']
+        indexes = [
+            models.Index(fields=['employee', 'status']),
+            models.Index(fields=['request_date']),
+            models.Index(fields=['status']),
+        ]
+
+    def __str__(self):
+        return f"Avance {self.amount} - {self.employee.get_full_name()} - {self.get_status_display()}"
+
+
 # ===============================
 # ATTENDANCE MANAGEMENT
 # ===============================
@@ -1111,7 +1219,7 @@ class Attendance(TimeStampedModel):
 class QRCodeSession(TimeStampedModel):
     """
     Session QR Code pour le pointage
-    Chaque session est liée à un employé spécifique et expire après un certain temps
+    Supporte un ou plusieurs employés via allowed_employees
     """
     import uuid
 
@@ -1128,11 +1236,21 @@ class QRCodeSession(TimeStampedModel):
         db_index=True,
         help_text="Token unique pour cette session"
     )
+    # Legacy field for single employee (kept for backward compatibility)
     employee = models.ForeignKey(
         'Employee',
         on_delete=models.CASCADE,
         related_name='qr_sessions',
-        help_text="Employé pour qui ce QR est généré"
+        null=True,
+        blank=True,
+        help_text="Employé principal (backward compat)"
+    )
+    # New field for multiple employees
+    allowed_employees = models.ManyToManyField(
+        'Employee',
+        related_name='allowed_qr_sessions',
+        blank=True,
+        help_text="Employés autorisés à utiliser ce QR code"
     )
     created_by = models.ForeignKey(
         'core.AdminUser',
