@@ -160,6 +160,10 @@ class IsOwnerOrHRAdmin(permissions.BasePermission):
 class IsAdminUserOrEmployee(permissions.BasePermission):
     """
     Seuls AdminUser et Employee authentifiés autorisés.
+    
+    NOTE: Cette classe est un alias de authentication.permissions.IsAdminOrEmployee
+    pour maintenir la rétrocompatibilité. Dans le futur, privilégier l'import direct
+    depuis authentication.permissions.
     """
     def has_permission(self, request, view):
         from hr.models import Employee

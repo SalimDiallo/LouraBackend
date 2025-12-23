@@ -4,7 +4,7 @@ from .models import AdminUser, Organization, Category, OrganizationSettings
 
 
 # -------------------------------
-# Authentication Serializers
+# Authentication Serializers (Register only - Login moved to authentication app)
 # -------------------------------
 
 class RegisterSerializer(serializers.ModelSerializer):
@@ -43,48 +43,6 @@ class RegisterSerializer(serializers.ModelSerializer):
             last_name=validated_data.get('last_name', '')
         )
         return user
-
-
-class LoginSerializer(serializers.Serializer):
-    """Serializer for user login"""
-    email = serializers.EmailField(required=True)
-    password = serializers.CharField(
-        required=True,
-        style={'input_type': 'password'},
-        write_only=True
-    )
-
-    def validate(self, data):
-        """Validate and authenticate user"""
-        email = data.get('email')
-        password = data.get('password')
-
-        if email and password:
-            user = authenticate(
-                request=self.context.get('request'),
-                username=email,
-                password=password
-            )
-
-            if not user:
-                raise serializers.ValidationError(
-                    'Email ou mot de passe incorrect',
-                    code='authorization'
-                )
-
-            if not user.is_active:
-                raise serializers.ValidationError(
-                    'Ce compte est desactive',
-                    code='authorization'
-                )
-
-            data['user'] = user
-            return data
-        else:
-            raise serializers.ValidationError(
-                'Email et mot de passe sont requis',
-                code='authorization'
-            )
 
 
 class UserSerializer(serializers.ModelSerializer):

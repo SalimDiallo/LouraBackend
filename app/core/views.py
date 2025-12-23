@@ -11,53 +11,12 @@ from django.conf import settings
 from .models import Organization, Category
 from .serializers import (
     RegisterSerializer,
-    LoginSerializer,
     UserSerializer,
     OrganizationSerializer,
     OrganizationCreateSerializer,
     CategorySerializer
 )
-
-
-# -------------------------------
-# JWT Cookie Helper Functions
-# -------------------------------
-
-def set_jwt_cookies(response, access_token, refresh_token):
-    """Set JWT tokens in HTTP-only cookies"""
-    # Access token cookie
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        value=access_token,
-        max_age=settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-    # Refresh token cookie
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        value=refresh_token,
-        max_age=settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-
-def clear_jwt_cookies(response):
-    """Clear JWT cookies"""
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
+from authentication.utils import set_jwt_cookies, clear_jwt_cookies
 
 
 # -------------------------------
@@ -97,137 +56,7 @@ class RegisterView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-class LoginView(APIView):
-    """API endpoint for user login with JWT"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = LoginSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            user = serializer.validated_data['user']
-
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-
-            # Return user data
-            user_data = UserSerializer(user).data
-
-            # Create response
-            response = Response({
-                'user': user_data,
-                'message': 'Connexion reussie',
-                'access': access_token,  # Also return in body for flexibility
-                'refresh': refresh_token,
-            }, status=status.HTTP_200_OK)
-
-            # Set tokens in HTTP-only cookies
-            set_jwt_cookies(response, access_token, refresh_token)
-
-            return response
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class LogoutView(APIView):
-    """API endpoint for user logout - blacklist refresh token"""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            # Get refresh token from cookie or request body
-            refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
-            if not refresh_token:
-                refresh_token = request.data.get('refresh')
-
-            if refresh_token:
-                # Blacklist the refresh token
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-
-            # Create response
-            response = Response({
-                'message': 'Deconnexion reussie'
-            }, status=status.HTTP_200_OK)
-
-            # Clear cookies
-            clear_jwt_cookies(response)
-
-            return response
-
-        except Exception as e:
-            response = Response({
-                'error': 'Erreur lors de la deconnexion'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Still clear cookies even if blacklist fails
-            clear_jwt_cookies(response)
-
-            return response
-
-
-class RefreshTokenView(APIView):
-    """API endpoint to refresh access token using refresh token"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        # Get refresh token from cookie or request body
-        refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
-        if not refresh_token:
-            refresh_token = request.data.get('refresh')
-
-        if not refresh_token:
-            return Response({
-                'error': 'Refresh token manquant'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            # Validate and refresh token
-            refresh = RefreshToken(refresh_token)
-
-            # Get new access token
-            access_token = str(refresh.access_token)
-
-            # If rotation is enabled, get new refresh token
-            new_refresh_token = str(refresh) if settings.SIMPLE_JWT['ROTATE_REFRESH_TOKENS'] else refresh_token
-
-            # Create response
-            response = Response({
-                'access': access_token,
-                'refresh': new_refresh_token,
-                'message': 'Token rafraichi avec succes'
-            }, status=status.HTTP_200_OK)
-
-            # Set new tokens in cookies
-            set_jwt_cookies(response, access_token, new_refresh_token)
-
-            return response
-
-        except TokenError as e:
-            return Response({
-                'error': 'Token invalide ou expire'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-
-
-class CurrentUserView(APIView):
-    """API endpoint to get current authenticated user"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        user = request.user
-
-        # Check if user is an Employee
-        from hr.models import Employee
-        if isinstance(user, Employee):
-            # Use Employee serializer
-            from hr.serializers import EmployeeSerializer
-            serializer = EmployeeSerializer(user)
-        else:
-            # Use AdminUser serializer
-            serializer = UserSerializer(user)
-
-        return Response(serializer.data, status=status.HTTP_200_OK)
+# Login, Logout, Refresh and CurrentUser views have been moved to authentication app
 
 
 # -------------------------------
@@ -242,7 +71,20 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         """Return only organizations owned by the current user"""
-        return Organization.objects.filter(admin=self.request.user)
+        # Import Employee to check user type
+        from hr.models import Employee
+
+        user = self.request.user
+
+        # If user is an Employee, return their organization
+        if isinstance(user, Employee):
+            if user.organization_id:
+                return Organization.objects.filter(id=user.organization_id)
+            # Employee without organization - return empty queryset
+            return Organization.objects.none()
+
+        # If user is AdminUser, return organizations they own
+        return Organization.objects.filter(admin=user)
 
     def get_serializer_class(self):
         """Use different serializer for create action"""

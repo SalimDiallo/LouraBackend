@@ -1,28 +1,42 @@
-from rest_framework import status, viewsets, serializers
-from rest_framework.decorators import action
-from rest_framework.response import Response
-from rest_framework.permissions import AllowAny, IsAuthenticated
-from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+"""
+HR Views - ViewSets pour la gestion des ressources humaines
+
+Ce module contient les ViewSets pour :
+- Employés (CRUD, activation, permissions)
+- Départements et Postes
+- Contrats
+- Congés (types, soldes, demandes)
+- Paie (périodes, fiches, avances)
+- Pointages (présence, QR)
+- Rôles et Permissions
+"""
+import logging
+from decimal import Decimal
+from datetime import timedelta
+
 from django.conf import settings
-from django.utils import timezone
 from django.db import models
 from django.http import HttpResponse
-from datetime import timedelta
-import json
-from django.core.serializers.json import DjangoJSONEncoder
-from uuid import UUID
-from decimal import Decimal
+from django.utils import timezone
 
-from core.models import Organization
+from rest_framework import status, viewsets
+from rest_framework.decorators import action
+from rest_framework.permissions import AllowAny, IsAuthenticated
+from rest_framework.response import Response
+from rest_framework.views import APIView
+
+# Models
+from core.models import Organization, AdminUser
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
     PayrollPeriod, Payslip, PayrollAdvance, Permission, Role, Attendance
 )
+
+# Serializers
 from .serializers import (
     EmployeeSerializer, EmployeeCreateSerializer, EmployeeListSerializer,
-    EmployeeUpdateSerializer, EmployeeLoginSerializer, EmployeeChangePasswordSerializer,
+    EmployeeUpdateSerializer, EmployeeChangePasswordSerializer,
     DepartmentSerializer, PositionSerializer, ContractSerializer,
     LeaveTypeSerializer, LeaveBalanceSerializer, LeaveRequestSerializer,
     LeaveRequestApprovalSerializer,
@@ -33,6 +47,8 @@ from .serializers import (
     AttendanceSerializer, AttendanceCreateSerializer, AttendanceCheckInSerializer,
     AttendanceCheckOutSerializer, AttendanceApprovalSerializer, AttendanceStatsSerializer
 )
+
+# Permissions
 from .permissions import (
     IsHRAdminOrReadOnly, IsHRAdmin,
     IsManagerOrHRAdmin, IsAdminUserOrEmployee,
@@ -44,209 +60,32 @@ from .permissions import (
     RequiresAttendancePermission, RequiresRolePermission
 )
 
-# Définition centralisée des permissions existantes (pour aider à l'automatisation ou documentation)
-PERMISSION_CODES = [
-    # Congés
-    "can_approve_leave",
-    "can_create_leave",
-    "can_manage_leave_balances",
-    "can_manage_leave_types",
-    "can_update_leave",
-    "can_delete_leave",
-    "can_view_leave",
+# Mixins - Design Patterns pour réduire la duplication
+from core.mixins import (
+    OrganizationResolverMixin,
+    OrganizationQuerySetMixin,
+    OrganizationCreateMixin,
+    BaseOrganizationViewSetMixin,
+)
 
-    # Contrats
-    "can_create_contract",
-    "can_update_contract",
-    "can_delete_contract",
-    "can_view_contract",
+# Services - Logique métier séparée (Service Layer Pattern)
+from .services import EmployeeService, LeaveService, PayrollService
 
-    # Départements
-    "can_create_department",
-    "can_update_department",
-    "can_delete_department",
-    "can_view_department",
+# Utils centralisés
+from authentication.utils import convert_uuids_to_strings
 
-    # Employés
-    "can_activate_employee",
-    "can_create_employee",
-    "can_manage_employee_permissions",
-    "can_update_employee",
-    "can_delete_employee",
-    "can_view_employee",
+# Constants - Permissions et Rôles prédéfinis sont définis dans constants.py
+# Usage: from hr.constants import PERMISSIONS, PREDEFINED_ROLES
 
-    # Paie
-    "can_create_payroll",
-    "can_update_payroll",
-    "can_delete_payroll",
-    "can_process_payroll",
-    "can_view_payroll",
-
-    # Pointages
-    "can_approve_attendance",
-    "can_create_attendance",
-    "can_create_qr_session",
-    "can_update_attendance",
-    "can_manual_checkin",
-    "can_delete_attendance",
-    "can_view_attendance",
-    "can_view_all_attendance",
-
-    # Postes
-    "can_create_position",
-    "can_update_position",
-    "can_delete_position",
-    "can_view_position",
-
-    # Rapports
-    "can_export_reports",
-    "can_view_reports",
-
-    # Rôles
-    "can_assign_role",
-    "can_create_role",
-    "can_update_role",
-    "can_delete_role",
-    "can_view_role",
-]
-
-# -------------------------------
-# JWT Cookie Helper Functions
-# -------------------------------
-
-def convert_uuids_to_strings(data):
-    """Recursively convert all UUID objects to strings in a dictionary or list"""
-    if isinstance(data, dict):
-        return {key: convert_uuids_to_strings(value) for key, value in data.items()}
-    elif isinstance(data, list):
-        return [convert_uuids_to_strings(item) for item in data]
-    elif isinstance(data, UUID):
-        return str(data)
-    else:
-        return data
-
-
-def set_jwt_cookies(response, access_token, refresh_token):
-    """Set JWT tokens in HTTP-only cookies"""
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        value=access_token,
-        max_age=settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        value=refresh_token,
-        max_age=settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-
-def clear_jwt_cookies(response):
-    """Clear JWT cookies"""
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
+# Module logger
+logger = logging.getLogger(__name__)
 
 
 # -------------------------------
 # EMPLOYEE AUTHENTICATION VIEWS
 # -------------------------------
-
-class EmployeeLoginView(APIView):
-    """Employee login endpoint"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = EmployeeLoginSerializer(data=request.data)
-        if serializer.is_valid():
-            employee = serializer.validated_data['employee']
-
-            # Generate JWT tokens manually (without OutstandingToken)
-            access_token_obj = AccessToken()
-            access_token_obj['user_id'] = str(employee.id)
-            access_token_obj['email'] = employee.email
-            access_token_obj['user_type'] = 'employee'
-            access_token_obj.set_exp(lifetime=timedelta(minutes=15))
-            access_token = str(access_token_obj)
-
-            # Create a refresh token manually
-            refresh_token_obj = AccessToken()
-            refresh_token_obj['user_id'] = str(employee.id)
-            refresh_token_obj['email'] = employee.email
-            refresh_token_obj['user_type'] = 'employee'
-            refresh_token_obj['token_type'] = 'refresh'
-            refresh_token_obj.set_exp(lifetime=timedelta(days=7))
-            refresh_token = str(refresh_token_obj)
-
-            # Update last login
-            employee.last_login = timezone.now()
-            employee.save(update_fields=['last_login'])
-
-            # Return employee data
-            employee_data = EmployeeSerializer(employee).data
-            employee_data = convert_uuids_to_strings(employee_data)
-
-            response = Response({
-                'employee': employee_data,
-                'message': 'Connexion reussie',
-                'access': access_token,
-                'refresh': refresh_token,
-            }, status=status.HTTP_200_OK)
-
-            set_jwt_cookies(response, access_token, refresh_token)
-            return response
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class EmployeeLogoutView(APIView):
-    """Employee logout endpoint"""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
-            if not refresh_token:
-                refresh_token = request.data.get('refresh')
-
-            response = Response({
-                'message': 'Deconnexion reussie'
-            }, status=status.HTTP_200_OK)
-            clear_jwt_cookies(response)
-            return response
-
-        except Exception:
-            response = Response({
-                'message': 'Deconnexion reussie'
-            }, status=status.HTTP_200_OK)
-            clear_jwt_cookies(response)
-            return response
-
-
-class EmployeeMeView(APIView):
-    """Get current employee info"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        if isinstance(request.user, Employee):
-            serializer = EmployeeSerializer(request.user)
-            return Response(serializer.data, status=status.HTTP_200_OK)
-        return Response({
-            'error': 'Utilisateur non autorise'
-        }, status=status.HTTP_403_FORBIDDEN)
+# EmployeeLoginView, EmployeeRefreshTokenView, EmployeeLogoutView, and EmployeeMeView
+# have been moved to authentication app
 
 
 class EmployeeChangePasswordView(APIView):
@@ -278,284 +117,97 @@ class EmployeeChangePasswordView(APIView):
 # EMPLOYEE MANAGEMENT VIEWS
 # -------------------------------
 
-class EmployeeViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing employees"""
+class EmployeeViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet pour la gestion des employés.
+    
+    Utilise BaseOrganizationViewSetMixin pour:
+    - Filtrage automatique par organisation
+    - Création avec organisation automatique
+    - Actions activate/deactivate
+    """
     queryset = Employee.objects.all()
     permission_classes = [IsAdminUserOrEmployee, RequiresEmployeePermission]
-
-    def get_queryset(self):
-        """Filter employees by organization (requires can_view_employee)"""
-        user = self.request.user
-        from core.models import AdminUser
-
-        org_subdomain = self.request.query_params.get('organization_subdomain')
-        org_id = self.request.query_params.get('organization')
-        queryset = Employee.objects.none()
-
-        if isinstance(user, AdminUser):
-            accessible_orgs = user.organizations.all()
-            if org_subdomain:
-                queryset = Employee.objects.filter(
-                    organization__subdomain=org_subdomain,
-                    organization__in=accessible_orgs
-                )
-            elif org_id:
-                queryset = Employee.objects.filter(
-                    organization_id=org_id,
-                    organization__in=accessible_orgs
-                )
-            else:
-                queryset = Employee.objects.filter(organization__in=accessible_orgs)
-        elif isinstance(user, Employee):
-            if user.has_permission("can_view_employee"):
-                queryset = Employee.objects.filter(organization=user.organization)
-            # Ne rien faire (ne pas lever d'erreur) si pas la permission : retourne un queryset vide
-        return queryset
+    
+    # Configuration du mixin
+    organization_field = 'organization'
+    view_permission = 'can_view_employee'
+    create_permission = 'can_create_employee'
+    activation_permission = 'can_activate_employee'
 
     def get_serializer_class(self):
-        """
-        Choisit le serializer approprié selon l'action du viewset.
-        """
-        if self.action == 'create':
-            return EmployeeCreateSerializer
-        elif self.action in ['update', 'partial_update']:
-            return EmployeeUpdateSerializer
-        elif self.action == 'list':
-            return EmployeeListSerializer
-        return EmployeeSerializer
-        
-    def perform_create(self, serializer):
-        user = self.request.user
-        from core.models import AdminUser
-        import logging
-        logger = logging.getLogger(__name__)
-
-        if isinstance(user, AdminUser):
-            # Essayer d'abord avec organization_subdomain
-            org_subdomain = self.request.query_params.get('organization_subdomain')
-
-            if org_subdomain:
-                try:
-                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
-                    logger.info(f"Creating employee for organization: {organization.name}")
-                except Organization.DoesNotExist:
-                    logger.error(f"Organization with subdomain {org_subdomain} not found")
-                    raise serializers.ValidationError({
-                        'organization': f'Organisation avec le subdomain "{org_subdomain}" non trouvée'
-                    })
-            else:
-                # Fallback: utiliser organization ID depuis request.data
-                org_id = self.request.data.get('organization')
-                if not org_id:
-                    logger.error("No organization_subdomain or organization ID provided")
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation requise (organization_subdomain ou organization)'
-                    })
-
-                organization = Organization.objects.filter(id=org_id, admin=user).first()
-                if not organization:
-                    logger.error(f"Organization with ID {org_id} not found or unauthorized")
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation non trouvée ou accès refusé'
-                    })
-
-        elif isinstance(user, Employee):
-            if not user.has_permission("can_create_employee"):
-                logger.warning(f"Employee {user.email} lacks permission to create employees")
-                raise serializers.ValidationError({'permission': 'Permission refusée'})
-            organization = user.organization
-            logger.info(f"Creating employee for organization: {organization.name}")
-        else:
-            logger.error(f"Unauthorized user type: {type(user)}")
-            raise serializers.ValidationError({'user': 'Type utilisateur non autorisé'})
-
-        logger.info(f"Saving employee for organization: {organization.name}")
-        serializer.save(organization=organization)
+        """Choisit le serializer approprié selon l'action."""
+        serializer_map = {
+            'create': EmployeeCreateSerializer,
+            'update': EmployeeUpdateSerializer,
+            'partial_update': EmployeeUpdateSerializer,
+            'list': EmployeeListSerializer,
+        }
+        return serializer_map.get(self.action, EmployeeSerializer)
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
-        user = self.request.user
-        if isinstance(user, Employee) and not user.has_permission('can_activate_employee'):
-            return Response({
-                'message': f'vous ne pouvez pas acces à cette permission'
-            }, status=status.HTTP_406_NOT_ACCEPTABLE)
-
-        employee = self.get_object()
-        employee.is_active = True
-        employee.save()
-        return Response({
-            'message': f'Employe {employee.get_full_name()} active'
-        }, status=status.HTTP_200_OK)
+        """Active un employé."""
+        return super().activate(request, pk)
 
     @action(detail=True, methods=['post'])
     def deactivate(self, request, pk=None):
-        user = self.request.user
-        if isinstance(user, Employee) and not user.has_permission('can_activate_employee'):
-            return Response({
-                'message': f'vous ne pouvez pas acces à cette permission'
-            }, status=status.HTTP_406_NOT_ACCEPTABLE)
-
-        employee = self.get_object()
-        employee.is_active = False
-        employee.save()
-        return Response({
-            'message': f'Employe {employee.get_full_name()} desactive'
-        }, status=status.HTTP_200_OK)
+        """Désactive un employé."""
+        return super().deactivate(request, pk)
 
 # -------------------------------
 # HR CONFIGURATION VIEWS
 # -------------------------------
 
-class DepartmentViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing departments"""
+class DepartmentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet pour la gestion des départements.
+    
+    Utilise BaseOrganizationViewSetMixin pour le filtrage et création automatiques.
+    """
+    queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminUserOrEmployee, RequiresDepartmentPermission]
-
-    def get_queryset(self):
-        user = self.request.user
-        from core.models import AdminUser
-
-        queryset = Department.objects.all()
-
-        # Récupérer l'organisation depuis les paramètres de requête
-        org_subdomain = self.request.query_params.get('organization_subdomain')
-        org_id = self.request.query_params.get('organization')
-
-        if isinstance(user, AdminUser):
-            # Si un subdomain ou ID d'organisation est fourni, filtrer par cette organisation
-            if org_subdomain:
-                try:
-                    organization = Organization.objects.get(
-                        subdomain=org_subdomain,
-                        admin=user
-                    )
-                    queryset = Department.objects.filter(organization=organization)
-                except Organization.DoesNotExist:
-                    queryset = Department.objects.none()
-            elif org_id:
-                try:
-                    organization = Organization.objects.get(
-                        id=org_id,
-                        admin=user
-                    )
-                    queryset = Department.objects.filter(organization=organization)
-                except Organization.DoesNotExist:
-                    queryset = Department.objects.none()
-            else:
-                # Pas d'organisation spécifiée, retourner les départements de toutes les organisations de l'admin
-                org_ids = user.organizations.values_list('id', flat=True)
-                queryset = Department.objects.filter(organization_id__in=org_ids)
-        elif isinstance(user, Employee):
-            if user.has_permission("can_view_department"):
-                queryset = Department.objects.filter(organization=user.organization)
-            else:
-                queryset = Department.objects.none()
-        else:
-            queryset = Department.objects.none()
-
-        return queryset
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        from core.models import AdminUser
-        import logging
-        logger = logging.getLogger(__name__)
-
-        if isinstance(user, AdminUser):
-            org_subdomain = self.request.query_params.get('organization_subdomain')
-
-            if org_subdomain:
-                try:
-                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
-                except Organization.DoesNotExist:
-                    raise serializers.ValidationError({
-                        'organization': f'Organisation "{org_subdomain}" non trouvée'
-                    })
-            else:
-                org_id = self.request.data.get('organization')
-                if not org_id:
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation requise'
-                    })
-                organization = Organization.objects.filter(id=org_id, admin=user).first()
-                if not organization:
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation non trouvée ou accès refusé'
-                    })
-        elif isinstance(user, Employee):
-            if not user.has_permission("can_create_department"):
-                raise serializers.ValidationError({'permission': 'Permission refusée'})
-            organization = user.organization
-        else:
-            raise serializers.ValidationError({'user': 'Non autorisé'})
-
-        serializer.save(organization=organization)
+    
+    # Configuration du mixin
+    organization_field = 'organization'
+    view_permission = 'can_view_department'
+    create_permission = 'can_create_department'
 
 
-class PositionViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing positions"""
+class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet pour la gestion des postes.
+    
+    Utilise BaseOrganizationViewSetMixin pour le filtrage et création automatiques.
+    """
+    queryset = Position.objects.all()
     serializer_class = PositionSerializer
-    # permission_classes = [IsAdminUserOrEmployee, RequiresPositionPermission]
     permission_classes = [IsAdminUserOrEmployee]
     
-
-    def get_queryset(self):
-        user = self.request.user
-        from core.models import AdminUser
-
-        if isinstance(user, AdminUser):
-            org_ids = user.organizations.values_list('id', flat=True)
-            return Position.objects.filter(organization_id__in=org_ids)
-        elif isinstance(user, Employee):
-            if user.has_permission("can_view_position"):
-                return Position.objects.filter(organization=user.organization)
-        return Position.objects.none()
-
-    def perform_create(self, serializer):
-        user = self.request.user
-        from core.models import AdminUser
-        import logging
-        logger = logging.getLogger(__name__)
-
-        if isinstance(user, AdminUser):
-            org_subdomain = self.request.query_params.get('organization_subdomain')
-
-            if org_subdomain:
-                try:
-                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
-                except Organization.DoesNotExist:
-                    raise serializers.ValidationError({
-                        'organization': f'Organisation "{org_subdomain}" non trouvée'
-                    })
-            else:
-                org_id = self.request.data.get('organization')
-                if not org_id:
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation requise'
-                    })
-                organization = Organization.objects.filter(id=org_id, admin=user).first()
-                if not organization:
-                    raise serializers.ValidationError({
-                        'organization': 'Organisation non trouvée ou accès refusé'
-                    })
-        elif isinstance(user, Employee):
-            if not user.has_permission("can_create_position"):
-                raise serializers.ValidationError({'permission': 'Permission refusée'})
-            organization = user.organization
-        else:
-            raise serializers.ValidationError({'user': 'Non autorisé'})
-
-        serializer.save(organization=organization)
+    # Configuration du mixin
+    organization_field = 'organization'
+    view_permission = 'can_view_position'
+    create_permission = 'can_create_position'
 
 
-class ContractViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing contracts"""
+class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet pour la gestion des contrats.
+    
+    Utilise BaseOrganizationViewSetMixin pour le filtrage et création automatiques.
+    """
+    queryset = Contract.objects.all()
     serializer_class = ContractSerializer
     permission_classes = [IsAdminUserOrEmployee, RequiresContractPermission]
+    
+    # Configuration du mixin - les contrats sont liés à employee.organization
+    organization_field = 'employee__organization'
+    view_permission = 'can_view_contract'
+    create_permission = 'can_create_contract'
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
@@ -595,7 +247,6 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
@@ -607,7 +258,6 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_subdomain = self.request.query_params.get('organization_subdomain')
@@ -647,7 +297,6 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
@@ -666,7 +315,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
@@ -686,7 +334,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
-        from core.models import AdminUser
         if isinstance(self.request.user, Employee):
             if not self.request.user.has_permission('can_create_leave'):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
@@ -816,7 +463,6 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         if isinstance(user, AdminUser):
             org_ids = user.organizations.values_list('id', flat=True)
@@ -828,9 +474,6 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        from core.models import AdminUser
-        import logging
-        logger = logging.getLogger(__name__)
 
         if isinstance(user, AdminUser):
             # Essayer d'abord avec organization_subdomain (depuis query params)
@@ -889,7 +532,6 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         # Base queryset selon le type d'utilisateur
         if isinstance(user, AdminUser):
@@ -937,8 +579,6 @@ class PayslipViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], permission_classes=[IsHRAdmin])
     def generate_for_period(self, request):
         """Génération intelligente de fiches de paie avec déduction automatique des avances"""
-        import logging
-        logger = logging.getLogger(__name__)
 
         payroll_period_id = request.data.get('payroll_period')
         employee_filters = request.data.get('employee_filters', {})
@@ -1096,7 +736,6 @@ class PayrollStatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from core.models import AdminUser
 
         org_subdomain = request.query_params.get('organization_subdomain')
         if not org_subdomain:
@@ -1170,7 +809,6 @@ class HROverviewStatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from core.models import AdminUser
         from datetime import datetime, timedelta
 
         org_subdomain = request.query_params.get('organization_subdomain')
@@ -1274,7 +912,6 @@ class DepartmentStatsView(APIView):
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
-        from core.models import AdminUser
 
         org_subdomain = request.query_params.get('organization_subdomain')
         if not org_subdomain:
@@ -1349,7 +986,6 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         # Récupérer l'organisation depuis les paramètres de requête
         org_subdomain = self.request.query_params.get('organization_subdomain')
@@ -1497,8 +1133,6 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
     def deduct_from_payslip(self, request, pk=None):
         """Déduire l'avance d'une fiche de paie (fermer l'avance)"""
-        import logging
-        logger = logging.getLogger(__name__)
 
         advance = self.get_object()
         user = request.user
@@ -1599,7 +1233,6 @@ class RoleViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         queryset = Role.objects.all()
 
@@ -1675,9 +1308,6 @@ class RoleViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        from core.models import AdminUser
-        import logging
-        logger = logging.getLogger(__name__)
 
         if not serializer.validated_data.get('is_system_role', False):
             if isinstance(user, AdminUser):
@@ -1732,7 +1362,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        from core.models import AdminUser
 
         organization_slug = self.request.headers.get('X-Organization-Slug')
         if not organization_slug:
@@ -1783,7 +1412,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        from core.models import AdminUser
         if isinstance(user, Employee):
             if not user.has_permission('can_create_attendance'):
                 from rest_framework.exceptions import PermissionDenied
@@ -1792,7 +1420,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         user = self.request.user
-        from core.models import AdminUser
         if isinstance(user, Employee):
             if not user.has_permission('can_update_attendance'):
                 from rest_framework.exceptions import PermissionDenied
@@ -1801,7 +1428,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         user = self.request.user
-        from core.models import AdminUser
         if isinstance(user, Employee):
             if not user.has_permission('can_delete_attendance'):
                 from rest_framework.exceptions import PermissionDenied
@@ -1814,7 +1440,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         Manual check-in endpoint - REQUIRES can_manual_checkin
         """
         user = request.user
-        from core.models import AdminUser
 
         if isinstance(user, Employee):
             if not user.has_permission('can_manual_checkin'):
@@ -1925,7 +1550,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         Manual check-out endpoint - REQUIRES can_manual_checkin
         """
         user = request.user
-        from core.models import AdminUser
 
         if isinstance(user, Employee):
             if not user.has_permission('can_manual_checkin'):
@@ -2020,7 +1644,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['get'], url_path='today')
     def today(self, request):
         user = request.user
-        from core.models import AdminUser
 
         organization_slug = request.headers.get('X-Organization-Slug')
         if not organization_slug:
@@ -2064,7 +1687,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=True, methods=['post'], url_path='approve')
     def approve(self, request, pk=None):
         user = request.user
-        from core.models import AdminUser
 
         is_admin = isinstance(user, AdminUser)
         is_employee_with_permission = isinstance(user, Employee) and user.has_permission('can_approve_attendance')
@@ -2108,7 +1730,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='start-break')
     def start_break(self, request):
         user = request.user
-        from core.models import AdminUser
 
         organization_slug = request.headers.get('X-Organization-Slug')
         if not organization_slug:
@@ -2176,7 +1797,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='end-break')
     def end_break(self, request):
         user = request.user
-        from core.models import AdminUser
 
         organization_slug = request.headers.get('X-Organization-Slug')
         if not organization_slug:
@@ -2308,7 +1928,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], url_path='qr-session/create')
     def create_qr_session(self, request):
-        from core.models import AdminUser
 
         if isinstance(request.user, Employee):
             if not request.user.has_permission('can_create_qr_session'):

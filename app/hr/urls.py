@@ -2,9 +2,6 @@ from django.urls import path, include
 from rest_framework.routers import DefaultRouter
 from .views import (
     # Auth views
-    EmployeeLoginView,
-    EmployeeLogoutView,
-    EmployeeMeView,
     EmployeeChangePasswordView,
     # ViewSets
     EmployeeViewSet,
@@ -44,9 +41,7 @@ router.register(r'attendances', AttendanceViewSet, basename='attendance')
 
 urlpatterns = [
     # Employee Authentication Endpoints
-    path('auth/login/', EmployeeLoginView.as_view(), name='employee-login'),
-    path('auth/logout/', EmployeeLogoutView.as_view(), name='employee-logout'),
-    path('auth/me/', EmployeeMeView.as_view(), name='employee-me'),
+    # Login, refresh, logout, and me endpoints have been moved to authentication app
     path('auth/change-password/', EmployeeChangePasswordView.as_view(), name='employee-change-password'),
 
     # Stats Endpoints

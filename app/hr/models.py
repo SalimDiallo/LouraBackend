@@ -1266,6 +1266,16 @@ class QRCodeSession(TimeStampedModel):
         default=True,
         help_text="Si False, la session ne peut plus être utilisée"
     )
+    mode = models.CharField(
+        max_length=20,
+        choices=[
+            ('auto', 'Auto (détection automatique)'),
+            ('check_in', 'Arrivée uniquement'),
+            ('check_out', 'Départ uniquement'),
+        ],
+        default='auto',
+        help_text="Mode de pointage: auto, check_in, ou check_out"
+    )
 
     class Meta:
         db_table = 'hr_qr_code_sessions'

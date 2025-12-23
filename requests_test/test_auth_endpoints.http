@@ -1,0 +1,87 @@
+### Auth Endpoints Test Collection
+
+### Variables
+@baseUrl = http://localhost:8000/api
+@contentType = application/json
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY2NDAxMTMwLCJpYXQiOjE3NjY0MDAyMzAsImp0aSI6IjExNTVhOTFiMzMwNTQ2YzhhOGRjYmYwNjM2OGNkZmM4IiwidXNlcl9pZCI6IjVlOWJhYjNkLTVmNzQtNDZiOS04YzgwLWJhOTk5NGJkMDhiZCIsImVtYWlsIjoidEBnbWFpbC5jb20iLCJ1c2VyX3R5cGUiOiJlbXBsb3llZSJ9.2fR5sl99hrSMIj8a-Afl2xUmMd-Fjwh3Mt8QJWti3fk
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NzAwNTAzMCwiaWF0IjoxNzY2NDAwMjMwLCJqdGkiOiJkOTdhYzI3NWFjNTg0NWVhYWRlNDc3MmE4NTRlMmFiMyIsInVzZXJfaWQiOiI1ZTliYWIzZC01Zjc0LTQ2YjktOGM4MC1iYTk5OTRiZDA4YmQiLCJlbWFpbCI6InRAZ21haWwuY29tIiwidXNlcl90eXBlIjoiZW1wbG95ZWUifQ.V1qOBd1PDLh_C0xgknun7qB48qhBr_0LuZAmDzny8qw
+
+### Register new user
+POST {{baseUrl}}/auth/register/
+Content-Type: {{contentType}}
+
+{
+  "email": "test@gmail.com",
+  "password": "testPassword123!",
+  "password_confirm": "testPassword123!",
+  "first_name": "Test",
+  "last_name": "User"
+}
+
+### Login admin
+POST {{baseUrl}}/auth/admin/login/
+Content-Type: {{contentType}}
+
+{
+  "email": "admin@gmail.com",
+  "password": "Admin123!"
+}
+
+### Login employee
+POST {{baseUrl}}/auth/employee/login/
+Content-Type: {{contentType}}
+
+{
+  "email": "t@gmail.com",
+  "password": "Salim2019"
+}
+
+### Get current user (requires authentication)
+GET {{baseUrl}}/auth/me/
+Authorization: Bearer {{accessToken}}
+
+### Refresh token
+POST {{baseUrl}}/auth/token/refresh/
+Content-Type: {{contentType}}
+
+{
+  "refresh": "{{refreshToken}}"
+}
+
+### Logout (requires authentication)
+POST {{baseUrl}}/auth/logout/
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "refresh": "{{refreshToken}}"
+}
+
+### Request password reset
+POST {{baseUrl}}/auth/password-reset/
+Content-Type: {{contentType}}
+
+{
+  "email": "t@gmail.com"
+}
+
+### Confirm password reset
+POST {{baseUrl}}/auth/password-reset/confirm/
+Content-Type: {{contentType}}
+
+{
+  "token": "RESET_TOKEN_FROM_EMAIL",
+  "password": "newPassword123!",
+  "password_confirm": "newPassword123!"
+}
+
+### Change password (requires authentication)
+POST {{baseUrl}}/auth/password/change/
+Authorization: Bearer {{accessToken}}
+Content-Type: {{contentType}}
+
+{
+  "old_password": "testPassword123!",
+  "new_password": "newPassword123!",
+  "new_password_confirm": "newPassword123!"
+}

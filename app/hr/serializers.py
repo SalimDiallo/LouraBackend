@@ -152,7 +152,7 @@ class EmployeeSerializer(serializers.ModelSerializer):
         write_only=True,
         required=False
     )
-
+    
     class Meta:
         model = Employee
         fields = [
@@ -699,49 +699,7 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 # ===============================
 # AUTHENTICATION SERIALIZERS
 # ===============================
-
-class EmployeeLoginSerializer(serializers.Serializer):
-    """Serializer for employee login"""
-
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
-
-    def validate(self, attrs):
-        email = attrs.get('email')
-        password = attrs.get('password')
-
-        # Get employee by email (there should be only one active employee with this email)
-        try:
-            employee = Employee.objects.select_related('organization').get(email=email, is_active=True)
-        except Employee.DoesNotExist:
-            raise serializers.ValidationError({
-                'email': 'Identifiants invalides.'
-            })
-        except Employee.MultipleObjectsReturned:
-            # Si plusieurs employés avec le même email existent (cas rare), prendre le premier actif
-            employee = Employee.objects.select_related('organization').filter(
-                email=email,
-                is_active=True
-            ).first()
-            if not employee:
-                raise serializers.ValidationError({
-                    'email': 'Identifiants invalides.'
-                })
-
-        # Check password
-        if not employee.check_password(password):
-            raise serializers.ValidationError({
-                'password': 'Identifiants invalides.'
-            })
-
-        # Check if organization is active
-        if not employee.organization.is_active:
-            raise serializers.ValidationError({
-                'email': 'L\'organisation associée à ce compte est désactivée.'
-            })
-
-        attrs['employee'] = employee
-        return attrs
+# EmployeeLoginSerializer has been moved to authentication app
 
 
 class EmployeeChangePasswordSerializer(serializers.Serializer):
@@ -974,9 +932,7 @@ class QRCodeSessionSerializer(serializers.ModelSerializer):
     
     def get_mode(self, obj):
         """Return the attendance mode (auto, check_in, check_out)"""
-        if hasattr(obj, '_mode'):
-            return obj._mode
-        return 'auto'
+        return getattr(obj, 'mode', 'auto')
 
     def get_qr_code_data(self, obj):
         """
@@ -1070,6 +1026,7 @@ class QRCodeSessionCreateSerializer(serializers.Serializer):
             employee=employees[0],  # Primary employee
             session_token=session_token,
             expires_at=expires_at,
+            mode=validated_data.get('mode', 'auto'),
             created_by=self.context['request'].user if hasattr(self.context['request'].user, 'email') else None,
             is_active=True
         )
@@ -1171,8 +1128,9 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
             raise serializers.ValidationError({
                 'session_token': f"{employee.get_full_name()}, vous n'êtes pas autorisé à pointer avec ce QR code"
             })
-        
-        attrs['mode'] = 'auto'
+
+        # Use mode from session (not hardcoded)
+        attrs['mode'] = session.mode
         attrs['employee'] = employee
         return attrs
 
@@ -1210,7 +1168,7 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
                 if mode == 'check_in':
                     # Mode is check_in only, but already checked in
                     raise serializers.ValidationError({
-                        'session_token': f"{employee.get_full_name()}, vous avez déjà pointé votre arrivée aujourd'hui."
+                        'session_token': f"{employee.get_full_name()}, vous avez déjà pointé votre arrivée aujourd'hui. Ce QR code est uniquement pour l'arrivée."
                     })
                 else:
                     # Mode is auto or check_out - do CHECK-OUT
@@ -1236,7 +1194,7 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
             if mode == 'check_out':
                 # Mode is check_out only, but no check-in exists
                 raise serializers.ValidationError({
-                    'session_token': f"{employee.get_full_name()}, vous devez d'abord pointer votre arrivée."
+                    'session_token': f"{employee.get_full_name()}, vous devez d'abord pointer votre arrivée. Ce QR code est uniquement pour le départ."
                 })
             else:
                 # Mode is auto or check_in - do CHECK-IN
