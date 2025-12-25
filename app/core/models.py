@@ -95,6 +95,7 @@ class Organization(TimeStampedModel):
     name = models.CharField(max_length=255)
     subdomain = models.SlugField(max_length=63, unique=True)
     logo_url = models.URLField(max_length=500, blank=True, null=True)
+    logo = models.ImageField(upload_to='organization_logos/', blank=True, null=True)
 
     # Add category field: an organization has one category; a category can have many organizations
     category = models.ForeignKey(

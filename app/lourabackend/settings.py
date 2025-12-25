@@ -47,6 +47,7 @@ INSTALLED_APPS = [
     'hr',
     'inventory',  # Inventory management
     'authentication',  # Centralized authentication
+    'ai',  # AI Assistant module
 ]
 
 MIDDLEWARE = [
@@ -127,6 +128,10 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (Uploaded files)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -171,6 +176,7 @@ CORS_ALLOW_HEADERS = [
     'x-csrftoken',
     'x-requested-with',
     'x-organization-slug',  # Custom header for organization context
+    'x-organization-subdomain',  # Custom header for organization subdomain
 ]
 
 # JWT Configuration

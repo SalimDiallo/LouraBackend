@@ -137,6 +137,55 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             'organization': serializer.data
         }, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post', 'delete'], url_path='logo')
+    def upload_logo(self, request, pk=None):
+        """Upload or delete organization logo"""
+        organization = self.get_object()
+        
+        if request.method == 'DELETE':
+            # Delete logo
+            if organization.logo:
+                organization.logo.delete(save=False)
+            organization.logo = None
+            organization.save()
+            return Response({'message': 'Logo supprimé'}, status=status.HTTP_200_OK)
+        
+        # Upload logo
+        logo_file = request.FILES.get('logo')
+        if not logo_file:
+            return Response(
+                {'error': 'Aucun fichier fourni'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate file type
+        allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml']
+        if logo_file.content_type not in allowed_types:
+            return Response(
+                {'error': 'Type de fichier non autorisé. Formats acceptés: JPG, PNG, GIF, WebP, SVG'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Validate file size (max 5MB)
+        if logo_file.size > 5 * 1024 * 1024:
+            return Response(
+                {'error': 'Le fichier est trop volumineux (max 5 Mo)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Delete old logo if exists
+        if organization.logo:
+            organization.logo.delete(save=False)
+        
+        organization.logo = logo_file
+        organization.save()
+        
+        serializer = self.get_serializer(organization)
+        return Response({
+            'message': 'Logo mis à jour avec succès',
+            'organization': serializer.data
+        }, status=status.HTTP_200_OK)
+
 
 # -------------------------------
 # Category Views

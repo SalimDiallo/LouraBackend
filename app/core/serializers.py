@@ -89,7 +89,7 @@ class OrganizationSerializer(serializers.ModelSerializer):
     class Meta:
         model = Organization
         fields = [
-            'id', 'name', 'subdomain', 'logo_url', 'category',
+            'id', 'name', 'subdomain', 'logo_url', 'logo', 'category',
             'category_details', 'admin', 'admin_email', 'is_active',
             'created_at', 'updated_at', 'settings'
         ]
@@ -110,7 +110,7 @@ class OrganizationCreateSerializer(serializers.ModelSerializer):
 
     class Meta:
         model = Organization
-        fields = ['name', 'subdomain', 'logo_url', 'category', 'settings']
+        fields = ['name', 'subdomain', 'logo_url', 'logo', 'category', 'settings']
 
     def validate_subdomain(self, value):
         """Validate subdomain format"""
