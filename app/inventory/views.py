@@ -1,7 +1,9 @@
 """
-Inventory Views - ViewSets pour la gestion des stocks
+Inventory & Sales Views - ViewSets pour la gestion des stocks et ventes
 
 Ce module contient les ViewSets pour :
+
+INVENTORY:
 - Catégories de produits
 - Entrepôts
 - Fournisseurs
@@ -10,12 +12,24 @@ Ce module contient les ViewSets pour :
 - Commandes d'approvisionnement
 - Inventaires physiques
 - Alertes de stock
+
+SALES & COMMERCIAL:
+- Clients
+- Ventes avec remises
+- Paiements et reçus
+- Gestion des dépenses
+- Factures pro forma
+- Bons de commande d'achat
+- Bons de livraison
+- Ventes à crédit
 """
 
 from datetime import timedelta
+from decimal import Decimal
 from django.db.models import Sum, F, Q, Count, Max, Func
-from django.db.models.functions import TruncDate
+from django.db.models.functions import TruncDate, TruncMonth, TruncYear
 from django.utils import timezone
+from django.http import HttpResponse
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -24,18 +38,36 @@ from rest_framework.response import Response
 # Models
 from core.models import Organization
 from .models import (
+    # Inventory models
     Category, Warehouse, Supplier, Product, Stock,
-    Movement, Order, OrderItem, StockCount, StockCountItem, Alert
+    Movement, Order, OrderItem, StockCount, StockCountItem, Alert,
+    # Sales models
+    Customer, Sale, SaleItem, Payment,
+    ExpenseCategory, Expense,
+    ProformaInvoice, ProformaItem,
+    PurchaseOrder, PurchaseOrderItem,
+    DeliveryNote, DeliveryNoteItem,
+    CreditSale, CreditPayment
 )
 
 # Serializers
 from .serializers import (
+    # Inventory serializers
     CategorySerializer, WarehouseSerializer, SupplierSerializer,
     ProductSerializer, ProductListSerializer, StockSerializer,
     MovementSerializer, MovementCreateUpdateSerializer,
     OrderSerializer, OrderListSerializer, OrderItemSerializer,
     OrderCreateUpdateSerializer,
-    StockCountSerializer, StockCountItemSerializer, AlertSerializer
+    StockCountSerializer, StockCountItemSerializer, AlertSerializer,
+    # Sales serializers
+    CustomerSerializer, SaleSerializer, SaleListSerializer,
+    SaleItemSerializer, SaleCreateUpdateSerializer,
+    PaymentSerializer, ExpenseCategorySerializer, ExpenseSerializer,
+    ProformaInvoiceSerializer, ProformaItemSerializer,
+    ProformaCreateUpdateSerializer, ProformaItemCreateSerializer,
+    PurchaseOrderSerializer, PurchaseOrderItemSerializer,
+    DeliveryNoteSerializer, DeliveryNoteItemSerializer,
+    CreditSaleSerializer, CreditPaymentSerializer
 )
 
 # Mixins
@@ -45,6 +77,14 @@ from core.mixins import (
     OrganizationCreateMixin,
     BaseOrganizationViewSetMixin,
 )
+
+# Repositories and Filters (Refactoring Phase 1)
+from .repositories import (
+    CategoryRepository, WarehouseRepository, SupplierRepository,
+    ProductRepository, OrderRepository, StockRepository, MovementRepository
+)
+from .filters import QueryFilterExtractor
+from .factories import DocumentNumberFactory
 
 
 # ===============================
@@ -60,19 +100,17 @@ class CategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using CategoryRepository.
 
-        # Filter by parent category
-        parent_id = self.request.query_params.get('parent')
-        if parent_id:
-            queryset = queryset.filter(parent_id=parent_id)
+        REFACTORED: Now uses QueryFilterExtractor and CategoryRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_category_filters()
 
-        # Filter by active status
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() == 'true')
-
-        return queryset.select_related('parent', 'organization')
+        return CategoryRepository.get_filtered(organization, filters)
 
     @action(detail=False, methods=['get'])
     def tree(self, request, organization_slug=None):
@@ -112,14 +150,17 @@ class WarehouseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using WarehouseRepository.
 
-        # Filter by active status
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        REFACTORED: Now uses QueryFilterExtractor and WarehouseRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_warehouse_filters()
 
-        return queryset.prefetch_related('stocks')
+        return WarehouseRepository.get_filtered(organization, filters)
 
     @action(detail=True, methods=['get'])
     def inventory(self, request, organization_slug=None, pk=None):
@@ -166,23 +207,17 @@ class SupplierViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using SupplierRepository.
 
-        # Filter by active status
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+        REFACTORED: Now uses QueryFilterExtractor and SupplierRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_supplier_filters()
 
-        # Search by name, code, or email
-        search = self.request.query_params.get('search')
-        if search:
-            queryset = queryset.filter(
-                Q(name__icontains=search) |
-                Q(code__icontains=search) |
-                Q(email__icontains=search)
-            )
-
-        return queryset
+        return SupplierRepository.get_filtered(organization, filters)
 
     @action(detail=True, methods=['get'])
     def orders(self, request, organization_slug=None, pk=None):
@@ -210,35 +245,27 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         return ProductSerializer
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using ProductRepository.
 
-        # Filter by category
-        category_id = self.request.query_params.get('category')
-        if category_id:
-            queryset = queryset.filter(category_id=category_id)
+        REFACTORED: Now uses QueryFilterExtractor and ProductRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_product_filters()
 
-        # Filter by active status
-        is_active = self.request.query_params.get('is_active')
-        if is_active is not None:
-            queryset = queryset.filter(is_active=is_active.lower() == 'true')
-
-        # Filter by low stock
+        # Handle legacy 'low_stock' parameter (converts to boolean for repository)
         low_stock = self.request.query_params.get('low_stock')
         if low_stock == 'true':
-            queryset = queryset.annotate(
+            # Note: ProductRepository doesn't have low_stock filter yet
+            # Fallback to manual filtering for now
+            queryset = ProductRepository.get_filtered(organization, filters)
+            return queryset.annotate(
                 total_stock=Sum('stocks__quantity')
             ).filter(total_stock__lte=F('min_stock_level'))
 
-        # Search by name or SKU
-        search = self.request.query_params.get('search')
-        if search:
-            queryset = queryset.filter(
-                Q(name__icontains=search) |
-                Q(sku__icontains=search) |
-                Q(barcode__icontains=search)
-            )
-
-        return queryset.select_related('category', 'organization').prefetch_related('stocks__warehouse')
+        return ProductRepository.get_filtered(organization, filters)
 
     @action(detail=True, methods=['get'])
     def stock_by_warehouse(self, request, organization_slug=None, pk=None):
@@ -328,21 +355,17 @@ class StockViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     permission_classes = [IsAuthenticated]
 
     def get_queryset(self):
-        # Stock doesn't have organization FK directly, filter through product
+        """
+        Get filtered queryset using StockRepository.
+
+        REFACTORED: Now uses QueryFilterExtractor and StockRepository
+        to eliminate duplicate filtering logic.
+        """
         organization = self.get_organization_from_request()
-        queryset = Stock.objects.filter(product__organization=organization)
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_stock_filters()
 
-        # Filter by warehouse
-        warehouse_id = self.request.query_params.get('warehouse')
-        if warehouse_id:
-            queryset = queryset.filter(warehouse_id=warehouse_id)
-
-        # Filter by product
-        product_id = self.request.query_params.get('product')
-        if product_id:
-            queryset = queryset.filter(product_id=product_id)
-
-        return queryset.select_related('product', 'warehouse')
+        return StockRepository.get_filtered(organization, filters)
 
 
 # ===============================
@@ -436,37 +459,31 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             dest_stock.save()
 
         stock.save()
+        
+        # Vérifier et mettre à jour les alertes de stock
+        from .alert_utils import check_and_update_stock_alert
+        check_and_update_stock_alert(movement.product, movement.warehouse)
+        if movement.movement_type == 'transfer' and movement.destination_warehouse:
+            check_and_update_stock_alert(movement.product, movement.destination_warehouse)
+        
         logger.info(f"Movement {movement.id} created, stock updated")
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using MovementRepository.
 
-        # Filter by movement type
-        movement_type = self.request.query_params.get('type')
-        if movement_type:
-            queryset = queryset.filter(movement_type=movement_type)
+        REFACTORED: Now uses QueryFilterExtractor and MovementRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_movement_filters()
 
-        # Filter by warehouse
-        warehouse_id = self.request.query_params.get('warehouse')
-        if warehouse_id:
-            queryset = queryset.filter(warehouse_id=warehouse_id)
+        # Handle legacy 'type' parameter (maps to 'movement_type')
+        if 'type' in self.request.query_params:
+            filters['movement_type'] = self.request.query_params.get('type')
 
-        # Filter by product
-        product_id = self.request.query_params.get('product')
-        if product_id:
-            queryset = queryset.filter(product_id=product_id)
-
-        # Filter by date range
-        start_date = self.request.query_params.get('start_date')
-        end_date = self.request.query_params.get('end_date')
-        if start_date:
-            queryset = queryset.filter(movement_date__gte=start_date)
-        if end_date:
-            queryset = queryset.filter(movement_date__lte=end_date)
-
-        return queryset.select_related(
-            'product', 'warehouse', 'destination_warehouse', 'organization'
-        ).order_by('-movement_date')
+        return MovementRepository.get_filtered(organization, filters)
 
 
 # ===============================
@@ -488,7 +505,11 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         return OrderSerializer
 
     def perform_create(self, serializer):
-        """Override to add debug logging"""
+        """
+        Create order with auto-generated order number.
+
+        REFACTORED: Now uses DocumentNumberFactory for order number generation.
+        """
         import logging
         logger = logging.getLogger(__name__)
 
@@ -496,27 +517,28 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         logger.info(f"Creating Order for organization: {organization.name} (ID: {organization.id})")
         logger.info(f"Serializer data: {serializer.validated_data}")
 
-        serializer.save(organization=organization)
+        # Generate order number using DocumentNumberFactory
+        order_number = DocumentNumberFactory.generate(
+            model_class=Order,
+            organization=organization,
+            doc_type='order',
+            field_name='order_number'
+        )
+
+        serializer.save(organization=organization, order_number=order_number)
 
     def get_queryset(self):
-        queryset = super().get_queryset()
+        """
+        Get filtered queryset using OrderRepository.
 
-        # Filter by status
-        order_status = self.request.query_params.get('status')
-        if order_status:
-            queryset = queryset.filter(status=order_status)
+        REFACTORED: Now uses QueryFilterExtractor and OrderRepository
+        to eliminate duplicate filtering logic.
+        """
+        organization = self.get_organization_from_request()
+        extractor = QueryFilterExtractor(self.request.query_params)
+        filters = extractor.extract_order_filters()
 
-        # Filter by supplier
-        supplier_id = self.request.query_params.get('supplier')
-        if supplier_id:
-            queryset = queryset.filter(supplier_id=supplier_id)
-
-        # Filter by warehouse
-        warehouse_id = self.request.query_params.get('warehouse')
-        if warehouse_id:
-            queryset = queryset.filter(warehouse_id=warehouse_id)
-
-        return queryset.select_related('supplier', 'warehouse', 'organization').prefetch_related('items')
+        return OrderRepository.get_filtered(organization, filters)
 
     @action(detail=True, methods=['post'])
     def confirm(self, request, organization_slug=None, pk=None):
@@ -1065,51 +1087,15 @@ class AlertViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     @action(detail=False, methods=['post'])
     def generate(self, request, organization_slug=None):
         """Generate alerts for low stock products"""
+        from .alert_utils import check_all_products_alerts
+        
         organization = self.get_organization_from_request()
-
-        # Find products with low stock
-        products = Product.objects.filter(
-            organization=organization,
-            is_active=True
-        ).annotate(
-            total_stock=Sum('stocks__quantity')
-        ).filter(
-            total_stock__lte=F('min_stock_level')
-        )
-
-        alerts_created = 0
-        for product in products:
-            # Check if alert already exists and is not resolved
-            existing_alert = Alert.objects.filter(
-                product=product,
-                alert_type='low_stock',
-                is_resolved=False
-            ).first()
-
-            if not existing_alert:
-                total_stock = product.get_total_stock()
-
-                if total_stock == 0:
-                    alert_type = 'out_of_stock'
-                    severity = 'critical'
-                    message = f"Rupture de stock pour {product.name}"
-                else:
-                    alert_type = 'low_stock'
-                    severity = 'high'
-                    message = f"Stock bas pour {product.name}: {total_stock} {product.get_unit_display()}"
-
-                Alert.objects.create(
-                    organization=organization,
-                    product=product,
-                    alert_type=alert_type,
-                    severity=severity,
-                    message=message
-                )
-                alerts_created += 1
+        result = check_all_products_alerts(organization)
 
         return Response({
-            'message': f'{alerts_created} alertes créées',
-            'count': alerts_created
+            'message': f"{result['created']} alerte(s) créée(s), {result['resolved']} résolue(s) automatiquement",
+            'created': result['created'],
+            'resolved': result['resolved']
         })
 
 
@@ -1748,3 +1734,916 @@ class InventoryStatsViewSet(OrganizationResolverMixin, viewsets.ViewSet):
         response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+class CustomerViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing customers
+    """
+    queryset = Customer.objects.all()
+    serializer_class = CustomerSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by active status
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        # Search
+        search = self.request.query_params.get('search')
+        if search:
+            queryset = queryset.filter(
+                Q(name__icontains=search) |
+                Q(code__icontains=search) |
+                Q(email__icontains=search) |
+                Q(phone__icontains=search)
+            )
+
+        return queryset
+
+    @action(detail=True, methods=['get'])
+    def sales_history(self, request, organization_slug=None, pk=None):
+        """Get sales history for a customer"""
+        customer = self.get_object()
+        sales = Sale.objects.filter(customer=customer).order_by('-sale_date')
+        serializer = SaleListSerializer(sales, many=True)
+        return Response(serializer.data)
+
+    @action(detail=True, methods=['get'])
+    def credit_history(self, request, organization_slug=None, pk=None):
+        """Get credit sales history for a customer"""
+        customer = self.get_object()
+        credits = CreditSale.objects.filter(customer=customer).order_by('-created_at')
+        serializer = CreditSaleSerializer(credits, many=True)
+        return Response(serializer.data)
+
+
+# ===============================
+# SALE VIEWSET
+# ===============================
+
+class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing sales with discounts
+    """
+    queryset = Sale.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action == 'list':
+            return SaleListSerializer
+        elif self.action in ['create', 'update', 'partial_update']:
+            return SaleCreateUpdateSerializer
+        return SaleSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by payment status
+        payment_status = self.request.query_params.get('payment_status')
+        if payment_status:
+            queryset = queryset.filter(payment_status=payment_status)
+
+        # Filter by customer
+        customer_id = self.request.query_params.get('customer')
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        # Filter by date range
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(sale_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(sale_date__lte=end_date)
+
+        # Filter by credit sales
+        is_credit = self.request.query_params.get('is_credit')
+        if is_credit is not None:
+            queryset = queryset.filter(is_credit_sale=is_credit.lower() == 'true')
+
+        return queryset.select_related('customer', 'warehouse', 'organization').prefetch_related('items')
+
+    def perform_create(self, serializer):
+        """
+        Créer une vente = Créer des mouvements de sortie automatiques.
+        
+        Une VENTE génère automatiquement:
+        - Des mouvements de sortie (1 par article vendu)
+        - La mise à jour des stocks
+        - Une vente à crédit si applicable
+        """
+        from django.db import transaction
+        
+        organization = self.get_organization_from_request()
+        
+        with transaction.atomic():
+            # Créer la vente (le serializer génère le numéro et les items)
+            sale = serializer.save(organization=organization)
+            
+            warehouse = sale.warehouse
+            movements_to_create = []
+            stocks_to_update = []
+            
+            # Pour chaque article vendu → créer un mouvement de sortie
+            for item in sale.items.all():
+                # Mouvement de sortie lié à la vente
+                movements_to_create.append(Movement(
+                    organization=organization,
+                    product=item.product,
+                    warehouse=warehouse,
+                    movement_type='out',
+                    quantity=item.quantity,
+                    reference=f"Vente {sale.sale_number}",
+                    notes=f"Client: {sale.customer.name if sale.customer else 'Anonyme'} | Produit: {item.product.name}",
+                    movement_date=sale.sale_date,
+                    sale=sale  # Liaison directe avec la vente
+                ))
+                
+                # Mettre à jour le stock
+                stock, _ = Stock.objects.get_or_create(
+                    product=item.product,
+                    warehouse=warehouse,
+                    defaults={'quantity': Decimal('0')}
+                )
+                stock.quantity -= item.quantity
+                stocks_to_update.append(stock)
+            
+            # Créer tous les mouvements en une seule requête
+            if movements_to_create:
+                Movement.objects.bulk_create(movements_to_create)
+            
+            # Mettre à jour tous les stocks en une seule requête
+            if stocks_to_update:
+                Stock.objects.bulk_update(stocks_to_update, ['quantity'])
+            
+            # Vérifier et créer les alertes de stock si nécessaire
+            from .alert_utils import check_and_update_stock_alert
+            for item in sale.items.all():
+                check_and_update_stock_alert(item.product, warehouse)
+            
+            # Créer la vente à crédit si nécessaire
+            if sale.is_credit_sale and sale.customer:
+                CreditSale.objects.create(
+                    organization=organization,
+                    sale=sale,
+                    customer=sale.customer,
+                    total_amount=sale.total_amount,
+                    paid_amount=sale.paid_amount,
+                    remaining_amount=sale.get_remaining_amount(),
+                    due_date=timezone.now().date() + timedelta(days=30)
+                )
+            
+            # Créer un paiement si un montant a été payé
+            if sale.paid_amount > 0:
+                receipt_number = DocumentNumberFactory.generate(
+                    model_class=Payment,
+                    organization=organization,
+                    doc_type='receipt',
+                    field_name='receipt_number'
+                )
+                Payment.objects.create(
+                    organization=organization,
+                    sale=sale,
+                    receipt_number=receipt_number,
+                    amount=sale.paid_amount,
+                    payment_method=sale.payment_method or 'cash',
+                    customer_name=sale.customer.name if sale.customer else '',
+                    customer_phone=sale.customer.phone if sale.customer else '',
+                    notes=f"Paiement initial - Vente {sale.sale_number}"
+                )
+
+    @action(detail=True, methods=['post'])
+    def add_payment(self, request, organization_slug=None, pk=None):
+        """Add a payment to a sale"""
+        sale = self.get_object()
+        amount = Decimal(str(request.data.get('amount', 0)))
+        payment_method = request.data.get('payment_method', 'cash')
+        
+        if amount <= 0:
+            return Response(
+                {'error': 'Le montant doit être supérieur à 0'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        remaining = sale.get_remaining_amount()
+        if amount > remaining:
+            return Response(
+                {'error': f'Le montant dépasse le solde restant ({remaining})'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Generate receipt number
+        # REFACTORED: Now uses DocumentNumberFactory
+        receipt_number = DocumentNumberFactory.generate(
+            model_class=Payment,
+            organization=sale.organization,
+            doc_type='receipt',  # Uses default prefix 'REC'
+            field_name='receipt_number'
+        )
+        
+        # Create payment
+        payment = Payment.objects.create(
+            organization=sale.organization,
+            sale=sale,
+            receipt_number=receipt_number,
+            amount=amount,
+            payment_method=payment_method,
+            customer_name=sale.customer.name if sale.customer else '',
+            customer_phone=sale.customer.phone if sale.customer else '',
+            reference=request.data.get('reference', ''),
+            notes=request.data.get('notes', '')
+        )
+        
+        # Update sale
+        sale.paid_amount += amount
+        sale.calculate_totals()
+        sale.save()
+        
+        # Update credit sale if exists
+        if hasattr(sale, 'credit_info'):
+            sale.credit_info.paid_amount += amount
+            sale.credit_info.update_status()
+            sale.credit_info.save()
+        
+        return Response({
+            'payment': PaymentSerializer(payment).data,
+            'sale': SaleSerializer(sale).data
+        })
+
+    @action(detail=True, methods=['get'], url_path='receipt')
+    def generate_receipt(self, request, organization_slug=None, pk=None):
+        """Generate receipt PDF for a sale"""
+        sale = self.get_object()
+        from .pdf_sales import generate_sale_receipt_pdf
+        
+        pdf_buffer = generate_sale_receipt_pdf(sale)
+        filename = f"Recu_{sale.sale_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=['post'])
+    def cancel(self, request, organization_slug=None, pk=None):
+        """Cancel a sale"""
+        sale = self.get_object()
+        
+        if sale.payment_status == 'paid':
+            return Response(
+                {'error': 'Impossible d\'annuler une vente payée'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Restore stock
+        for item in sale.items.all():
+            stock, created = Stock.objects.get_or_create(
+                product=item.product,
+                warehouse=sale.warehouse,
+                defaults={'quantity': Decimal('0')}
+            )
+            stock.quantity += item.quantity
+            stock.save()
+        
+        sale.payment_status = 'cancelled'
+        sale.save()
+        
+        # Cancel credit sale if exists
+        if hasattr(sale, 'credit_info'):
+            sale.credit_info.status = 'cancelled'
+            sale.credit_info.save()
+        
+        return Response(SaleSerializer(sale).data)
+
+
+# ===============================
+# PAYMENT VIEWSET
+# ===============================
+
+class PaymentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing payments
+    """
+    queryset = Payment.objects.all()
+    serializer_class = PaymentSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by date range
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(payment_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(payment_date__lte=end_date)
+
+        # Filter by payment method
+        payment_method = self.request.query_params.get('payment_method')
+        if payment_method:
+            queryset = queryset.filter(payment_method=payment_method)
+
+        return queryset.select_related('sale', 'organization').order_by('-payment_date')
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, organization_slug=None, pk=None):
+        """Export payment receipt as PDF"""
+        payment = self.get_object()
+        from .pdf_sales import generate_payment_receipt_pdf
+        
+        pdf_buffer = generate_payment_receipt_pdf(payment)
+        filename = f"Recu_{payment.receipt_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+
+# ===============================
+# EXPENSE CATEGORY VIEWSET
+# ===============================
+
+class ExpenseCategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing expense categories
+    """
+    queryset = ExpenseCategory.objects.all()
+    serializer_class = ExpenseCategorySerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        return queryset
+
+
+# ===============================
+# EXPENSE VIEWSET
+# ===============================
+
+class ExpenseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing expenses
+    """
+    queryset = Expense.objects.all()
+    serializer_class = ExpenseSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by category
+        category_id = self.request.query_params.get('category')
+        if category_id:
+            queryset = queryset.filter(category_id=category_id)
+
+        # Filter by date range
+        start_date = self.request.query_params.get('start_date')
+        end_date = self.request.query_params.get('end_date')
+        if start_date:
+            queryset = queryset.filter(expense_date__gte=start_date)
+        if end_date:
+            queryset = queryset.filter(expense_date__lte=end_date)
+
+        # Filter by payment method
+        payment_method = self.request.query_params.get('payment_method')
+        if payment_method:
+            queryset = queryset.filter(payment_method=payment_method)
+
+        return queryset.select_related('category', 'organization').order_by('-expense_date')
+
+    def perform_create(self, serializer):
+        organization = self.get_organization_from_request()
+        
+        # Generate expense number if not provided
+        # REFACTORED: Now uses DocumentNumberFactory
+        expense_data = serializer.validated_data
+        if not expense_data.get('expense_number'):
+            expense_data['expense_number'] = DocumentNumberFactory.generate(
+                model_class=Expense,
+                organization=organization,
+                doc_type='expense',  # Uses default prefix 'DEP'
+                field_name='expense_number'
+            )
+        
+        serializer.save(organization=organization)
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request, organization_slug=None):
+        """Get expense summary by period"""
+        organization = self.get_organization_from_request()
+        today = timezone.now().date()
+        
+        # Daily
+        daily_total = Expense.objects.filter(
+            organization=organization,
+            expense_date=today
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        
+        # Monthly
+        month_start = today.replace(day=1)
+        monthly_total = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=month_start
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        
+        # Yearly
+        year_start = today.replace(month=1, day=1)
+        yearly_total = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=year_start
+        ).aggregate(total=Sum('amount'))['total'] or Decimal('0')
+        
+        # By category (current month)
+        by_category = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=month_start
+        ).values('category__name').annotate(
+            total=Sum('amount'),
+            count=Count('id')
+        ).order_by('-total')
+        
+        return Response({
+            'daily_total': float(daily_total),
+            'monthly_total': float(monthly_total),
+            'yearly_total': float(yearly_total),
+            'by_category': list(by_category)
+        })
+
+    @action(detail=False, methods=['get'], url_path='export')
+    def export_expenses(self, request, organization_slug=None):
+        """Export expenses to Excel or PDF"""
+        export_format = request.query_params.get('format', 'pdf')
+        organization = self.get_organization_from_request()
+        
+        # Get filtered queryset
+        queryset = self.get_queryset()
+        
+        if export_format == 'excel':
+            from .excel_exports import export_expenses_excel
+            return export_expenses_excel(queryset)
+        else:
+            from .pdf_sales import export_expenses_pdf
+            return export_expenses_pdf(queryset, organization)
+
+
+# ===============================
+# PROFORMA INVOICE VIEWSET
+# ===============================
+
+class ProformaInvoiceViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing proforma invoices
+    """
+    queryset = ProformaInvoice.objects.all()
+    permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            return ProformaCreateUpdateSerializer
+        return ProformaInvoiceSerializer
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by status
+        proforma_status = self.request.query_params.get('status')
+        if proforma_status:
+            queryset = queryset.filter(status=proforma_status)
+
+        # Filter by customer
+        customer_id = self.request.query_params.get('customer')
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        return queryset.select_related('customer', 'organization').prefetch_related('items')
+
+    def perform_create(self, serializer):
+        organization = self.get_organization_from_request()
+        
+        # Generate proforma number
+        # REFACTORED: Now uses DocumentNumberFactory
+        proforma_data = serializer.validated_data
+        if not proforma_data.get('proforma_number'):
+            proforma_data['proforma_number'] = DocumentNumberFactory.generate(
+                model_class=ProformaInvoice,
+                organization=organization,
+                doc_type='proforma',  # Uses default prefix 'PF'
+                field_name='proforma_number'
+            )
+        
+        serializer.save(organization=organization)
+
+    @action(detail=True, methods=['post'])
+    def convert_to_sale(self, request, organization_slug=None, pk=None):
+        """Convert proforma to sale"""
+        proforma = self.get_object()
+        
+        if proforma.status == 'converted':
+            return Response(
+                {'error': 'Cette facture pro forma a déjà été convertie'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Get warehouse from request
+        warehouse_id = request.data.get('warehouse')
+        if not warehouse_id:
+            return Response(
+                {'error': 'Un entrepôt est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        try:
+            warehouse = Warehouse.objects.get(id=warehouse_id)
+        except Warehouse.DoesNotExist:
+            return Response(
+                {'error': 'Entrepôt non trouvé'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Generate sale number
+        # REFACTORED: Now uses DocumentNumberFactory
+        organization = proforma.organization
+        sale_number = DocumentNumberFactory.generate(
+            model_class=Sale,
+            organization=organization,
+            doc_type='sale',  # Uses default prefix 'VTE'
+            field_name='sale_number'
+        )
+        
+        # Create sale
+        sale = Sale.objects.create(
+            organization=organization,
+            customer=proforma.customer,
+            warehouse=warehouse,
+            sale_number=sale_number,
+            subtotal=proforma.subtotal,
+            discount_amount=proforma.discount_amount,
+            tax_amount=proforma.tax_amount,
+            total_amount=proforma.total_amount,
+            payment_status='pending',
+            notes=f"Converti depuis proforma {proforma.proforma_number}"
+        )
+        
+        # Copy items
+        for item in proforma.items.all():
+            SaleItem.objects.create(
+                sale=sale,
+                product=item.product,
+                quantity=item.quantity,
+                unit_price=item.unit_price,
+                discount_amount=item.discount_amount,
+                total=item.total
+            )
+        
+        # Update proforma
+        proforma.status = 'converted'
+        proforma.converted_sale = sale
+        proforma.save()
+        
+        return Response({
+            'message': 'Proforma converti en vente avec succès',
+            'sale': SaleSerializer(sale).data
+        })
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, organization_slug=None, pk=None):
+        """Export proforma as PDF"""
+        proforma = self.get_object()
+        from .pdf_sales import generate_proforma_pdf
+        
+        pdf_buffer = generate_proforma_pdf(proforma)
+        filename = f"Proforma_{proforma.proforma_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+
+# ===============================
+# PURCHASE ORDER VIEWSET
+# ===============================
+
+class PurchaseOrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing purchase orders
+    """
+    queryset = PurchaseOrder.objects.all()
+    serializer_class = PurchaseOrderSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by status
+        order_status = self.request.query_params.get('status')
+        if order_status:
+            queryset = queryset.filter(status=order_status)
+
+        # Filter by supplier
+        supplier_id = self.request.query_params.get('supplier')
+        if supplier_id:
+            queryset = queryset.filter(supplier_id=supplier_id)
+
+        return queryset.select_related('supplier', 'warehouse', 'organization').prefetch_related('items')
+
+    @action(detail=True, methods=['post'])
+    def approve(self, request, organization_slug=None, pk=None):
+        """Approve a purchase order"""
+        order = self.get_object()
+        
+        if order.status != 'pending':
+            return Response(
+                {'error': 'Seuls les bons en attente peuvent être approuvés'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        order.status = 'approved'
+        order.save()
+        
+        return Response(PurchaseOrderSerializer(order).data)
+
+    @action(detail=True, methods=['post'])
+    def send(self, request, organization_slug=None, pk=None):
+        """Mark order as sent to supplier"""
+        order = self.get_object()
+        
+        if order.status != 'approved':
+            return Response(
+                {'error': 'Le bon doit être approuvé avant l\'envoi'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        order.status = 'sent'
+        order.save()
+        
+        return Response(PurchaseOrderSerializer(order).data)
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, organization_slug=None, pk=None):
+        """Export purchase order as PDF"""
+        order = self.get_object()
+        from .pdf_sales import generate_purchase_order_pdf
+        
+        pdf_buffer = generate_purchase_order_pdf(order)
+        filename = f"BC_{order.order_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+
+# ===============================
+# DELIVERY NOTE VIEWSET
+# ===============================
+
+class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing delivery notes
+    """
+    queryset = DeliveryNote.objects.all()
+    serializer_class = DeliveryNoteSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by status
+        note_status = self.request.query_params.get('status')
+        if note_status:
+            queryset = queryset.filter(status=note_status)
+
+        # Filter by sale
+        sale_id = self.request.query_params.get('sale')
+        if sale_id:
+            queryset = queryset.filter(sale_id=sale_id)
+
+        return queryset.select_related('sale', 'organization').prefetch_related('items')
+
+    def perform_create(self, serializer):
+        organization = self.get_organization_from_request()
+        
+        # Generate delivery number
+        # REFACTORED: Now uses DocumentNumberFactory
+        delivery_data = serializer.validated_data
+        if not delivery_data.get('delivery_number'):
+            delivery_data['delivery_number'] = DocumentNumberFactory.generate(
+                model_class=DeliveryNote,
+                organization=organization,
+                doc_type='delivery',  # Uses default prefix 'BL'
+                field_name='delivery_number'
+            )
+        
+        serializer.save(organization=organization)
+
+    @action(detail=True, methods=['post'])
+    def mark_delivered(self, request, organization_slug=None, pk=None):
+        """Mark delivery as completed"""
+        note = self.get_object()
+        
+        if note.status == 'delivered':
+            return Response(
+                {'error': 'Cette livraison est déjà marquée comme effectuée'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        note.status = 'delivered'
+        note.delivered_at = timezone.now()
+        
+        # Update delivered quantities
+        for item in note.items.all():
+            item.delivered_quantity = item.quantity
+            item.save()
+        
+        note.save()
+        
+        return Response(DeliveryNoteSerializer(note).data)
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, organization_slug=None, pk=None):
+        """Export delivery note as PDF"""
+        note = self.get_object()
+        from .pdf_sales import generate_delivery_note_pdf
+        
+        pdf_buffer = generate_delivery_note_pdf(note)
+        filename = f"BL_{note.delivery_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+
+# ===============================
+# CREDIT SALE VIEWSET
+# ===============================
+
+class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet for managing credit sales
+    """
+    queryset = CreditSale.objects.all()
+    serializer_class = CreditSaleSerializer
+    permission_classes = [IsAuthenticated]
+
+    def get_queryset(self):
+        queryset = super().get_queryset()
+
+        # Filter by status
+        credit_status = self.request.query_params.get('status')
+        if credit_status:
+            queryset = queryset.filter(status=credit_status)
+
+        # Filter by customer
+        customer_id = self.request.query_params.get('customer')
+        if customer_id:
+            queryset = queryset.filter(customer_id=customer_id)
+
+        # Filter overdue
+        overdue = self.request.query_params.get('overdue')
+        if overdue == 'true':
+            queryset = queryset.filter(
+                due_date__lt=timezone.now().date(),
+                status__in=['pending', 'partial']
+            )
+
+        return queryset.select_related('sale', 'customer', 'organization').prefetch_related('payments')
+
+    @action(detail=True, methods=['post'])
+    def add_payment(self, request, organization_slug=None, pk=None):
+        """Add a credit payment"""
+        credit_sale = self.get_object()
+        amount = Decimal(str(request.data.get('amount', 0)))
+        
+        if amount <= 0:
+            return Response(
+                {'error': 'Le montant doit être supérieur à 0'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        if amount > credit_sale.remaining_amount:
+            return Response(
+                {'error': f'Le montant dépasse le solde restant ({credit_sale.remaining_amount})'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        # Create credit payment
+        payment = CreditPayment.objects.create(
+            credit_sale=credit_sale,
+            payment_date=timezone.now().date(),
+            amount=amount,
+            payment_method=request.data.get('payment_method', 'cash'),
+            reference=request.data.get('reference', ''),
+            notes=request.data.get('notes', '')
+        )
+        
+        # Also create a Payment on the sale so it appears in payment history
+        receipt_number = DocumentNumberFactory.generate(
+            model_class=Payment,
+            organization=credit_sale.organization,
+            doc_type='receipt',
+            field_name='receipt_number'
+        )
+        Payment.objects.create(
+            organization=credit_sale.organization,
+            sale=credit_sale.sale,
+            receipt_number=receipt_number,
+            amount=amount,
+            payment_method=request.data.get('payment_method', 'cash'),
+            customer_name=credit_sale.customer.name if credit_sale.customer else '',
+            customer_phone=credit_sale.customer.phone if credit_sale.customer else '',
+            reference=request.data.get('reference', ''),
+            notes=f"Paiement créance - {request.data.get('notes', '')}"
+        )
+        
+        # Update the sale totals
+        credit_sale.sale.paid_amount += amount
+        credit_sale.sale.calculate_totals()
+        credit_sale.sale.save()
+        
+        # Update credit sale
+        credit_sale.paid_amount += amount
+        credit_sale.remaining_amount = credit_sale.total_amount - credit_sale.paid_amount
+        if credit_sale.remaining_amount <= 0:
+            credit_sale.status = 'paid'
+        elif credit_sale.paid_amount > 0:
+            credit_sale.status = 'partial'
+        credit_sale.save()
+        
+        return Response({
+            'payment': CreditPaymentSerializer(payment).data,
+            'credit_sale': CreditSaleSerializer(credit_sale).data
+        })
+
+    @action(detail=True, methods=['post'])
+    def send_reminder(self, request, organization_slug=None, pk=None):
+        """Record a reminder sent for this credit sale"""
+        credit_sale = self.get_object()
+        
+        credit_sale.last_reminder_date = timezone.now().date()
+        credit_sale.reminder_count += 1
+        credit_sale.save()
+        
+        return Response({
+            'message': 'Rappel enregistré',
+            'credit_sale': CreditSaleSerializer(credit_sale).data
+        })
+
+    @action(detail=False, methods=['get'])
+    def summary(self, request, organization_slug=None):
+        """Get credit sales summary"""
+        organization = self.get_organization_from_request()
+        today = timezone.now().date()
+        
+        # Totals
+        total_credit = CreditSale.objects.filter(
+            organization=organization,
+            status__in=['pending', 'partial', 'overdue']
+        ).aggregate(
+            total=Sum('remaining_amount')
+        )['total'] or Decimal('0')
+        
+        # Overdue
+        overdue_count = CreditSale.objects.filter(
+            organization=organization,
+            due_date__lt=today,
+            status__in=['pending', 'partial']
+        ).count()
+        
+        overdue_amount = CreditSale.objects.filter(
+            organization=organization,
+            due_date__lt=today,
+            status__in=['pending', 'partial']
+        ).aggregate(
+            total=Sum('remaining_amount')
+        )['total'] or Decimal('0')
+        
+        # Due soon (next 7 days)
+        due_soon = CreditSale.objects.filter(
+            organization=organization,
+            due_date__gte=today,
+            due_date__lte=today + timedelta(days=7),
+            status__in=['pending', 'partial']
+        ).count()
+        
+        # By customer
+        by_customer = CreditSale.objects.filter(
+            organization=organization,
+            status__in=['pending', 'partial', 'overdue']
+        ).values('customer__name').annotate(
+            total=Sum('remaining_amount'),
+            count=Count('id')
+        ).order_by('-total')[:10]
+        
+        return Response({
+            'total_credit': float(total_credit),
+            'overdue_count': overdue_count,
+            'overdue_amount': float(overdue_amount),
+            'due_soon_count': due_soon,
+            'by_customer': list(by_customer)
+        })

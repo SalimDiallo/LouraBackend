@@ -33,38 +33,45 @@ class LouraAIAgent:
     
     # Prompt système pour l'assistant
     SYSTEM_PROMPT = """Tu es l'assistant IA de Loura, une application de gestion d'entreprise.
-Tu aides les utilisateurs à gérer leurs ressources humaines, inventaire, paie et plus.
+Organisation: {org_name}
 
-Contexte de l'organisation: {org_name}
+RÈGLES STRICTES:
+1. Tu NE DOIS JAMAIS inventer de données. Si tu ne sais pas, dis-le.
+2. Tu guides les utilisateurs dans l'utilisation de l'application.
+3. Tu expliques les fonctionnalités disponibles.
+4. Pour obtenir des données réelles, active le "Mode Agent".
 
-Tu peux:
-- Répondre aux questions sur les données de l'entreprise
-- Aider à créer, modifier ou supprimer des enregistrements
-- Fournir des statistiques et analyses
-- Guider les utilisateurs dans l'utilisation de l'application
-
-Réponds toujours en français de manière professionnelle mais amicale.
-Utilise des emojis avec modération pour rendre les réponses plus engageantes.
+Réponds en français, de manière professionnelle mais amicale.
 """
 
-    AGENT_SYSTEM_PROMPT = """Tu es l'agent IA autonome de Loura avec la capacité d'exécuter des actions.
+    AGENT_SYSTEM_PROMPT = """Tu es l'agent IA de Loura avec accès aux données réelles de l'entreprise.
 
 Organisation: {org_name}
 
-Tu as accès aux outils suivants:
+OUTILS DISPONIBLES:
 {tools_description}
 
-Quand l'utilisateur te demande d'effectuer une action:
-1. Analyse la demande
-2. Utilise les outils appropriés
-3. Rapporte le résultat
+RÈGLES ABSOLUES - À RESPECTER IMPÉRATIVEMENT:
+1. Tu NE DOIS JAMAIS inventer ou halluciner des données.
+2. TOUTE donnée que tu mentionnes DOIT provenir d'un outil.
+3. Si aucun outil n'a été exécuté, tu DOIS d'abord appeler un outil.
+4. Si un outil retourne des données vides, dis "Aucune donnée trouvée".
+5. JAMAIS de noms, chiffres ou informations inventés.
 
-Format de réponse pour les actions:
+FORMAT D'APPEL D'OUTIL:
 <action>
-{"tool": "nom_outil", "params": {"param1": "valeur1"}}
+{{"tool": "nom_outil", "params": {{}}}}
 </action>
 
-Réponds toujours en français.
+OUTILS ET QUAND LES UTILISER:
+- liste_departements: Pour lister les départements
+- rechercher_employes: Pour chercher des employés (param: query)
+- statistiques_rh: Pour les stats RH globales
+- verifier_stock: Pour vérifier un stock produit (param: product_name)
+- conges_en_cours: Pour voir qui est en congé
+- fiches_paie_recentes: Pour les fiches de paie récentes (param: limit)
+
+IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune invention.
 """
 
     def __init__(self, organization=None, model: str = None):
@@ -366,7 +373,33 @@ Réponds toujours en français.
             tool_results = []
             
             if agent_mode and "<action>" in content:
-                content, tool_calls, tool_results = self._process_agent_actions(content)
+                _, tool_calls, tool_results = self._process_agent_actions(content)
+                
+                # Si des outils ont été exécutés, rappeler l'IA avec les résultats réels
+                if tool_results:
+                    # Construire le message avec les résultats réels
+                    results_data = self._format_tool_results_for_ai(tool_results)
+                    
+                    # Ajouter la réponse précédente et les résultats
+                    messages.append({"role": "assistant", "content": content})
+                    messages.append({
+                        "role": "user", 
+                        "content": f"""Voici les données RÉELLES récupérées par les outils. 
+Réponds à l'utilisateur en utilisant UNIQUEMENT ces données. 
+NE JAMAIS inventer de données supplémentaires.
+
+DONNÉES RÉELLES:
+{results_data}
+
+Formule une réponse claire et concise basée UNIQUEMENT sur ces données."""
+                    })
+                    
+                    # Deuxième appel pour obtenir la réponse finale
+                    final_response = ollama.chat(
+                        model=self.model,
+                        messages=messages
+                    )
+                    content = final_response.message.content if hasattr(final_response, 'message') else str(final_response)
             
             response_time = int((time.time() - start_time) * 1000)
             
@@ -386,6 +419,37 @@ Réponds toujours en français.
                 "error": str(e),
                 "response_time_ms": int((time.time() - start_time) * 1000),
             }
+    
+    def _format_tool_results_for_ai(self, tool_results: List[Dict]) -> str:
+        """Formate les résultats des outils pour l'IA de manière lisible"""
+        formatted = []
+        for result in tool_results:
+            tool_name = result.get("tool", "unknown")
+            if result.get("success"):
+                data = result.get("data", [])
+                if isinstance(data, list):
+                    if len(data) == 0:
+                        formatted.append(f"[{tool_name}] Aucune donnée trouvée.")
+                    else:
+                        items = []
+                        for item in data:
+                            if isinstance(item, dict):
+                                # Formater chaque item de manière lisible
+                                item_str = ", ".join([f"{k}: {v}" for k, v in item.items() if v])
+                                items.append(f"  - {item_str}")
+                            else:
+                                items.append(f"  - {item}")
+                        formatted.append(f"[{tool_name}] {len(data)} résultat(s):\n" + "\n".join(items))
+                elif isinstance(data, dict):
+                    items = [f"  - {k}: {v}" for k, v in data.items()]
+                    formatted.append(f"[{tool_name}] Données:\n" + "\n".join(items))
+                else:
+                    formatted.append(f"[{tool_name}] {data}")
+            else:
+                error = result.get("error", "Erreur inconnue")
+                formatted.append(f"[{tool_name}] Erreur: {error}")
+        
+        return "\n\n".join(formatted)
 
     def _process_agent_actions(self, content: str) -> tuple:
         """Traite les actions demandées par l'agent"""
@@ -394,12 +458,14 @@ Réponds toujours en français.
         tool_calls = []
         tool_results = []
         
-        # Extraire les actions du contenu
-        action_pattern = r'<action>(.*?)</action>'
-        matches = re.findall(action_pattern, content, re.DOTALL)
+        # Essayer plusieurs patterns pour extraire les actions
+        # Pattern 1: JSON entre balises <action>
+        action_pattern = r'<action>\s*(.*?)\s*</action>'
+        matches = re.findall(action_pattern, content, re.DOTALL | re.IGNORECASE)
         
         for match in matches:
             try:
+                # Essayer de parser comme JSON
                 action = json.loads(match.strip())
                 tool_name = action.get("tool")
                 params = action.get("params", {})
@@ -422,6 +488,20 @@ Réponds toujours en français.
                     })
                     
             except json.JSONDecodeError:
+                # Essayer de parser comme XML-like: <tool_name /> ou <tool_name></tool_name>
+                inner_match = re.search(r'<(\w+)\s*/>', match) or re.search(r'<(\w+)>', match)
+                if inner_match:
+                    tool_name = inner_match.group(1)
+                    if tool_name in self.tools:
+                        tool_calls.append({"tool": tool_name, "params": {}})
+                        tool_func = self.tools[tool_name]["function"]
+                        result = tool_func()
+                        tool_results.append({
+                            "tool": tool_name,
+                            "success": result.success,
+                            "data": result.data,
+                            "error": result.error,
+                        })
                 continue
             except Exception as e:
                 tool_results.append({
@@ -430,18 +510,24 @@ Réponds toujours en français.
                     "error": str(e),
                 })
         
-        # Nettoyer le contenu des balises action
-        clean_content = re.sub(action_pattern, '', content, flags=re.DOTALL).strip()
+        # Si aucune action JSON trouvée, chercher des mentions directes d'outils
+        if not tool_results:
+            for tool_name in self.tools.keys():
+                # Chercher le nom de l'outil mentionné directement
+                if f"<{tool_name}" in content.lower() or f'"{tool_name}"' in content:
+                    tool_calls.append({"tool": tool_name, "params": {}})
+                    tool_func = self.tools[tool_name]["function"]
+                    result = tool_func()
+                    tool_results.append({
+                        "tool": tool_name,
+                        "success": result.success,
+                        "data": result.data,
+                        "error": result.error,
+                    })
+                    break  # Un seul outil à la fois pour éviter la confusion
         
-        # Ajouter les résultats au contenu si des actions ont été exécutées
-        if tool_results:
-            results_text = "\n\n📊 **Résultats des actions:**\n"
-            for result in tool_results:
-                if result["success"]:
-                    results_text += f"✅ {result['tool']}: {json.dumps(result['data'], ensure_ascii=False, indent=2)}\n"
-                else:
-                    results_text += f"❌ {result['tool']}: {result['error']}\n"
-            clean_content += results_text
+        # Nettoyer le contenu des balises action
+        clean_content = re.sub(action_pattern, '', content, flags=re.DOTALL | re.IGNORECASE).strip()
         
         return clean_content, tool_calls, tool_results
 
