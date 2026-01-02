@@ -1,54 +1,54 @@
 ### ======================================
 ### LOURA BACKEND - CORE APP ENDPOINTS
 ### ======================================
-### Base URL: http://localhost:8000/api/core
+### Base URL for Core: http://localhost:8000/api/core
+### Base URL for Auth: http://localhost:8000/api/auth
 ###
 ### Instructions:
-### 1. Ex�cuter d'abord Register ou Login pour obtenir les tokens
-### 2. Les tokens sont automatiquement stock�s dans les cookies HTTP-only
-### 3. Utiliser les tokens dans les headers pour les endpoints prot�g�s
+### 1. Execute Login (in Auth section) to get access/refresh tokens.
+### 2. Tokens are stored in variables (VS Code REST Client supports this if configured, 
+###    otherwise copy/paste token into @accessToken variable).
+### 3. Use these tokens for protected endpoints.
+### 4. Run "List Organizations" first to get an Organization ID (@orgId) for other tests.
 ###
-### Variables � personnaliser selon vos besoins
 ### ======================================
 
-@baseUrl = http://localhost:8000/api/core
+@coreUrl = http://localhost:8000/api/core
+@authUrl = http://localhost:8000/api/auth
 @email = admin@gmail.com
 @password = Admin123!
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY1ODk1ODM5LCJpYXQiOjE3NjU4OTQ5MzksImp0aSI6ImVjY2I3MzJhYjM4NjQxMGRiOWJiMGRlMGUwZDhlYTAzIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.sXQP-qS21TvkxzGBvWkFLynKUNbXmluXqq39COuDRi0
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NjQ5OTczOSwiaWF0IjoxNzY1ODk0OTM5LCJqdGkiOiJkNDUyZjNmZWQ0Y2I0NjI1YmU1MmI4YzM0MzQwODNjMyIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.0JB5hrnk98dhlSIsIO3mvcfzpEbDy39lasbe1jq5me0
+
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY3MzkwNDQzLCJpYXQiOjE3NjczODk1NDMsImp0aSI6Ijg2OWVlN2U3OGQzZjRjNDk4MjMxOWYyYWIzYTljOGM1IiwidXNlcl9pZCI6ImI3NjkyMWFjLWUyODEtNGJhNS1iMjQ4LWQ1M2EzN2M0NDdiYiJ9.J9fHIoptxzudw1uuqP7CY2b-1i4IVnawjGNg6LRz3m0
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2Nzk5NDM0MywiaWF0IjoxNzY3Mzg5NTQzLCJqdGkiOiJhNjI5OGNlMGI1Nzg0MDQyOGYxMmY2MmYxZTlkN2RmOSIsInVzZXJfaWQiOiJiNzY5MjFhYy1lMjgxLTRiYTUtYjI0OC1kNTNhMzdjNDQ3YmIifQ.tmIQx-XQ5sGNze4nfaRAUYF8SaHrZSiP8QIdIT8FsPI
+
 @orgId = fa12c6dd-7ace-4d76-8385-e1d7ad6bb92a
 
 
 ### ======================================
-### 1. AUTHENTICATION ENDPOINTS
+### 1. CORE AUTHENTICATION ENDPOINTS
 ### ======================================
 
 ### 1.1 Register - Inscription d'un nouvel administrateur
-POST {{baseUrl}}/auth/register/
+# Note: The register endpoint is located in the Core app/urls
+POST {{coreUrl}}/auth/register/
 Content-Type: application/json
 
 {
-  "email": "admin@loura.com",
+  "email": "admin@gmail.com",
   "password": "SecurePass123!",
   "password_confirm": "SecurePass123!",
   "first_name": "Admin",
-  "last_name": "Loura",
+  "last_name": "Gmail",
   "phone": "+224620000000"
 }
 
-### Exemple avec donn�es minimales (seuls email et password requis)
-POST {{baseUrl}}/auth/register/
-Content-Type: application/json
+### ======================================
+### 2. HELPER AUTH ENDPOINTS (from Auth App)
+### ======================================
+# These are necessary to get tokens for testing Core endpoints
 
-{
-  "email": "{{email}}",
-  "password": "{{password}}",
-  "password_confirm": "{{password}}"
-}
-
-
-### 1.2 Login - Connexion
-POST {{baseUrl}}/auth/login/
+### 2.1 Login Admin
+POST {{authUrl}}/admin/login/
 Content-Type: application/json
 
 {
@@ -56,115 +56,62 @@ Content-Type: application/json
   "password": "{{password}}"
 }
 
-
-### 1.3 Get Current User - Obtenir l'utilisateur connect�
-GET {{baseUrl}}/auth/me/
+### 2.2 Get Current User
+GET {{authUrl}}/me/
 Authorization: Bearer {{accessToken}}
-
-
-### 1.4 Refresh Token - Rafra�chir le token d'acc�s
-POST {{baseUrl}}/auth/refresh/
-Content-Type: application/json
-
-{
-  "refresh": "{{refreshToken}}"
-}
-
-
-### 1.5 Logout - D�connexion
-POST {{baseUrl}}/auth/logout/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "refresh": "{{refreshToken}}"
-}
 
 
 ### ======================================
-### 2. ORGANIZATIONS ENDPOINTS
+### 3. ORGANIZATIONS ENDPOINTS
 ### ======================================
 
-### 2.1 List Organizations - Lister toutes les organisations de l'admin connect�
-GET {{baseUrl}}/organizations/
+### 3.1 List Organizations - Lister toutes les organisations de l'admin connecte
+GET {{coreUrl}}/organizations/
 Authorization: Bearer {{accessToken}}
 
 
-### 2.2 Create Organization - Cr�er une nouvelle organisation
-POST {{baseUrl}}/organizations/
+### 3.2 Create Organization - Créer une nouvelle organisation
+POST {{coreUrl}}/organizations/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
   "name": "Test Organization",
-  "subdomain": "test-org",
+  "subdomain": "test-org-123",
   "category": 1,
   "settings": {
     "currency": "GNF",
     "country": "GN",
-    "timezone": "Africa/Conakry",
-    "language": "fr"
+    "contact_email": "info@test-org.com"
   }
 }
 
-### Exemple avec plus de param�tres
-POST {{baseUrl}}/organizations/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Tech Solutions SARL",
-  "subdomain": "techsolutions",
-  "category": 2,
-  "is_active": true,
-  "settings": {
-    "currency": "EUR",
-    "country": "FR",
-    "timezone": "Europe/Paris",
-    "language": "fr",
-    "theme": "dark",
-    "logo_url": "https://example.com/logo.png"
-  }
-}
-
-### Exemple minimal (seuls name, subdomain et category sont requis)
-POST {{baseUrl}}/organizations/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Organisation Test",
-  "subdomain": "org-test",
-  "category": 1
-}
-
-
-### 2.3 Get Organization Details - Obtenir les d�tails d'une organisation
-GET {{baseUrl}}/organizations/{{orgId}}/
+### 3.3 Get Organization Details
+GET {{coreUrl}}/organizations/{{orgId}}/
 Authorization: Bearer {{accessToken}}
 
 
-### 2.4 Update Organization (PUT) - Mise � jour compl�te
-PUT {{baseUrl}}/organizations/{{orgId}}/
+### 3.4 Update Organization (PUT)
+PUT {{coreUrl}}/organizations/{{orgId}}/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
   "name": "Organisation Mise a Jour",
-  "subdomain": "org-updated",
+  "subdomain": "org-updated-123",
   "category": 1,
   "is_active": true,
   "settings": {
     "currency": "USD",
     "country": "US",
-    "timezone": "America/New_York",
-    "language": "en"
+    "theme": "dark",
+    "contact_email": "contact@org-updated.com"
   }
 }
 
 
-### 2.5 Update Organization (PATCH) - Mise � jour partielle
-PATCH {{baseUrl}}/organizations/{{orgId}}/
+### 3.5 Update Organization (PATCH)
+PATCH {{coreUrl}}/organizations/{{orgId}}/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
@@ -172,161 +119,59 @@ Authorization: Bearer {{accessToken}}
   "name": "Nouveau Nom Organisation"
 }
 
-### Exemple: Mise � jour des settings uniquement
-PATCH {{baseUrl}}/organizations/{{orgId}}/
+
+### 3.6 Activate Organization
+POST {{coreUrl}}/organizations/{{orgId}}/activate/
+Authorization: Bearer {{accessToken}}
+
+
+### 3.7 Deactivate Organization
+POST {{coreUrl}}/organizations/{{orgId}}/deactivate/
+Authorization: Bearer {{accessToken}}
+
+
+### 3.8 Upload Organization Logo
+# Note: REST Client requires file path for multipart forms
+POST {{coreUrl}}/organizations/{{orgId}}/logo/
+Authorization: Bearer {{accessToken}}
+Content-Type: multipart/form-data; boundary=boundary
+
+--boundary
+Content-Disposition: form-data; name="logo"; filename="logo.png"
+Content-Type: image/png
+
+< ./logo.png
+--boundary--
+
+
+### 3.9 Delete Organization Logo
+DELETE {{coreUrl}}/organizations/{{orgId}}/logo/
+Authorization: Bearer {{accessToken}}
+
+
+### 3.10 Delete Organization (Soft Delete)
+DELETE {{coreUrl}}/organizations/{{orgId}}/
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 4. CATEGORIES ENDPOINTS (Read-Only)
+### ======================================
+### 4.0 Create Category
+POST {{coreUrl}}/categories/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "settings": {
-    "theme": "light",
-    "language": "en"
-  }
+  "name": "Commerce",
+  "description": "Gestion des produits et services de commerce "
 }
 
-
-### 2.6 Activate Organization - Activer une organisation
-POST {{baseUrl}}/organizations/{{orgId}}/activate/
+### 4.1 List Categories
+GET {{coreUrl}}/categories/
 Authorization: Bearer {{accessToken}}
 
 
-### 2.7 Deactivate Organization - D�sactiver une organisation
-POST {{baseUrl}}/organizations/{{orgId}}/deactivate/
+### 4.2 Get Category Details
+GET {{coreUrl}}/categories/1/
 Authorization: Bearer {{accessToken}}
-
-
-### 2.8 Delete Organization - Supprimer une organisation (soft delete)
-DELETE {{baseUrl}}/organizations/{{orgId}}/
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 3. CATEGORIES ENDPOINTS (Read-Only)
-### ======================================
-
-### 3.1 List Categories - Lister toutes les cat�gories
-GET {{baseUrl}}/categories/
-Authorization: Bearer {{accessToken}}
-
-
-### 3.2 Get Category Details - Obtenir les d�tails d'une cat�gorie
-GET {{baseUrl}}/categories/1/
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 4. SC�NARIOS DE TEST COMPLETS
-### ======================================
-
-### Sc�nario 1: Inscription et cr�ation d'organisation
-# 1. Register
-POST {{baseUrl}}/auth/register/
-Content-Type: application/json
-
-{
-  "email": "nouveau@test.com",
-  "password": "Pass123!",
-  "password2": "Pass123!",
-  "first_name": "Nouveau",
-  "last_name": "Utilisateur"
-}
-
-# 2. Copier le access token de la r�ponse
-# 3. Cr�er une organisation
-POST {{baseUrl}}/organizations/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Nouvelle Entreprise",
-  "subdomain": "nouvelle-entreprise",
-  "category": 1
-}
-
-
-### Sc�nario 2: Gestion du cycle de vie d'une organisation
-# 1. Cr�er organisation (voir ci-dessus)
-# 2. Consulter les d�tails
-# 3. D�sactiver
-# 4. R�activer
-# 5. Supprimer
-
-
-### ======================================
-### 5. TESTS D'ERREURS
-### ======================================
-
-### Test: Inscription avec mot de passe non conforme
-POST {{baseUrl}}/auth/register/
-Content-Type: application/json
-
-{
-  "email": "test@test.com",
-  "password": "123",
-  "password2": "123"
-}
-
-
-### Test: Connexion avec credentials invalides
-POST {{baseUrl}}/auth/login/
-Content-Type: application/json
-
-{
-  "email": "wrong@email.com",
-  "password": "wrongpassword"
-}
-
-
-### Test: Acc�s � un endpoint prot�g� sans token
-GET {{baseUrl}}/organizations/
-
-
-### Test: Cr�ation organisation avec subdomain d�j� existant
-POST {{baseUrl}}/organizations/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Test Duplicate",
-  "subdomain": "premiere-org",
-  "category": 1
-}
-
-
-### Test: Acc�s � une organisation qui n'appartient pas � l'admin
-GET {{baseUrl}}/organizations/99999/
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 6. NOTES IMPORTANTES
-### ======================================
-
-### Cookies HTTP-Only:
-### Les endpoints d'authentification d�finissent automatiquement
-### les tokens dans des cookies HTTP-only pour plus de s�curit�.
-### Les tokens sont �galement retourn�s dans le corps de la r�ponse
-### pour plus de flexibilit�.
-
-### Tokens JWT:
-### - Access Token: 15 minutes de validit�
-### - Refresh Token: 7 jours de validit�
-### - Les refresh tokens sont automatiquement rot�s et blacklist�s
-
-### Multi-Tenant:
-### - Chaque AdminUser ne voit que ses propres organisations
-### - Le subdomain doit �tre unique dans tout le syst�me
-### - Les organisations ont des settings personnalisables
-
-### Soft Delete:
-### - La suppression d'une organisation est "soft"
-### - L'organisation reste en base avec deleted_at != null
-### - Pour restauration ult�rieure si n�cessaire
-
-### Champs Settings disponibles:
-### - currency: Code devise (ex: GNF, EUR, USD, MAD)
-### - country: Code pays (ex: GN, FR, MA)
-### - timezone: Fuseau horaire (ex: Africa/Conakry)
-### - language: Langue (ex: fr, en)
-### - theme: Th�me UI (optionnel)
-### - logo_url: URL du logo (optionnel)

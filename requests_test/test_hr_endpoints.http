@@ -1,862 +1,215 @@
-### ======================================
-### LOURA BACKEND - HR APP ENDPOINTS
-### ======================================
-### Base URL: http://localhost:8000/api/hr
-###
-### Instructions:
-### 1. D'abord créer un employee via AdminUser ou se connecter avec un employee existant
-### 2. Les tokens sont automatiquement stockés dans les cookies HTTP-only
-### 3. Utiliser les tokens dans les headers pour les endpoints protégés
-###
-### Variables à personnaliser selon vos besoins
-### ======================================
-
-@baseUrl = http://localhost:8000/api/hr
-@coreUrl = http://localhost:8000/api/core
-@employeeEmail = bah@gmail.com
-@employeePassword = Bah2019@
-@subdomain = louradesing
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY1ODk1ODM5LCJpYXQiOjE3NjU4OTQ5MzksImp0aSI6ImVjY2I3MzJhYjM4NjQxMGRiOWJiMGRlMGUwZDhlYTAzIiwidXNlcl9pZCI6IjdkNDM5ODM4LWFmMTUtNGY5NC1iMDBjLTYzNWU1NjAyMDFkNSJ9.sXQP-qS21TvkxzGBvWkFLynKUNbXmluXqq39COuDRi0
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NjQ5OTczOSwiaWF0IjoxNzY1ODk0OTM5LCJqdGkiOiJkNDUyZjNmZWQ0Y2I0NjI1YmU1MmI4YzM0MzQwODNjMyIsInVzZXJfaWQiOiI3ZDQzOTgzOC1hZjE1LTRmOTQtYjAwYy02MzVlNTYwMjAxZDUifQ.0JB5hrnk98dhlSIsIO3mvcfzpEbDy39lasbe1jq5me0
-@employeeId = b1162b84-31ef-4ae1-8a2f-9077c178deea
-@organizationId = fa12c6dd-7ace-4d76-8385-e1d7ad6bb92a
-
+### Global Variables
+@baseUrl = http://localhost:8000/api
+@coreUrl = {{baseUrl}}/core
+@hrUrl = {{baseUrl}}/hr
 
 ### ======================================
-### 1. EMPLOYEE AUTHENTICATION ENDPOINTS
+### SETUP
 ### ======================================
+@email = admin@gmail.com
+@password = Max1234@
 
-### 1.1 Employee Login - Connexion d'un employé
-POST {{baseUrl}}/auth/login/
+# LOGIN to get Access Token
+# --------------------------------------------------------
+POST {{baseUrl}}/auth/admin/login/
 Content-Type: application/json
 
 {
-  "email": "{{employeeEmail}}",
-  "password": "{{employeePassword}}",
-  "organization_subdomain": "{{subdomain}}"
+  "email": "{{email}}",
+  "password": "{{password}}"
 }
 
-### 1.2 Get Current Employee - Obtenir les infos de l'employé connecté
-GET {{baseUrl}}/auth/me/
-Authorization: Bearer {{accessToken}}
-
-### 1.3 Change Password - Changer le mot de passe
-POST {{baseUrl}}/auth/change-password/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "old_password": "{{employeePassword}}",
-  "new_password": "NewPassword123!",
-  "new_password_confirm": "NewPassword123!"
-}
-
-### 1.4 Employee Logout - Déconnexion
-POST {{baseUrl}}/auth/logout/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "refresh": "{{refreshToken}}"
-}
+### VARIABLES (Update after login/creation)
+# --------------------------------------------------------
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY3Mzk1NDc4LCJpYXQiOjE3NjczOTQ1NzgsImp0aSI6ImUzMzFmMTliZTkzOTQ2YmVhY2Y1M2UyNTYwYjM2MDNiIiwidXNlcl9pZCI6ImI3NjkyMWFjLWUyODEtNGJhNS1iMjQ4LWQ1M2EzN2M0NDdiYiJ9.lV1sPzZ6Y-vChp-2l7iVfD9L1F2k9YI-h4K7Yk0K3w0
+@orgId = fa12c6dd-7ace-4d76-8385-e1d7ad6bb92a
+# Subdomain of the created organization
+@orgSubdomain = my-super-organization-e892d1
 
 
 ### ======================================
-### 2. EMPLOYEE MANAGEMENT ENDPOINTS
+### 1. DEPARTMENTS
 ### ======================================
 
-### 2.1 List Employees - Liste des employés (par AdminUser ou HR Admin)
-# Sans filtre: retourne les employés de TOUTES les organisations de l'admin
-GET {{baseUrl}}/employees/
-Authorization: Bearer {{accessToken}}
-
-### 2.1b List Employees for specific organization - Par subdomain
-GET {{baseUrl}}/employees/?organization_subdomain={{subdomain}}
-Authorization: Bearer {{accessToken}}
-
-### 2.1c List Employees for specific organization - Par ID
-GET {{baseUrl}}/employees/?organization={{organizationId}}
-Authorization: Bearer {{accessToken}}
-
-### 2.2 Create Employee - Créer un nouvel employé (AdminUser ou HR Admin)
-POST {{baseUrl}}/employees/
+### 1.1 Create Engineering Department
+POST {{hrUrl}}/departments/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "email": "employe@company.com",
-  "password": "SecurePass123!",
-  "password_confirm": "SecurePass123!",
-  "first_name": "Jean",
-  "last_name": "Dupont",
-  "phone": "+224620000001",
-  "employee_id": "EMP001",
-  "employment_status": "active",
-  "organization": "{{organizationId}}"
+  "organization": "{{orgId}}",
+  "name": "Direction Technique",
+  "code": "TECH",
+  "description": "Département en charge de la technologie et du développement"
 }
 
-### Exemple: Créer un HR Admin avec rôle
-POST {{baseUrl}}/employees/
+### 1.2 Create HR Department
+POST {{hrUrl}}/departments/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "email": "hr.admin@company.com",
-  "password": "AdminHR123!",
-  "password_confirm": "AdminHR123!",
-  "first_name": "Marie",
-  "last_name": "Martin",
-  "phone": "+224620000002",
-  "employee_id": "HR001",
-  "role_id": "{hr_admin_role_id}",
-  "employment_status": "active"
+  "organization": "{{orgId}}",
+  "name": "Ressources Humaines",
+  "code": "RH",
+  "description": "Gestion du personnel"
 }
 
-### 2.3 Get Employee Details - Détails d'un employé
-GET {{baseUrl}}/employees/{{employeeId}}/
+### 1.3 List Departments
+GET {{hrUrl}}/departments/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}
 
-### 2.4 Update Employee (PATCH) - Mise à jour partielle
-PATCH {{baseUrl}}/employees/{{employeeId}}/
+
+### ======================================
+### 2. POSITIONS
+### ======================================
+
+### 2.1 Create Developer Position
+POST {{hrUrl}}/positions/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "phone": "+224620999999",
-  "employment_status": "active"
+  "organization": "{{orgId}}",
+  "title": "Développeur Senior",
+  "code": "DEV-SENIOR",
+  "description": "Développement backend et frontend",
+  "min_salary": 5000000,
+  "max_salary": 12000000
 }
 
-### Exemple: Mise à jour avec nouveaux champs
-PATCH {{baseUrl}}/employees/{{employeeId}}/
+### 2.2 Create HR Manager Position
+POST {{hrUrl}}/positions/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "phone": "+224620123456",
-  "date_of_birth": "1990-05-15",
-  "gender": "male",
-  "address": "123 Avenue de la République",
+  "organization": "{{orgId}}",
+  "title": "Responsable RH",
+  "code": "HR-MGR",
+  "description": "Gestion de l'équipe RH",
+  "min_salary": 6000000,
+  "max_salary": 15000000
+}
+
+### 2.3 List Positions
+GET {{hrUrl}}/positions/?organization={{orgId}}
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 3. ROLES (Authentication/Permissions)
+### ======================================
+
+### 3.1 List System Roles
+GET {{hrUrl}}/roles/?organization={{orgId}}&is_system_role=true
+Authorization: Bearer {{accessToken}}
+
+
+### ======================================
+### 4. EMPLOYEES
+### ======================================
+
+# IMPORTANT: Replace @departmentId and @positionId with real UUIDs from previous responses
+@departmentId = REPLACE_WITH_DEPT_UUID
+@positionId = REPLACE_WITH_POS_UUID
+
+### 4.1 Create Employee (Standard)
+POST {{hrUrl}}/employees/
+Content-Type: application/json
+Authorization: Bearer {{accessToken}}
+
+{
+  "organization": "{{orgId}}",
+  "email": "moussa.diallo@example.com",
+  "password": "Password123!",
+  "password_confirm": "Password123!",
+  "first_name": "Moussa",
+  "last_name": "Diallo",
+  "phone": "+224620101010",
+  "employee_id": "EMP-001",
+  "gender": "M",
+  "date_of_birth": "1995-05-15",
+  "address": "Hamdallaye",
   "city": "Conakry",
   "country": "GN",
-  "avatar_url": "https://example.com/avatars/employee.jpg"
+  "hire_date": "2024-01-01",
+  "employment_status": "active",
+  "department": "{{departmentId}}",
+  "position": "{{positionId}}"
 }
 
-### 2.5 Activate Employee - Activer un employé
-POST {{baseUrl}}/employees/{{employeeId}}/activate/
+
+### 4.2 List Employees
+GET {{hrUrl}}/employees/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}
 
-### 2.6 Deactivate Employee - Désactiver un employé
-POST {{baseUrl}}/employees/{{employeeId}}/deactivate/
+### 4.3 Get Employee Detail
+@employeeId = REPLACE_WITH_EMPLOYEE_ID
+GET {{hrUrl}}/employees/{{employeeId}}/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}
 
 
 ### ======================================
-### 3. ROLES & PERMISSIONS ENDPOINTS
+### 5. CONTRACTS
 ### ======================================
 
-### 3.1 List All Permissions - Liste de toutes les permissions disponibles
-GET {{baseUrl}}/permissions/
-Authorization: Bearer {{accessToken}}
-
-### 3.2 List Permissions by Category - Filtrer par catégorie
-GET {{baseUrl}}/permissions/?category=Employés
-Authorization: Bearer {{accessToken}}
-
-### 3.3 Get Permission Details
-GET {{baseUrl}}/permissions/{permission_id}/
-Authorization: Bearer {{accessToken}}
-
-### 3.4 List Roles - Liste des rôles
-GET {{baseUrl}}/roles/
-Authorization: Bearer {{accessToken}}
-
-### 3.5 List System Roles Only - Rôles système uniquement
-GET {{baseUrl}}/roles/?is_system_role=true
-Authorization: Bearer {{accessToken}}
-
-### 3.6 List Active Custom Roles - Rôles personnalisés actifs
-GET {{baseUrl}}/roles/?is_system_role=false&is_active=true
-Authorization: Bearer {{accessToken}}
-
-### 3.7 Search Roles - Rechercher un rôle
-GET {{baseUrl}}/roles/?search=admin
-Authorization: Bearer {{accessToken}}
-
-### 3.8 Create Custom Role - Créer un rôle personnalisé
-POST {{baseUrl}}/roles/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "code": "custom_manager",
-  "name": "Manager d'équipe",
-  "description": "Manager avec permissions limitées",
-  "permission_codes": [
-    "hr.view_employee",
-    "hr.view_department",
-    "hr.view_leaverequest",
-    "hr.approve_leaverequest"
-  ],
-  "is_active": true
-}
-
-### 3.9 Create Role with Full HR Permissions
-POST {{baseUrl}}/roles/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "code": "hr_specialist",
-  "name": "Spécialiste RH",
-  "description": "Accès complet aux données RH sauf administration",
-  "permission_codes": [
-    "hr.view_employee",
-    "hr.add_employee",
-    "hr.change_employee",
-    "hr.view_department",
-    "hr.view_position",
-    "hr.view_contract",
-    "hr.view_leaverequest",
-    "hr.approve_leaverequest",
-    "hr.view_payslip"
-  ],
-  "is_active": true
-}
-
-### 3.10 Get Role Details - Détails d'un rôle avec ses permissions
-GET {{baseUrl}}/roles/{role_id}/
-Authorization: Bearer {{accessToken}}
-
-### 3.11 Update Role - Mettre à jour un rôle
-PATCH {{baseUrl}}/roles/{role_id}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "description": "Description mise à jour",
-  "permission_codes": [
-    "hr.view_employee",
-    "hr.view_department"
-  ]
-}
-
-### 3.12 Assign Role to Employee - Attribuer un rôle à un employé
-PATCH {{baseUrl}}/employees/{{employeeId}}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "role_id": "{role_id}"
-}
-
-### 3.13 Add Custom Permissions to Employee - Permissions personnalisées
-PATCH {{baseUrl}}/employees/{{employeeId}}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "custom_permission_codes": [
-    "hr.view_payslip",
-    "hr.view_contract"
-  ]
-}
-
-### 3.14 Delete Role - Supprimer un rôle personnalisé
-DELETE {{baseUrl}}/roles/{role_id}/
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 4. DEPARTMENT ENDPOINTS
-### ======================================
-@id = bee6f90b-a9b2-4d26-a40c-47b55b8cd701
-
-### 3.1 List Departments - Liste des départements
-GET {{baseUrl}}/departments/
-Authorization: Bearer {{accessToken}}
-
-### 3.2 Create Department - Créer un département
-POST {{baseUrl}}/departments/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Techniques",
-  "code": "techniques",
-  "description": "Équipe de développement logiciel",
-  "is_active": true,
-  "organization": "{{organizationId}}"
-}
-
-### 3.3 Get Department Details
-GET {{baseUrl}}/departments/{id}/
-Authorization: Bearer {{accessToken}}
-
-### 3.4 Update Department
-PATCH {{baseUrl}}/departments/{id}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "description": "Équipe de développement et innovation"
-}
-
-
-### ======================================
-### 4. POSITION ENDPOINTS
-### ======================================
-
-### 4.1 List Positions - Liste des postes
-GET {{baseUrl}}/positions/
-Authorization: Bearer {{accessToken}}
-
-### 4.2 Create Position - Créer un poste
-POST {{baseUrl}}/positions/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "title": "Développeur Full Stack",
-  "code": "DEV-FS",
-  "description": "Développeur maîtrisant front-end et back-end",
-  "min_salary": 50000,
-  "max_salary": 80000,
-  "is_active": true,
-  "organization": "{{organizationId}}"
-}
-
-### 4.3 Update Position
-PATCH {{baseUrl}}/positions/{id}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "min_salary": 55000,
-  "max_salary": 85000
-}
-
-
-### ======================================
-### 5. CONTRACT ENDPOINTS
-### ======================================
-
-### 5.1 List Contracts - Liste des contrats
-GET {{baseUrl}}/contracts/
-Authorization: Bearer {{accessToken}}
-
-### 5.2 Create Contract - Créer un contrat permanent (CDI)
-POST {{baseUrl}}/contracts/
+### 5.1 Create Contract (CDI)
+POST {{hrUrl}}/contracts/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
   "employee": "{{employeeId}}",
-  "contract_type": "permanent",
-  "start_date": "2025-01-01",
-  "base_salary": 60000,
+  "contract_type": "cdi",
+  "start_date": "2024-01-01",
+  "base_salary": 8500000,
   "currency": "GNF",
   "salary_period": "monthly",
   "hours_per_week": 40,
-  "description": "Contrat CDI pour développeur",
+  "description": "Contrat à durée indéterminée",
   "is_active": true
 }
 
-### Exemple: Contrat temporaire (CDD) avec date de fin
-POST {{baseUrl}}/contracts/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "contract_type": "temporary",
-  "start_date": "2025-01-01",
-  "end_date": "2025-12-31",
-  "base_salary": 50000,
-  "currency": "GNF",
-  "salary_period": "monthly",
-  "hours_per_week": 35,
-  "is_active": true
-}
-
-### Exemple: Contrat de stage
-POST {{baseUrl}}/contracts/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "contract_type": "internship",
-  "start_date": "2025-03-01",
-  "end_date": "2025-08-31",
-  "base_salary": 15000,
-  "currency": "GNF",
-  "salary_period": "monthly",
-  "hours_per_week": 35,
-  "description": "Stage de 6 mois",
-  "is_active": true
-}
-
-### Exemple: Contrat freelance
-POST {{baseUrl}}/contracts/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "contract_type": "freelance",
-  "start_date": "2025-01-01",
-  "end_date": "2025-06-30",
-  "base_salary": 80000,
-  "currency": "GNF",
-  "salary_period": "monthly",
-  "hours_per_week": 40,
-  "description": "Mission freelance développement",
-  "is_active": true
-}
-
-### 5.3 Get Contract Details
-GET {{baseUrl}}/contracts/34317dae-8660-4b3e-8755-185cd2b9a1c0/
+### 5.2 List Contracts
+GET {{hrUrl}}/contracts/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}
 
 
 ### ======================================
-### 6. LEAVE TYPE ENDPOINTS
+### 6. LEAVE TYPES
 ### ======================================
 
-### 6.1 List Leave Types - Liste des types de congés
-GET {{baseUrl}}/leave-types/
-Authorization: Bearer {{accessToken}}
-
-### 6.2 Create Leave Type - Créer un type de congé
-POST {{baseUrl}}/leave-types/
+### 6.1 Create Annual Leave
+POST {{hrUrl}}/leave-types/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "name": "Congé maternité",
-  "code": "CMAT",
-  "description": "Congé de maternité selon la législation en vigueur",
-  "default_days_per_year": 98,
+  "organization": "{{orgId}}",
+  "name": "Congé Annuel",
+  "code": "ANNUAL",
+  "default_days_per_year": 30,
   "is_paid": true,
   "requires_approval": true,
-  "max_consecutive_days": 98,
-  "color": "#F59E42",
-  "is_active": true,
-  "organization": "{{organizationId}}"
+  "color": "#eab308"
 }
 
-
-### Exemple: Congé maladie
-POST {{baseUrl}}/leave-types/
+### 6.2 Create Sick Leave
+POST {{hrUrl}}/leave-types/
 Content-Type: application/json
 Authorization: Bearer {{accessToken}}
 
 {
-  "name": "Congé ferie",
-  "code": "CM2",
-  "description": "Congé pour raison médicale",
+  "organization": "{{orgId}}",
+  "name": "Maladie",
+  "code": "SICK",
   "default_days_per_year": 10,
   "is_paid": true,
   "requires_approval": false,
-  "color": "#EF4444",
-  "is_active": true,
-  "organization" : "{{organizationId}}"
+  "color": "#ef4444"
 }
 
-
-### ======================================
-### 7. LEAVE BALANCE ENDPOINTS
-### ======================================
-
-### 7.1 List Leave Balances - Liste des soldes de congés
-GET {{baseUrl}}/leave-balances/
+### 6.3 List Leave Types
+GET {{hrUrl}}/leave-types/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}
-
-### 7.2 Create/Update Leave Balance - Créer un solde de congés
-POST {{baseUrl}}/leave-balances/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "leave_type": "d7b5f980-5da3-494a-b31e-9bc4bd8e80bc",
-  "year": 2024,
-  "total_days": 15,
-  "used_days": 0,
-  "pending_days": 0
-}
-
-### 7.3 Get Leave Balance
-GET {{baseUrl}}/leave-balances/{id}/
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 8. LEAVE REQUEST ENDPOINTS
-### ======================================
-
-### 8.1 List Leave Requests - Liste des demandes de congés
-GET {{baseUrl}}/leave-requests/
-Authorization: Bearer {{accessToken}}
-
-### 8.2 Create Leave Request - Créer une demande de congé
-POST {{baseUrl}}/leave-requests/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-{
-  "leave_type": "{leave_type_id}",
-  "start_date": "2025-12-20",
-  "end_date": "2025-12-31",
-  "start_half_day": false,
-  "end_half_day": false,
-  "total_days": 10,
-  "reason": "Congés de fin d'année"
-}
-
-### Exemple: Congé avec demi-journées
-POST {{baseUrl}}/leave-requests/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "leave_type": "{leave_type_id}",
-  "start_date": "2025-06-15",
-  "end_date": "2025-06-16",
-  "start_half_day": true,
-  "end_half_day": true,
-  "total_days": 1,
-  "reason": "Rendez-vous médical"
-}
-
-### 8.3 Get Leave Request Details
-GET {{baseUrl}}/leave-requests/{id}/
-Authorization: Bearer {{accessToken}}
-
-### 8.4 Approve Leave Request - Approuver une demande (Manager ou HR Admin)
-POST {{baseUrl}}/leave-requests/{id}/approve/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "status": "approved",
-  "approval_notes": "Approuvé"
-}
-
-### 8.5 Reject Leave Request - Rejeter une demande (Manager ou HR Admin)
-POST {{baseUrl}}/leave-requests/{id}/reject/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "status": "rejected",
-  "approval_notes": "Période trop chargée, merci de reporter"
-}
-
-
-### ======================================
-### 9. PAYROLL PERIOD ENDPOINTS
-### ======================================
-
-### 9.1 List Payroll Periods - Liste des périodes de paie
-GET {{baseUrl}}/payroll-periods/
-Authorization: Bearer {{accessToken}}
-
-### 9.2 Create Payroll Period - Créer une période de paie
-POST {{baseUrl}}/payroll-periods/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "name": "Janvier 2025",
-  "start_date": "2025-01-01",
-  "end_date": "2025-01-31",
-  "payment_date": "2025-02-05",
-  "status": "draft",
-  "notes": "Période de paie de janvier",
-  "organization": "{{organizationId}}"
-}
-
-### 9.3 Update Payroll Period Status
-PATCH {{baseUrl}}/payroll-periods/{id}/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "status": "processing"
-}
-
-
-### ======================================
-### 10. PAYSLIP ENDPOINTS
-### ======================================
-
-### 10.1 List Payslips - Liste des fiches de paie
-GET {{baseUrl}}/payslips/
-Authorization: Bearer {{accessToken}}
-
-### 10.2 Create Payslip - Créer une fiche de paie (NOUVELLE STRUCTURE)
-POST {{baseUrl}}/payslips/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "payroll_period": "{payroll_period_id}",
-  "base_salary": 500000,
-  "allowances": [
-    {"name": "Prime de transport", "amount": 25000},
-    {"name": "Prime de logement", "amount": 50000},
-    {"name": "Prime d'ancienneté", "amount": 30000}
-  ],
-  "deductions": [
-    {"name": "Cotisation sociale (CNPS)", "amount": 18000},
-    {"name": "Impôt sur le revenu", "amount": 50000},
-    {"name": "Avance sur salaire", "amount": 20000}
-  ],
-  "currency": "GNF",
-  "worked_hours": 160,
-  "overtime_hours": 0,
-  "leave_days_taken": 0,
-  "payment_method": "Virement bancaire",
-  "notes": "Paie du mois de janvier 2025"
-}
-
-### Exemple: Fiche de paie avec salaire horaire
-POST {{baseUrl}}/payslips/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "payroll_period": "{payroll_period_id}",
-  "base_salary": 300000,
-  "allowances": [
-    {"name": "Heures supplémentaires (10h à 5000/h)", "amount": 50000}
-  ],
-  "deductions": [
-    {"name": "Retenue CNSS", "amount": 12600}
-  ],
-  "currency": "GNF",
-  "worked_hours": 160,
-  "overtime_hours": 10,
-  "payment_method": "Espèces"
-}
-
-### Exemple: Fiche de paie simple (sans primes ni déductions)
-POST {{baseUrl}}/payslips/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "employee": "{{employeeId}}",
-  "payroll_period": "{payroll_period_id}",
-  "base_salary": 400000,
-  "currency": "GNF"
-}
-
-### 10.3 Get Payslip Details
-GET {{baseUrl}}/payslips/{id}/
-Authorization: Bearer {{accessToken}}
-
-### 10.4 Mark Payslip as Paid - Marquer comme payé
-POST {{baseUrl}}/payslips/{id}/mark_as_paid/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "payment_reference": "WIRE-2025-01-001"
-}
-
-### 10.5 Export Payslip as PDF - Exporter en PDF
-GET {{baseUrl}}/payslips/{id}/export_pdf/
-Authorization: Bearer {{accessToken}}
-
-### 10.6 Generate Payslips for Period - Génération groupée
-POST {{baseUrl}}/payslips/generate_for_period/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "payroll_period": "{payroll_period_id}"
-}
-
-### Exemple: Génération avec filtres (par département)
-POST {{baseUrl}}/payslips/generate_for_period/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "payroll_period": "{payroll_period_id}",
-  "employee_filters": {
-    "department": "{department_id}"
-  }
-}
-
-### Exemple: Génération avec filtres (par poste)
-POST {{baseUrl}}/payslips/generate_for_period/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "payroll_period": "{payroll_period_id}",
-  "employee_filters": {
-    "position": "{position_id}"
-  }
-}
-
-### 10.7 Get Payroll Statistics - Obtenir les statistiques de paie
-GET {{baseUrl}}/stats/payroll/?organization_subdomain={{subdomain}}
-Authorization: Bearer {{accessToken}}
-
-### 10.8 Get Payroll Statistics with Filters - Statistiques filtrées par année et mois
-GET {{baseUrl}}/stats/payroll/?organization_subdomain={{subdomain}}&year=2025&month=1
-Authorization: Bearer {{accessToken}}
-
-
-### ======================================
-### 11. SCÉNARIOS DE TEST COMPLETS
-### ======================================
-
-### Scénario 1: Workflow complet d'onboarding d'un employé
-# 1. AdminUser crée une organisation (via core app)
-# 2. AdminUser crée un département
-# 3. AdminUser crée un poste
-# 4. AdminUser crée un employé
-# 5. AdminUser crée un contrat pour l'employé
-# 6. Employé se connecte avec ses credentials
-
-### Scénario 2: Workflow de demande de congé
-# 1. Employé se connecte
-# 2. Employé consulte ses soldes de congés
-# 3. Employé crée une demande de congé
-# 4. Manager/HR Admin approuve ou rejette la demande
-# 5. Le solde de congés est automatiquement mis à jour
-
-### Scénario 3: Workflow de paie
-# 1. HR Admin crée une période de paie
-# 2. HR Admin génère les fiches de paie pour tous les employés
-# 3. HR Admin marque les fiches comme payées
-# 4. Employés peuvent consulter leurs fiches de paie
-
-
-### ======================================
-### 12. TESTS D'ERREURS
-### ======================================
-
-### Test: Connexion avec mauvais subdomain
-POST {{baseUrl}}/auth/login/
-Content-Type: application/json
-
-{
-  "email": "employee@test.com",
-  "password": "test123",
-  "organization_subdomain": "nonexistent"
-}
-
-### Test: Créer un employé avec email déjà existant
-POST {{baseUrl}}/employees/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "email": "{{employeeEmail}}",
-  "password": "Test123!",
-  "password_confirm": "Test123!"
-}
-
-### Test: Demande de congé sans solde suffisant
-POST {{baseUrl}}/leave-requests/
-Content-Type: application/json
-Authorization: Bearer {{accessToken}}
-
-{
-  "leave_type": "{leave_type_id}",
-  "start_date": "2025-01-01",
-  "end_date": "2025-12-31",
-  "total_days": 365,
-  "reason": "Test dépassement"
-}
-
-
-
-
-
-
-### ======================================
-### 13. NOTES IMPORTANTES
-### ======================================
-
-### Architecture multi-tenant:
-### - Les AdminUser (core app) peuvent créer et gérer les employees
-### - Les Employees appartiennent à UNE organisation
-### - Chaque employee ne voit que les données de son organisation
-
-### Système de Rôles et Permissions:
-### Les employés ont un système de rôles basé sur le modèle Role avec permissions granulaires.
-###
-### Rôles système prédéfinis (is_system_role=True):
-### - super_admin: Accès total au système (toutes permissions)
-### - hr_admin: Administrateur RH (gestion complète du module HR)
-### - manager: Manager (peut gérer son équipe et approuver les congés)
-###
-### Rôles personnalisés:
-### Les organisations peuvent créer des rôles personnalisés avec des permissions spécifiques.
-### Chaque rôle contient une liste de permissions (codes) comme:
-### - hr.view_employee, hr.add_employee, hr.change_employee, hr.delete_employee
-### - hr.view_department, hr.add_department, etc.
-### - hr.view_leaverequest, hr.approve_leaverequest
-### - hr.view_payslip, hr.add_payslip
-###
-### Attribution des rôles:
-### - Chaque employé peut avoir UN rôle (assigned_role)
-### - Chaque employé peut avoir des permissions personnalisées supplémentaires (custom_permissions)
-### - Les permissions finales = permissions du rôle + permissions personnalisées
-###
-### Méthodes utiles sur Employee:
-### - employee.has_permission('hr.view_employee') -> True/False
-### - employee.get_all_permissions() -> QuerySet de toutes les permissions
-### - employee.is_super_admin() -> True si rôle = super_admin
-### - employee.is_hr_admin() -> True si rôle = super_admin ou hr_admin
-
-### Authentification:
-### - Les employees s'authentifient avec: email + password + subdomain organisation
-### - Les tokens sont les mêmes que pour AdminUser (JWT)
-### - Séparation des endpoints: /api/core/auth/ (AdminUser) vs /api/hr/auth/ (Employee)
-
-### Workflow de congés:
-### 1. L'organisation configure les types de congés (LeaveType)
-### 2. Les soldes sont créés pour chaque employé (LeaveBalance)
-### 3. Les employés créent des demandes (LeaveRequest)
-### 4. Les managers/HR approuvent ou rejettent
-### 5. Les soldes sont automatiquement mis à jour
-
-### Workflow de paie:
-### 1. Créer une période de paie (PayrollPeriod)
-### 2. Générer les fiches de paie (Payslip) pour chaque employé
-### 3. Les totaux (brut, net) sont calculés automatiquement
-### 4. Marquer comme "payé" une fois le virement effectué
-###
-### Types de contrats (contract_type):
-### - permanent: CDI - Contrat à Durée Indéterminée
-### - temporary: CDD - Contrat à Durée Déterminée
-### - contract: Contractuel
-### - internship: Stage
-### - freelance: Freelance/Consultant
-###
-### Nouveaux champs Employee (ajoutés):
-### - phone: Numéro de téléphone
-### - date_of_birth: Date de naissance
-### - gender: Genre (male/female/other)
-### - address: Adresse complète
-### - city: Ville
-### - country: Code pays (2 lettres, ex: GN)
-### - avatar_url: URL de la photo de profil
-###
-### Champs Employment Status:
-### - active: Actif
-### - on_leave: En congé
-### - suspended: Suspendu
-### - terminated: Terminé
-
-GET {{baseUrl}}/permissions/
-Content-Type: application/json

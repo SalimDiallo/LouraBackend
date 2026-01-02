@@ -64,8 +64,10 @@ FORMAT D'APPEL D'OUTIL:
 </action>
 
 OUTILS ET QUAND LES UTILISER:
+- liste_employes: Pour lister TOUS les employés
 - liste_departements: Pour lister les départements
-- rechercher_employes: Pour chercher des employés (param: query)
+- liste_produits: Pour lister les produits en stock
+- rechercher_employes: Pour chercher un employé spécifique (param: query)
 - statistiques_rh: Pour les stats RH globales
 - verifier_stock: Pour vérifier un stock produit (param: product_name)
 - conges_en_cours: Pour voir qui est en congé
@@ -82,6 +84,11 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
     def _register_tools(self) -> Dict[str, callable]:
         """Enregistre les outils disponibles pour l'agent"""
         return {
+            "liste_employes": {
+                "function": self._list_employees,
+                "description": "Liste tous les employés de l'organisation",
+                "params": []
+            },
             "rechercher_employes": {
                 "function": self._search_employees,
                 "description": "Recherche des employés par nom, département ou poste",
@@ -95,6 +102,11 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
             "liste_departements": {
                 "function": self._list_departments,
                 "description": "Liste tous les départements de l'organisation",
+                "params": []
+            },
+            "liste_produits": {
+                "function": self._list_products,
+                "description": "Liste tous les produits en stock",
                 "params": []
             },
             "verifier_stock": {
@@ -124,7 +136,70 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
 
     # ==================== OUTILS MÉTIER ====================
     
-    def _search_employees(self, query: str) -> ToolResult:
+    def _list_employees(self) -> ToolResult:
+        """Liste tous les employés de l'organisation"""
+        start = time.time()
+        try:
+            from hr.models import Employee
+            
+            if not self.organization:
+                return ToolResult(success=False, data=None, error="Organisation non définie")
+            
+            employees = Employee.objects.filter(organization=self.organization)[:20]
+            
+            results = [
+                {
+                    "id": str(e.id),
+                    "nom": f"{e.first_name} {e.last_name}",
+                    "email": e.email,
+                    "poste": str(e.position) if e.position else "Non défini",
+                    "departement": e.department.name if e.department else "Non assigné",
+                    "statut": e.employment_status or "actif",
+                }
+                for e in employees
+            ]
+            
+            return ToolResult(
+                success=True,
+                data=results,
+                execution_time_ms=int((time.time() - start) * 1000)
+            )
+        except Exception as e:
+            return ToolResult(success=False, data=None, error=str(e))
+    
+    def _list_products(self) -> ToolResult:
+        """Liste tous les produits"""
+        start = time.time()
+        try:
+            from inventory.models import Product, Stock
+            
+            if not self.organization:
+                return ToolResult(success=False, data=None, error="Organisation non définie")
+            
+            products = Product.objects.filter(organization=self.organization)[:20]
+            
+            results = []
+            for p in products:
+                stocks = Stock.objects.filter(product=p)
+                total_qty = sum(s.quantity for s in stocks)
+                results.append({
+                    "id": str(p.id),
+                    "nom": p.name,
+                    "sku": p.sku,
+                    "categorie": p.category.name if p.category else "Non catégorisé",
+                    "prix": float(p.selling_price) if p.selling_price else 0,
+                    "stock": total_qty,
+                })
+            
+            return ToolResult(
+                success=True,
+                data=results,
+                execution_time_ms=int((time.time() - start) * 1000)
+            )
+        except Exception as e:
+            return ToolResult(success=False, data=None, error=str(e))
+
+    def _search_employees(self, query: str = "") -> ToolResult:
         """Recherche des employés"""
         start = time.time()
         try:
@@ -134,14 +209,18 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
             if not self.organization:
                 return ToolResult(success=False, data=None, error="Organisation non définie")
             
-            employees = Employee.objects.filter(
-                organization=self.organization
-            ).filter(
-                Q(first_name__icontains=query) |
-                Q(last_name__icontains=query) |
-                Q(email__icontains=query) |
-                Q(employee_id__icontains=query)
-            )[:10]
+            employees = Employee.objects.filter(organization=self.organization)
+            
+            # Filtrer si une requête est fournie
+            if query:
+                employees = employees.filter(
+                    Q(first_name__icontains=query) |
+                    Q(last_name__icontains=query) |
+                    Q(email__icontains=query) |
+                    Q(employee_id__icontains=query)
+                )
+            
+            employees = employees[:10]
             
             results = [
                 {
@@ -223,7 +302,7 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
         except Exception as e:
             return ToolResult(success=False, data=None, error=str(e))
 
-    def _check_stock(self, product_name: str) -> ToolResult:
+    def _check_stock(self, product_name: str = "") -> ToolResult:
         """Vérifie le stock d'un produit"""
         start = time.time()
         try:
@@ -232,10 +311,13 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
             if not self.organization:
                 return ToolResult(success=False, data=None, error="Organisation non définie")
             
-            products = Product.objects.filter(
-                organization=self.organization,
-                name__icontains=product_name
-            )[:5]
+            products = Product.objects.filter(organization=self.organization)
+            
+            # Filtrer si un nom de produit est fourni
+            if product_name:
+                products = products.filter(name__icontains=product_name)
+            
+            products = products[:5]
             
             results = []
             for p in products:

@@ -77,7 +77,7 @@ class OrganizationSettingsSerializer(serializers.ModelSerializer):
     """Serializer for organization settings"""
     class Meta:
         model = OrganizationSettings
-        fields = ['country', 'currency', 'contact_email']
+        fields = ['country', 'currency', 'contact_email', ]
 
 
 class OrganizationSerializer(serializers.ModelSerializer):

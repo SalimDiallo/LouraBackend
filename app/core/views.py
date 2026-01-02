@@ -191,7 +191,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 # Category Views
 # -------------------------------
 
-class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+class CategoryViewSet(viewsets.ModelViewSet):
     """ViewSet for viewing categories (read-only)"""
     permission_classes = [IsAuthenticated]
     queryset = Category.objects.all()

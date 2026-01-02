@@ -188,6 +188,108 @@ class ChatView(APIView):
         })
 
 
+class ChatStreamView(APIView):
+    """
+    Endpoint pour le chat IA avec streaming (Server-Sent Events)
+    """
+    permission_classes = [IsAuthenticated]
+    
+    def post(self, request):
+        import json
+        from django.http import StreamingHttpResponse
+        
+        serializer = ChatRequestSerializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+        
+        data = serializer.validated_data
+        message_content = data['message']
+        agent_mode = data.get('agent_mode', False)
+        model = data.get('model')
+        
+        # Récupérer l'organisation
+        org_subdomain = request.headers.get('X-Organization-Subdomain')
+        if not org_subdomain:
+            return Response(
+                {'error': 'X-Organization-Subdomain header required'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        organization = get_object_or_404(Organization, subdomain=org_subdomain)
+        
+        def generate():
+            try:
+                import ollama
+                
+                agent = LouraAIAgent(organization=organization, model=model)
+                org_name = organization.name
+                
+                if agent_mode:
+                    system_prompt = agent.AGENT_SYSTEM_PROMPT.format(
+                        org_name=org_name,
+                        tools_description=agent._get_tools_description()
+                    )
+                else:
+                    system_prompt = agent.SYSTEM_PROMPT.format(org_name=org_name)
+                
+                messages = [{"role": "system", "content": system_prompt}]
+                messages.append({"role": "user", "content": message_content})
+                
+                # Streaming avec Ollama
+                full_content = ""
+                for chunk in ollama.chat(
+                    model=agent.model,
+                    messages=messages,
+                    stream=True
+                ):
+                    if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                        token = chunk.message.content
+                        full_content += token
+                        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                
+                # Si mode agent, traiter les actions après le streaming complet
+                tool_calls = []
+                tool_results = []
+                
+                if agent_mode and "<action>" in full_content:
+                    _, tool_calls, tool_results = agent._process_agent_actions(full_content)
+                    
+                    if tool_results:
+                        # Envoyer les résultats des outils
+                        yield f"data: {json.dumps({'type': 'tools', 'tool_calls': tool_calls, 'tool_results': tool_results})}\n\n"
+                        
+                        # Générer la réponse finale basée sur les données
+                        results_data = agent._format_tool_results_for_ai(tool_results)
+                        messages.append({"role": "assistant", "content": full_content})
+                        messages.append({
+                            "role": "user",
+                            "content": f"Voici les données RÉELLES. Réponds UNIQUEMENT basé sur celles-ci:\n{results_data}"
+                        })
+                        
+                        yield f"data: {json.dumps({'type': 'clear'})}\n\n"
+                        
+                        for chunk in ollama.chat(
+                            model=agent.model,
+                            messages=messages,
+                            stream=True
+                        ):
+                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                                token = chunk.message.content
+                                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                
+                yield f"data: {json.dumps({'type': 'done'})}\n\n"
+                
+            except Exception as e:
+                yield f"data: {json.dumps({'type': 'error', 'error': str(e)})}\n\n"
+        
+        response = StreamingHttpResponse(
+            generate(),
+            content_type='text/event-stream'
+        )
+        response['Cache-Control'] = 'no-cache'
+        response['X-Accel-Buffering'] = 'no'
+        return response
+
+
 class AIModelsView(APIView):
     """
     Endpoint pour lister les modèles IA disponibles
@@ -223,3 +325,4 @@ class AIToolsView(APIView):
         ]
         
         return Response({'tools': tools})
+
