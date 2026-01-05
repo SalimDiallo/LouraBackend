@@ -191,9 +191,9 @@ class PayrollService:
         advance.approval_date = timezone.now()
         advance.approval_notes = notes
         
-        if isinstance(approver, Employee):
+        if getattr(approver, 'user_type', None) == 'employee':
             advance.approved_by = approver
-        elif isinstance(approver, AdminUser):
+        elif getattr(approver, 'user_type', None) == 'admin':
             advance.approved_by_admin = approver
         
         advance.save()

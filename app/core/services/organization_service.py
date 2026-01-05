@@ -138,9 +138,9 @@ class OrganizationService:
         from .models import AdminUser
         from hr.models import Employee
         
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             return organization.admin == user
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             return user.organization_id == organization.id
         
         return False

@@ -1,15 +1,20 @@
+"""
+Authentication Serializers
+==========================
+Serializers unifiés pour l'authentification Admin et Employee.
+"""
+
 from rest_framework import serializers
-from django.contrib.auth import authenticate
-from core.models import AdminUser
+from django.contrib.auth.hashers import check_password
+from core.models import BaseUser, AdminUser, Organization, Category
 from hr.models import Employee
 
 
-# -------------------------------
-# Admin Login Serializer
-# -------------------------------
-
-class AdminLoginSerializer(serializers.Serializer):
-    """Serializer for admin user login"""
+class UnifiedLoginSerializer(serializers.Serializer):
+    """
+    Serializer unifié pour la connexion Admin et Employee.
+    Recherche l'utilisateur dans BaseUser et détermine son type.
+    """
     email = serializers.EmailField(required=True)
     password = serializers.CharField(
         required=True,
@@ -18,80 +23,179 @@ class AdminLoginSerializer(serializers.Serializer):
     )
 
     def validate(self, data):
-        """Validate and authenticate admin user"""
-        email = data.get('email')
+        email = data.get('email').lower().strip()
         password = data.get('password')
 
-        if email and password:
-            user = authenticate(
-                request=self.context.get('request'),
-                username=email,
-                password=password
-            )
+        if not email or not password:
+            raise serializers.ValidationError({
+                'non_field_errors': 'Email et mot de passe sont requis'
+            })
 
-            if not user:
-                raise serializers.ValidationError(
-                    'Email ou mot de passe incorrect',
-                    code='authorization'
-                )
-
-            if not user.is_active:
-                raise serializers.ValidationError(
-                    'Ce compte est desactive',
-                    code='authorization'
-                )
-
-            data['user'] = user
-            return data
-        else:
-            raise serializers.ValidationError(
-                'Email et mot de passe sont requis',
-                code='authorization'
-            )
-
-
-# -------------------------------
-# Employee Login Serializer
-# -------------------------------
-
-class EmployeeLoginSerializer(serializers.Serializer):
-    """Serializer for employee login"""
-    email = serializers.EmailField()
-    password = serializers.CharField(write_only=True)
-
-    def validate(self, attrs):
-        email = attrs.get('email')
-        password = attrs.get('password')
-
-        # Get employee by email (there should be only one active employee with this email)
+        # Rechercher dans BaseUser (parent de AdminUser et Employee)
         try:
-            employee = Employee.objects.select_related('organization').get(email=email, is_active=True)
-        except Employee.DoesNotExist:
+            user = BaseUser.objects.get(email=email)
+        except BaseUser.DoesNotExist:
             raise serializers.ValidationError({
                 'email': 'Identifiants invalides.'
             })
-        except Employee.MultipleObjectsReturned:
-            # If multiple employees with same email exist (rare case), take the first active one
-            employee = Employee.objects.select_related('organization').filter(
-                email=email,
-                is_active=True
-            ).first()
-            if not employee:
-                raise serializers.ValidationError({
-                    'email': 'Identifiants invalides.'
-                })
 
-        # Check password
-        if not employee.check_password(password):
+        # Vérifier le mot de passe
+        if not user.check_password(password):
             raise serializers.ValidationError({
                 'password': 'Identifiants invalides.'
             })
 
-        # Check if organization is active
-        if not employee.organization.is_active:
+        # Vérifier si le compte est actif
+        if not user.is_active:
             raise serializers.ValidationError({
-                'non_field_errors': "Votre organisation n'est pas active."
+                'non_field_errors': 'Ce compte est désactivé.'
             })
 
-        attrs['employee'] = employee
-        return attrs
+        # Si c'est un Employee, vérifier l'organisation
+        if user.user_type == 'employee':
+            try:
+                employee = user.employee
+                if not employee.organization.is_active:
+                    raise serializers.ValidationError({
+                        'non_field_errors': "Votre organisation n'est pas active."
+                    })
+                data['user'] = employee
+            except Employee.DoesNotExist:
+                raise serializers.ValidationError({
+                    'non_field_errors': 'Compte employé invalide.'
+                })
+        else:
+            # AdminUser
+            try:
+                data['user'] = user.adminuser
+            except AdminUser.DoesNotExist:
+                data['user'] = user
+
+        data['user_type'] = user.user_type
+        return data
+
+
+class AdminRegistrationSerializer(serializers.Serializer):
+    """
+    Serializer pour l'inscription d'un Admin avec création d'organisation.
+    Crée simultanément un AdminUser et son Organisation.
+    """
+    # Données Admin
+    email = serializers.EmailField(required=True)
+    password = serializers.CharField(
+        required=True,
+        min_length=8,
+        write_only=True,
+        style={'input_type': 'password'}
+    )
+    first_name = serializers.CharField(required=True, max_length=100)
+    last_name = serializers.CharField(required=True, max_length=100)
+    phone = serializers.CharField(required=False, max_length=20, allow_blank=True)
+
+ 
+    def validate_email(self, value):
+        email = value.lower().strip()
+        if BaseUser.objects.filter(email=email).exists():
+            raise serializers.ValidationError('Cet email est déjà utilisé.')
+        return email
+
+    def create(self, validated_data):
+        # Créer l'AdminUser
+        print(validated_data)
+        admin = AdminUser.objects.create_user(
+            email=validated_data['email'],
+            password=validated_data['password'],
+            first_name=validated_data['first_name'],
+            last_name=validated_data['last_name'],
+            phone=validated_data.get('phone', ''),
+        )
+
+        return {
+            'admin': admin,
+        }
+
+
+class UserResponseSerializer(serializers.ModelSerializer):
+    """Serializer pour la réponse utilisateur après connexion"""
+    
+    class Meta:
+        model = BaseUser
+        fields = [
+            'id', 'email', 'first_name', 'last_name', 'phone',
+            'avatar_url', 'user_type', 'language', 'timezone',
+            'is_active', 'email_verified', 'last_login',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = fields
+
+
+class AdminUserResponseSerializer(UserResponseSerializer):
+    """Serializer pour AdminUser avec ses organisations"""
+    organizations = serializers.SerializerMethodField()
+
+    class Meta(UserResponseSerializer.Meta):
+        model = AdminUser
+        fields = UserResponseSerializer.Meta.fields + ['organizations']
+
+    def get_organizations(self, obj):
+        return [{
+            'id': str(org.id),
+            'name': org.name,
+            'subdomain': org.subdomain,
+            'logo_url': org.logo_url,
+            'is_active': org.is_active
+        } for org in obj.organizations.all()]
+
+
+class EmployeeUserResponseSerializer(UserResponseSerializer):
+    """Serializer pour Employee avec son organisation"""
+    organization = serializers.SerializerMethodField()
+    department = serializers.SerializerMethodField()
+    position = serializers.SerializerMethodField()
+    permissions = serializers.SerializerMethodField()
+
+    class Meta(UserResponseSerializer.Meta):
+        model = Employee
+        fields = UserResponseSerializer.Meta.fields + [
+            'employee_id', 'organization', 'department', 
+            'position', 'employment_status', 'permissions'
+        ]
+
+    def get_organization(self, obj):
+        return {
+            'id': str(obj.organization.id),
+            'name': obj.organization.name,
+            'subdomain': obj.organization.subdomain,
+            'logo_url': obj.organization.logo_url
+        }
+
+    def get_department(self, obj):
+        if obj.department:
+            return {
+                'id': str(obj.department.id),
+                'name': obj.department.name
+            }
+        return None
+
+    def get_position(self, obj):
+        if obj.position:
+            return {
+                'id': str(obj.position.id),
+                'title': obj.position.title
+            }
+        return None
+
+    def get_permissions(self, obj):
+        """Retourne la liste des permissions de l'employé"""
+        return list(obj.get_all_permissions().values_list('code', flat=True))
+
+
+# Legacy serializers pour rétrocompatibilité
+class AdminLoginSerializer(UnifiedLoginSerializer):
+    """Alias pour rétrocompatibilité"""
+    pass
+
+
+class EmployeeLoginSerializer(UnifiedLoginSerializer):
+    """Alias pour rétrocompatibilité"""
+    pass

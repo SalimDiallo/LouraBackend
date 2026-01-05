@@ -80,10 +80,10 @@ class ApprovableMixin:
         from hr.models import Employee
         
         # Admin peut toujours approuver
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             return True
         
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             # Vérifier la permission
             if self.approval_permission and user.has_permission(self.approval_permission):
                 return True

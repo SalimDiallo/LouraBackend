@@ -140,9 +140,9 @@ class LeaveService:
         leave_request.approval_notes = notes
         
         # Assigner l'approbateur
-        if isinstance(approver, Employee):
+        if getattr(approver, 'user_type', None) == 'employee':
             leave_request.approver = approver
-        elif isinstance(approver, AdminUser):
+        elif getattr(approver, 'user_type', None) == 'admin':
             leave_request.approved_by_admin = approver
         
         leave_request.save()
@@ -183,9 +183,9 @@ class LeaveService:
         leave_request.approval_date = timezone.now()
         leave_request.approval_notes = notes
         
-        if isinstance(rejector, Employee):
+        if getattr(rejector, 'user_type', None) == 'employee':
             leave_request.approver = rejector
-        elif isinstance(rejector, AdminUser):
+        elif getattr(rejector, 'user_type', None) == 'admin':
             leave_request.approved_by_admin = rejector
         
         leave_request.save()

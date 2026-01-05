@@ -1,16 +1,15 @@
 """
 Core Mixins - Patterns réutilisables pour les ViewSets
+======================================================
 
-Ce module implémente les design patterns suivants :
-- Mixin Pattern : Code réutilisable pour les ViewSets
-- Strategy Pattern : Résolution d'organisation selon le type d'utilisateur
-- Template Method : Structure commune avec points d'extension
-
-Ces mixins sont conçus pour être indépendants et réutilisables par toutes les apps.
+Ces mixins sont adaptés au nouveau système BaseUser avec user_type.
+Admin a toutes les permissions, Employee vérifie via son rôle.
 """
+
 import logging
 from rest_framework import serializers
-from django.db.models import QuerySet
+from rest_framework.response import Response
+from rest_framework import status
 
 logger = logging.getLogger(__name__)
 
@@ -18,12 +17,7 @@ logger = logging.getLogger(__name__)
 class OrganizationResolverMixin:
     """
     Mixin pour résoudre l'organisation courante selon le contexte.
-    
-    Implémente le Strategy Pattern pour différencier AdminUser et Employee.
-    
-    Usage:
-        class MyViewSet(OrganizationResolverMixin, viewsets.ModelViewSet):
-            pass
+    Utilise user_type au lieu d'isinstance() pour le polymorphisme.
     """
     
     def get_organization_from_request(self, raise_exception=True):
@@ -31,23 +25,17 @@ class OrganizationResolverMixin:
         Résout l'organisation depuis la requête.
         
         Stratégie:
-        1. AdminUser : Lit organization_subdomain ou organization depuis query params/data
-        2. Employee : Utilise son organisation assignée
-        
-        Args:
-            raise_exception: Si True, lève une exception si l'organisation n'est pas trouvée
-            
-        Returns:
-            Organization ou None
+        - Admin: Lit organization_subdomain ou organization depuis query params/data
+        - Employee: Utilise son organisation assignée
         """
-        from core.models import AdminUser, Organization
-        from hr.models import Employee
+        from core.models import Organization
         
         user = self.request.user
+        user_type = getattr(user, 'user_type', None)
         
-        if isinstance(user, AdminUser):
+        if user_type == 'admin':
             return self._resolve_organization_for_admin(user, raise_exception)
-        elif isinstance(user, Employee):
+        elif user_type == 'employee':
             return self._resolve_organization_for_employee(user)
         
         if raise_exception:
@@ -55,85 +43,75 @@ class OrganizationResolverMixin:
         return None
     
     def _resolve_organization_for_admin(self, user, raise_exception=True):
-        """Stratégie de résolution d'organisation pour AdminUser."""
+        """Stratégie de résolution d'organisation pour Admin."""
         from core.models import Organization
+        
+        # Récupérer l'AdminUser concret
+        admin = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
 
-        # 1. Essayer organization_subdomain depuis query params
+        # 1. organization_subdomain depuis query params
         org_subdomain = self.request.query_params.get('organization_subdomain')
         if org_subdomain:
-            logger.info(f"Searching for organization with subdomain: {org_subdomain}")
-            logger.info(f"Current user: {user.email} (ID: {user.id})")
-
             try:
-                # Chercher d'abord sans filtre admin pour voir si l'org existe
-                org_exists = Organization.objects.filter(subdomain=org_subdomain).first()
-                if org_exists:
-                    logger.info(f"Organization found: {org_exists.name}, Admin: {org_exists.admin.email if org_exists.admin else 'None'}")
-                else:
-                    logger.error(f"No organization with subdomain '{org_subdomain}' exists at all")
-
-                # Maintenant chercher avec le filtre admin
-                org = Organization.objects.get(subdomain=org_subdomain, admin=user)
-                logger.info(f"Organization matched for user: {org.name} (ID: {org.id})")
+                org = Organization.objects.get(subdomain=org_subdomain, admin=admin)
                 return org
             except Organization.DoesNotExist:
                 if raise_exception:
-                    logger.error(f"Organization with subdomain {org_subdomain} not found for user {user.email}")
                     raise serializers.ValidationError({
-                        'organization': f'Organisation avec le subdomain "{org_subdomain}" non trouvée ou accès refusé'
+                        'organization': f'Organisation "{org_subdomain}" non trouvée'
                     })
                 return None
         
-        # 2. Essayer organization ID depuis query params
+        # 2. organization depuis query params
         org_id = self.request.query_params.get('organization')
         if org_id:
-            org = Organization.objects.filter(id=org_id, admin=user).first()
+            org = Organization.objects.filter(id=org_id, admin=admin).first()
             if org:
                 return org
             if raise_exception:
                 raise serializers.ValidationError({
-                    'organization': 'Organisation non trouvée ou accès refusé'
+                    'organization': 'Organisation non trouvée'
                 })
             return None
         
-        # 3. Essayer organization depuis request data
+        # 3. organization depuis request data
         org_id = self.request.data.get('organization')
         if org_id:
-            org = Organization.objects.filter(id=org_id, admin=user).first()
+            org = Organization.objects.filter(id=org_id, admin=admin).first()
             if org:
                 return org
             if raise_exception:
                 raise serializers.ValidationError({
-                    'organization': 'Organisation non trouvée ou accès refusé'
+                    'organization': 'Organisation non trouvée'
                 })
             return None
         
         if raise_exception:
             raise serializers.ValidationError({
-                'organization': 'Organisation requise (organization_subdomain ou organization)'
+                'organization': 'Organisation requise'
             })
         return None
     
     def _resolve_organization_for_employee(self, user):
         """Stratégie de résolution d'organisation pour Employee."""
-        return user.organization
+        concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+        return getattr(concrete, 'organization', None)
     
     def get_accessible_organizations(self):
-        """
-        Retourne les organisations accessibles par l'utilisateur courant.
-        
-        Returns:
-            QuerySet d'organisations
-        """
-        from core.models import AdminUser, Organization
-        from hr.models import Employee
+        """Retourne les organisations accessibles par l'utilisateur."""
+        from core.models import Organization
         
         user = self.request.user
+        user_type = getattr(user, 'user_type', None)
         
-        if isinstance(user, AdminUser):
-            return user.organizations.all()
-        elif isinstance(user, Employee):
-            return Organization.objects.filter(id=user.organization_id)
+        if user_type == 'admin':
+            admin = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            return admin.organizations.all()
+        elif user_type == 'employee':
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            org = getattr(employee, 'organization', None)
+            if org:
+                return Organization.objects.filter(id=org.id)
         
         return Organization.objects.none()
 
@@ -141,145 +119,128 @@ class OrganizationResolverMixin:
 class OrganizationQuerySetMixin(OrganizationResolverMixin):
     """
     Mixin pour filtrer les querysets par organisation.
-    
-    Implémente le Template Method Pattern :
-    - get_queryset() est la méthode template
-    - get_base_queryset() est le point d'extension
-    
-    Usage:
-        class MyViewSet(OrganizationQuerySetMixin, viewsets.ModelViewSet):
-            model_class = MyModel  # Le modèle doit avoir un champ 'organization'
+    Utilise user_type pour le polymorphisme.
     """
     
-    # Champ FK vers Organization (peut être 'organization' ou 'employee__organization')
+    # Champ FK vers Organization
     organization_field = 'organization'
     
-    # Permission requise pour les employés (None = pas de vérification)
+    # Permission requise (Admin = bypass, Employee = vérification)
     view_permission = None
     
     def get_base_queryset(self):
-        """
-        Point d'extension pour les sous-classes.
-        Retourne le queryset de base avant filtrage par organisation.
-        """
+        """Point d'extension pour les sous-classes."""
         return super().get_queryset()
     
     def get_queryset(self):
-        """
-        Template Method qui filtre le queryset par organisation.
-        """
-        from core.models import AdminUser
-        from hr.models import Employee
-        
+        """Filtre le queryset par organisation selon user_type."""
         user = self.request.user
+        user_type = getattr(user, 'user_type', None)
         base_queryset = self.get_base_queryset()
         
-        if isinstance(user, AdminUser):
+        if user_type == 'admin':
             return self._filter_for_admin(user, base_queryset)
-        elif isinstance(user, Employee):
+        elif user_type == 'employee':
             return self._filter_for_employee(user, base_queryset)
         
         return base_queryset.none()
     
     def _filter_for_admin(self, user, queryset):
-        """Filtre le queryset pour un AdminUser."""
+        """Filtre pour Admin - a accès à toutes ses organisations."""
         from core.models import Organization
+        
+        admin = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
         
         org_subdomain = self.request.query_params.get('organization_subdomain')
         org_id = self.request.query_params.get('organization')
         
         if org_subdomain:
             try:
-                organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                organization = Organization.objects.get(subdomain=org_subdomain, admin=admin)
                 return queryset.filter(**{self.organization_field: organization})
             except Organization.DoesNotExist:
                 return queryset.none()
         elif org_id:
             try:
-                organization = Organization.objects.get(id=org_id, admin=user)
+                organization = Organization.objects.get(id=org_id, admin=admin)
                 return queryset.filter(**{self.organization_field: organization})
             except Organization.DoesNotExist:
                 return queryset.none()
         else:
-            # Retourner les objets de toutes les organisations de l'admin
-            org_ids = user.organizations.values_list('id', flat=True)
-            filter_key = f'{self.organization_field}_id__in' if self.organization_field == 'organization' else f'{self.organization_field}__id__in'
-            return queryset.filter(**{filter_key.replace('_id__in', '__in') if '__' in self.organization_field else filter_key: org_ids})
+            # Toutes les organisations de l'admin
+            org_ids = admin.organizations.values_list('id', flat=True)
+            if '__' in self.organization_field:
+                filter_key = f'{self.organization_field}__id__in'
+            else:
+                filter_key = f'{self.organization_field}__in'
+            return queryset.filter(**{filter_key: org_ids})
     
     def _filter_for_employee(self, user, queryset):
-        """Filtre le queryset pour un Employee."""
-        # Vérifier la permission si spécifiée
-        if self.view_permission and not user.has_permission(self.view_permission):
-            return queryset.none()
+        """Filtre pour Employee - accès à son organisation seulement."""
+        employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
         
-        return queryset.filter(**{self.organization_field: user.organization})
+        # Vérifier la permission
+        if self.view_permission:
+            if not employee.has_permission(self.view_permission):
+                return queryset.none()
+        
+        org = getattr(employee, 'organization', None)
+        if org:
+            return queryset.filter(**{self.organization_field: org})
+        return queryset.none()
 
 
 class OrganizationCreateMixin(OrganizationResolverMixin):
     """
     Mixin pour créer des objets avec l'organisation automatiquement assignée.
-    
-    Usage:
-        class MyViewSet(OrganizationCreateMixin, viewsets.ModelViewSet):
-            create_permission = 'can_create_mymodel'  # Permission requise pour les employés
     """
     
-    # Permission requise pour les employés (None = pas de vérification)
+    # Permission requise (Admin = bypass, Employee = vérification)
     create_permission = None
     
     def perform_create(self, serializer):
-        """
-        Crée l'objet avec l'organisation automatiquement assignée.
-        """
-        from hr.models import Employee
-        
+        """Crée l'objet avec l'organisation automatique."""
         user = self.request.user
+        user_type = getattr(user, 'user_type', None)
         
-        # Vérifier la permission pour les employés
-        if isinstance(user, Employee):
-            if self.create_permission and not user.has_permission(self.create_permission):
-                logger.warning(f"Employee {user.email} lacks permission: {self.create_permission}")
+        # Vérifier la permission pour Employee
+        if user_type == 'employee' and self.create_permission:
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            if not employee.has_permission(self.create_permission):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
         
         # Résoudre l'organisation
         organization = self.get_organization_from_request()
-
-        # Obtenir le nom du modèle pour le log
-        serializer_class = self.get_serializer_class() if hasattr(self, 'get_serializer_class') else self.serializer_class
-        model_name = serializer_class.Meta.model.__name__ if serializer_class else "Unknown"
-
-        logger.info(f"Creating {model_name} for organization: {organization.name}")
         serializer.save(organization=organization)
 
 
 class ActivationMixin:
     """
     Mixin pour les actions activate/deactivate.
-    
-    Usage:
-        class MyViewSet(ActivationMixin, viewsets.ModelViewSet):
-            activation_permission = 'can_activate_mymodel'
     """
     
     activation_permission = None
     
     def _check_activation_permission(self, user):
-        """Vérifie si l'utilisateur a la permission d'activation."""
-        from hr.models import Employee
+        """Vérifie la permission d'activation."""
+        user_type = getattr(user, 'user_type', None)
         
-        if isinstance(user, Employee):
-            if self.activation_permission and not user.has_permission(self.activation_permission):
-                return False
+        # Admin a toutes les permissions
+        if user_type == 'admin':
+            return True
+        
+        # Employee vérifie la permission
+        if user_type == 'employee' and self.activation_permission:
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            return employee.has_permission(self.activation_permission)
+        
         return True
     
     def activate(self, request, pk=None):
         """Active l'objet."""
-        from rest_framework.response import Response
-        from rest_framework import status
-        
         if not self._check_activation_permission(request.user):
             return Response({
-                'message': 'Vous n\'avez pas accès à cette permission'
+                'error': 'Permission refusée'
             }, status=status.HTTP_403_FORBIDDEN)
         
         obj = self.get_object()
@@ -287,18 +248,13 @@ class ActivationMixin:
         obj.save(update_fields=['is_active'])
         
         name = getattr(obj, 'name', None) or getattr(obj, 'get_full_name', lambda: str(obj))()
-        return Response({
-            'message': f'{name} activé'
-        }, status=status.HTTP_200_OK)
+        return Response({'message': f'{name} activé'}, status=status.HTTP_200_OK)
     
     def deactivate(self, request, pk=None):
         """Désactive l'objet."""
-        from rest_framework.response import Response
-        from rest_framework import status
-        
         if not self._check_activation_permission(request.user):
             return Response({
-                'message': 'Vous n\'avez pas accès à cette permission'
+                'error': 'Permission refusée'
             }, status=status.HTTP_403_FORBIDDEN)
         
         obj = self.get_object()
@@ -306,9 +262,7 @@ class ActivationMixin:
         obj.save(update_fields=['is_active'])
         
         name = getattr(obj, 'name', None) or getattr(obj, 'get_full_name', lambda: str(obj))()
-        return Response({
-            'message': f'{name} désactivé'
-        }, status=status.HTTP_200_OK)
+        return Response({'message': f'{name} désactivé'}, status=status.HTTP_200_OK)
 
 
 class BaseOrganizationViewSetMixin(
@@ -317,17 +271,15 @@ class BaseOrganizationViewSetMixin(
     ActivationMixin
 ):
     """
-    Mixin combiné pour les ViewSets avec filtrage et création par organisation.
-    
-    C'est le mixin principal à utiliser pour la plupart des ViewSets.
+    Mixin combiné principal pour les ViewSets multi-tenant.
     
     Usage:
         class MyViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             queryset = MyModel.objects.all()
             serializer_class = MySerializer
-            organization_field = 'organization'  # ou 'employee__organization'
-            view_permission = 'can_view_mymodel'
-            create_permission = 'can_create_mymodel'
-            activation_permission = 'can_activate_mymodel'
+            organization_field = 'organization'
+            view_permission = 'hr.view_mymodel'
+            create_permission = 'hr.create_mymodel'
+            activation_permission = 'hr.activate_mymodel'
     """
     pass

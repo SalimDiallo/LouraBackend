@@ -155,12 +155,12 @@ Authorization: Bearer {{accessToken}}
 
 
 ### ======================================
-### 4. CATEGORIES ENDPOINTS (Read-Only)
+### 4. CATEGORIES ENDPOINTS
 ### ======================================
 ### 4.0 Create Category
 POST {{coreUrl}}/categories/
+# Authorization: Bearer {{accessToken}}
 Content-Type: application/json
-Authorization: Bearer {{accessToken}}
 
 {
   "name": "Commerce",
@@ -169,9 +169,9 @@ Authorization: Bearer {{accessToken}}
 
 ### 4.1 List Categories
 GET {{coreUrl}}/categories/
-Authorization: Bearer {{accessToken}}
+# Authorization: Bearer {{accessToken}}
 
 
 ### 4.2 Get Category Details
 GET {{coreUrl}}/categories/1/
-Authorization: Bearer {{accessToken}}
+# Authorization: Bearer {{accessToken}}

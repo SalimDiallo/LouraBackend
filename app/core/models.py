@@ -1,31 +1,163 @@
+"""
+Core Module Models
+==================
+Ce module contient les modèles de base :
+- BaseUser : Modèle utilisateur parent (pour AdminUser et Employee)
+- AdminUser : Administrateur d'organisations
+- Organization : Organisation multi-tenant
+- Permission, Role : Gestion des permissions
+"""
+
 from django.db import models
-from django.contrib.auth.models import AbstractBaseUser, BaseUserManager, PermissionsMixin, Group, Permission as DjangoPermission
-from django.utils import timezone
+from django.contrib.auth.models import (
+    AbstractBaseUser, 
+    BaseUserManager as DjangoBaseUserManager, 
+    PermissionsMixin, 
+    Group, 
+    Permission as DjangoPermission
+)
 
-from lourabackend.models import  TimeStampedModel
+from lourabackend.models import TimeStampedModel
 
-# -------------------------------
-# PERMISSIONS MANAGEMENT
-# -------------------------------
+
+# ===============================
+# BASE USER (Modèle parent commun)
+# ===============================
+
+class BaseUserManager(DjangoBaseUserManager):
+    """Manager pour BaseUser"""
+    
+    def create_user(self, email, password=None, **extra_fields):
+        if not email:
+            raise ValueError("L'adresse email est obligatoire")
+        email = self.normalize_email(email)
+        user = self.model(email=email, **extra_fields)
+        user.set_password(password)
+        user.save(using=self._db)
+        return user
+
+    def create_superuser(self, email, password=None, **extra_fields):
+        extra_fields.setdefault('is_staff', True)
+        extra_fields.setdefault('is_superuser', True)
+        extra_fields.setdefault('user_type', 'admin')
+        return self.create_user(email, password, **extra_fields)
+
+
+class BaseUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
+    """
+    Modèle utilisateur de base.
+    AdminUser et Employee héritent de ce modèle (multi-table inheritance).
+    Permet d'utiliser ForeignKey(BaseUser) pour référencer les deux types.
+    """
+    
+    class UserType(models.TextChoices):
+        ADMIN = 'admin', 'Administrateur'
+        EMPLOYEE = 'employee', 'Employé'
+    
+    email = models.EmailField(max_length=255, unique=True)
+    first_name = models.CharField(max_length=100, blank=True)
+    last_name = models.CharField(max_length=100, blank=True)
+    phone = models.CharField(max_length=20, blank=True)
+    avatar_url = models.URLField(max_length=500, blank=True, null=True)
+
+    user_type = models.CharField(
+        max_length=20,
+        choices=UserType.choices,
+        default=UserType.EMPLOYEE
+    )
+
+    # Préférences
+    language = models.CharField(max_length=5, default='fr')
+    timezone = models.CharField(max_length=50, default='Africa/Conakry')
+
+    # Statut
+    is_active = models.BooleanField(default=True)
+    is_staff = models.BooleanField(default=False)
+    email_verified = models.BooleanField(default=False)
+    last_login = models.DateTimeField(null=True, blank=True)
+
+    # Groupes et permissions Django
+    groups = models.ManyToManyField(
+        Group,
+        related_name='base_user_set',
+        blank=True
+    )
+    user_permissions = models.ManyToManyField(
+        DjangoPermission,
+        related_name='base_user_permissions_set',
+        blank=True
+    )
+
+    objects = BaseUserManager()
+
+    USERNAME_FIELD = 'email'
+    REQUIRED_FIELDS = ['first_name', 'last_name']
+
+    class Meta:
+        db_table = 'base_users'
+        verbose_name = "Utilisateur"
+        verbose_name_plural = "Utilisateurs"
+
+    def __str__(self):
+        return f"{self.email} ({self.get_full_name()})"
+
+    def get_full_name(self):
+        return f"{self.first_name} {self.last_name}".strip() or self.email
+
+    def get_short_name(self):
+        return self.first_name or self.email.split('@')[0]
+
+    @property
+    def is_admin_user(self):
+        return self.user_type == self.UserType.ADMIN
+
+    @property
+    def is_employee_user(self):
+        return self.user_type == self.UserType.EMPLOYEE
+
+    def get_concrete_user(self):
+        """Retourne l'objet AdminUser ou Employee selon le type"""
+        if self.user_type == self.UserType.ADMIN:
+            try:
+                return self.adminuser
+            except AttributeError:
+                return self
+        elif self.user_type == self.UserType.EMPLOYEE:
+            try:
+                return self.employee
+            except AttributeError:
+                return self
+        return self
+
+    def has_org_permission(self, permission_code):
+        """Vérifie les permissions organisationnelles"""
+        if self.user_type == self.UserType.ADMIN:
+            return True
+        concrete = self.get_concrete_user()
+        if hasattr(concrete, 'has_permission'):
+            return concrete.has_permission(permission_code)
+        return False
+
+    def get_organization(self):
+        """Retourne l'organisation de l'utilisateur"""
+        concrete = self.get_concrete_user()
+        if hasattr(concrete, 'organization'):
+            return concrete.organization
+        if hasattr(concrete, 'organizations'):
+            return concrete.organizations.first()
+        return None
+
+
+# ===============================
+# PERMISSIONS (Modèle personnalisé)
+# ===============================
 
 class Permission(TimeStampedModel):
-    """
-    Permission: Définit les permissions granulaires pour les employés
-    """
+    """Permission granulaire pour le système de permissions personnalisé"""
 
-    code = models.CharField(
-        max_length=100,
-        unique=True,
-        help_text="Code unique de la permission (ex: hr.view_employee)"
-    )
-    name = models.CharField(
-        max_length=200,
-        help_text="Nom lisible de la permission"
-    )
-    category = models.CharField(
-        max_length=100,
-        help_text="Catégorie de la permission (ex: Employés, Départements)"
-    )
+    code = models.CharField(max_length=100, unique=True)
+    name = models.CharField(max_length=200)
+    category = models.CharField(max_length=100)
     description = models.TextField(blank=True)
 
     class Meta:
@@ -39,10 +171,7 @@ class Permission(TimeStampedModel):
 
 
 class Role(TimeStampedModel):
-    """
-    Role: Regroupe un ensemble de permissions
-    Peut être un rôle système prédéfini ou un rôle personnalisé
-    """
+    """Rôle regroupant des permissions"""
 
     organization = models.ForeignKey(
         'Organization',
@@ -50,30 +179,13 @@ class Role(TimeStampedModel):
         related_name='roles',
         null=True,
         blank=True,
-        help_text="Organisation (null pour les rôles système)"
+        help_text="null = rôle système global"
     )
-
-    code = models.CharField(
-        max_length=100,
-        help_text="Code unique du rôle (ex: super_admin, hr_manager)"
-    )
-    name = models.CharField(
-        max_length=200,
-        help_text="Nom du rôle"
-    )
+    code = models.CharField(max_length=100)
+    name = models.CharField(max_length=200)
     description = models.TextField(blank=True)
-
-    permissions = models.ManyToManyField(
-        Permission,
-        related_name='roles',
-        blank=True,
-        help_text="Permissions associées à ce rôle"
-    )
-
-    is_system_role = models.BooleanField(
-        default=False,
-        help_text="Rôle système prédéfini (non modifiable)"
-    )
+    permissions = models.ManyToManyField(Permission, related_name='roles', blank=True)
+    is_system_role = models.BooleanField(default=False)
     is_active = models.BooleanField(default=True)
 
     class Meta:
@@ -84,114 +196,92 @@ class Role(TimeStampedModel):
         ordering = ['name']
 
     def __str__(self):
-        return f"{self.name} ({'Système' if self.is_system_role else self.organization.name if self.organization else 'Global'})"
+        if self.is_system_role:
+            return f"{self.name} (Système)"
+        return f"{self.name} ({self.organization.name if self.organization else 'Global'})"
 
     def get_all_permissions(self):
-        """Retourne toutes les permissions de ce rôle"""
         return list(self.permissions.values_list('code', flat=True))
 
 
-# -------------------------------
-# Category Model for Organization
-# -------------------------------
+# ===============================
+# ORGANIZATION
+# ===============================
+
 class Category(models.Model):
-    """Category for Organizations (one-to-many: one category, many organizations)"""
+    """Catégorie d'organisation"""
     name = models.CharField(max_length=255, unique=True)
     description = models.TextField(blank=True)
 
     class Meta:
         db_table = 'categories'
+        verbose_name = "Catégorie"
+        verbose_name_plural = "Catégories"
         ordering = ['name']
 
     def __str__(self):
         return self.name
 
-# -------------------------------
-# AdminUser Manager
-# -------------------------------
-class AdminUserManager(BaseUserManager):
-    """Custom manager for AdminUser"""
+
+class AdminUserManager(models.Manager):
+    """Manager pour AdminUser"""
+
+    def get_queryset(self):
+        return super().get_queryset().filter(user_type='admin')
 
     def create_user(self, email, password=None, **extra_fields):
-        """Create and return a regular user"""
+        extra_fields['user_type'] = 'admin'
         if not email:
             raise ValueError("L'adresse email est obligatoire")
-
-        email = self.normalize_email(email)
+        email = BaseUser.objects.normalize_email(email)
         user = self.model(email=email, **extra_fields)
         user.set_password(password)
         user.save(using=self._db)
         return user
 
     def create_superuser(self, email, password=None, **extra_fields):
-        """Create and return a superuser"""
         extra_fields.setdefault('is_staff', True)
         extra_fields.setdefault('is_superuser', True)
-
         if extra_fields.get('is_staff') is not True:
             raise ValueError('Le superuser doit avoir is_staff=True')
         if extra_fields.get('is_superuser') is not True:
             raise ValueError('Le superuser doit avoir is_superuser=True')
-
         return self.create_user(email, password, **extra_fields)
 
 
-# -------------------------------
-# Organization Models
-# -------------------------------
-class AdminUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
+class AdminUser(BaseUser):
     """
-    AdminUser: Superviseur d'une ou plusieurs organisations.
-    Un admin a plusieurs organisations, et une organisation est gérée/créée par un seul admin.
+    Administrateur d'organisations.
+    Hérite de BaseUser pour le polymorphisme.
     """
-    email = models.EmailField(max_length=255, unique=True)
-    first_name = models.CharField(max_length=100, blank=True)
-    last_name = models.CharField(max_length=100, blank=True)
-    is_active = models.BooleanField(default=True)
-    is_staff = models.BooleanField(default=False)
-
+    
     objects = AdminUserManager()
-
-    USERNAME_FIELD = 'email'
-    REQUIRED_FIELDS = ['first_name', 'last_name']
 
     class Meta:
         db_table = 'admin_users'
-        verbose_name = "Administrateur d'organisation"
+        verbose_name = "Administrateur"
+        verbose_name_plural = "Administrateurs"
 
-    def __str__(self):
-        return f"{self.email} ({self.get_full_name()})"
-
-    def get_full_name(self):
-        return f"{self.first_name} {self.last_name}".strip()
-
-    def get_short_name(self):
-        return self.first_name
+    def save(self, *args, **kwargs):
+        self.user_type = 'admin'
+        super().save(*args, **kwargs)
 
     def get_organizations_for_admin(self):
-        """
-        Retrieve all organizations managed by the given admin user.
-        :return: QuerySet of Organization instances
-        """
         return self.organizations.all()
 
     def has_permission(self, permission_code):
-        """
-        AdminUser a toutes les permissions par défaut.
-        On ne vérifie pas les permissions spécifiques pour les admins d'organisation.
-        """
+        """AdminUser a toutes les permissions"""
         return True
 
-        
 
 class Organization(TimeStampedModel):
-    """Multi-tenant organization model"""
+    """Organisation multi-tenant"""
+    
     name = models.CharField(max_length=255)
     subdomain = models.SlugField(max_length=63, unique=True)
     logo_url = models.URLField(max_length=500, blank=True, null=True)
     logo = models.ImageField(upload_to='organization_logos/', blank=True, null=True)
 
-    # Add category field: an organization has one category; a category can have many organizations
     category = models.ForeignKey(
         Category,
         on_delete=models.SET_NULL,
@@ -200,18 +290,18 @@ class Organization(TimeStampedModel):
         related_name="organizations"
     )
 
-    # One organization is created/managed by a single admin (owner)
     admin = models.ForeignKey(
         AdminUser,
         on_delete=models.CASCADE,
-        related_name='organizations',
-        help_text="L'admin qui a créé ou qui gère cette organisation"
+        related_name='organizations'
     )
 
     is_active = models.BooleanField(default=True)
 
     class Meta:
         db_table = 'organizations'
+        verbose_name = "Organisation"
+        verbose_name_plural = "Organisations"
         ordering = ['name']
 
     def __str__(self):
@@ -222,7 +312,10 @@ class Organization(TimeStampedModel):
         obj, _ = OrganizationSettings.objects.get_or_create(organization=self)
         return obj
 
+
 class OrganizationSettings(models.Model):
+    """Paramètres d'organisation"""
+    
     organization = models.OneToOneField(
         Organization,
         on_delete=models.CASCADE,
@@ -235,6 +328,8 @@ class OrganizationSettings(models.Model):
 
     class Meta:
         db_table = 'organization_settings'
+        verbose_name = "Paramètres d'organisation"
+        verbose_name_plural = "Paramètres d'organisations"
 
     def __str__(self):
-        return f"Settings for {self.organization.name} ({self.country or 'no country'})"
+        return f"Paramètres: {self.organization.name}"

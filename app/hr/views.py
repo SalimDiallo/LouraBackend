@@ -93,7 +93,8 @@ class EmployeeChangePasswordView(APIView):
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
-        if not isinstance(request.user, Employee):
+        # Vérifier que l'utilisateur est un Employee
+        if getattr(request.user, 'user_type', None) != 'employee':
             return Response({
                 'error': 'Utilisateur non autorise'
             }, status=status.HTTP_403_FORBIDDEN)
@@ -223,10 +224,10 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return Contract.objects.filter(employee__organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_contract"):
                 if user.is_hr_admin():
                     return Contract.objects.filter(employee__organization=user.organization)
@@ -262,10 +263,10 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveType.objects.filter(organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_leave"):
                 return LeaveType.objects.filter(organization=user.organization)
         return LeaveType.objects.none()
@@ -273,7 +274,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_subdomain = self.request.query_params.get('organization_subdomain')
 
             if org_subdomain:
@@ -294,7 +295,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
                     raise serializers.ValidationError({
                         'organization': 'Organisation non trouvée ou accès refusé'
                     })
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission("can_manage_leave_types"):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
@@ -312,10 +313,10 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_manage_leave_balances") or user.is_hr_admin():
                 return LeaveBalance.objects.filter(employee__organization=user.organization)
             return LeaveBalance.objects.filter(employee=user)
@@ -330,10 +331,10 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_leave"):
                 # HR admin or manager can see all requests in organization
                 if user.is_hr_admin():
@@ -348,11 +349,11 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
-        if isinstance(self.request.user, Employee):
+        if getattr(self.request.user, 'user_type', None) == 'employee':
             if not self.request.user.has_permission('can_create_leave'):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             leave_request = serializer.save(employee=self.request.user)
-        elif isinstance(self.request.user, AdminUser):
+        elif getattr(self.request.user, 'user_type', None) == 'admin':
             # AdminUser creating a leave request for an employee
             employee_id = self.request.data.get('employee')
             if not employee_id:
@@ -478,10 +479,10 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return PayrollPeriod.objects.filter(organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_payroll"):
                 return PayrollPeriod.objects.filter(organization=user.organization)
         return PayrollPeriod.objects.none()
@@ -489,7 +490,7 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             # Essayer d'abord avec organization_subdomain (depuis query params)
             org_subdomain = self.request.query_params.get('organization_subdomain')
 
@@ -521,7 +522,7 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
                         'organization': 'Organisation non trouvée ou accès refusé'
                     })
 
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission("can_create_payroll"):
                 logger.warning(f"Employee {user.email} lacks permission to create payroll")
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
@@ -548,10 +549,10 @@ class PayslipViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         # Base queryset selon le type d'utilisateur
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             queryset = Payslip.objects.filter(employee__organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_payroll") or user.is_hr_admin():
                 queryset = Payslip.objects.filter(employee__organization=user.organization)
             else:
@@ -767,13 +768,13 @@ class PayrollStatsView(APIView):
             )
 
         user = request.user
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             if not user.organizations.filter(id=organization.id).exists():
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.organization != organization or not user.has_permission("can_view_payroll"):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
@@ -840,13 +841,13 @@ class HROverviewStatsView(APIView):
             )
 
         user = request.user
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             if not user.organizations.filter(id=organization.id).exists():
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.organization != organization or not user.has_permission("hr.view_employees"):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
@@ -942,13 +943,13 @@ class DepartmentStatsView(APIView):
             )
 
         user = request.user
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             if not user.organizations.filter(id=organization.id).exists():
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             print(user.get_all_permissions)
             if user.organization != organization or not user.has_permission("hr.view_departments"):
                 return Response(
@@ -1009,7 +1010,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         queryset = PayrollAdvance.objects.all()
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             if org_subdomain:
                 try:
                     organization = Organization.objects.get(
@@ -1022,7 +1023,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
             else:
                 org_ids = user.organizations.values_list('id', flat=True)
                 queryset = queryset.filter(employee__organization_id__in=org_ids)
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             # Les employés ne voient que leurs propres demandes ou celles qu'ils peuvent gérer
             if user.has_permission("can_view_payroll") or user.is_hr_admin():
                 queryset = queryset.filter(employee__organization=user.organization)
@@ -1048,7 +1049,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Vérifier que l'utilisateur a la permission d'approuver
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission d\'approuver des demandes d\'avance'},
@@ -1067,7 +1068,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
         advance.status = 'approved'
-        advance.approved_by = user if isinstance(user, Employee) else None
+        advance.approved_by = user if getattr(user, 'user_type', None) == 'employee' else None
         advance.approved_date = timezone.now()
         advance.payment_date = data.get('payment_date')
         advance.deduction_month = data.get('deduction_month')
@@ -1087,7 +1088,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Vérifier que l'utilisateur a la permission de rejeter
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de rejeter des demandes d\'avance'},
@@ -1106,7 +1107,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
         advance.status = 'rejected'
-        advance.approved_by = user if isinstance(user, Employee) else None
+        advance.approved_by = user if getattr(user, 'user_type', None) == 'employee' else None
         advance.approved_date = timezone.now()
         advance.rejection_reason = data.get('rejection_reason', '')
         advance.save()
@@ -1123,7 +1124,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         # Vérifier que l'utilisateur a la permission
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de marquer les avances comme payées'},
@@ -1158,7 +1159,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         logger.info(f"Advance status: {advance.status}")
 
         # Vérifier que l'utilisateur a la permission
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
                 logger.warning(f"User {user.email} lacks permission to deduct advances")
                 return Response(
@@ -1255,7 +1256,7 @@ class RoleViewSet(viewsets.ModelViewSet):
         org_subdomain = self.request.query_params.get('organization_subdomain')
         org_id = self.request.query_params.get('organization')
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             # Si un subdomain ou ID d'organisation est fourni, filtrer par cette organisation
             if org_subdomain:
                 try:
@@ -1289,7 +1290,7 @@ class RoleViewSet(viewsets.ModelViewSet):
                     models.Q(organization__isnull=True) |
                     models.Q(organization_id__in=org_ids)
                 )
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             # Pour les employés, toujours filtrer par leur organisation
             queryset = queryset.filter(
                 models.Q(organization__isnull=True) |
@@ -1325,7 +1326,7 @@ class RoleViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if not serializer.validated_data.get('is_system_role', False):
-            if isinstance(user, AdminUser):
+            if getattr(user, 'user_type', None) == 'admin':
                 # Essayer d'abord avec organization_subdomain
                 org_subdomain = self.request.query_params.get('organization_subdomain')
 
@@ -1350,7 +1351,7 @@ class RoleViewSet(viewsets.ModelViewSet):
                         raise serializers.ValidationError({
                             'organization': "L'administrateur n'a aucune organisation"
                         })
-            elif isinstance(user, Employee):
+            elif getattr(user, 'user_type', None) == 'employee':
                 logger.info(f"Creating role for employee's organization: {user.organization.name}")
                 serializer.save(organization=user.organization)
             else:
@@ -1391,9 +1392,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             'employee', 'employee__department', 'approved_by', 'approved_by_admin'
         )
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             pass
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission('can_view_all_attendance'):
                 pass
             elif user.has_permission('can_view_attendance'):
@@ -1427,7 +1428,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         user = self.request.user
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission('can_create_attendance'):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied('Vous n\'avez pas la permission de créer des pointages')
@@ -1435,7 +1436,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_update(self, serializer):
         user = self.request.user
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission('can_update_attendance'):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied('Vous n\'avez pas la permission de modifier des pointages')
@@ -1443,7 +1444,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
     def perform_destroy(self, instance):
         user = self.request.user
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission('can_delete_attendance'):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied('Vous n\'avez pas la permission de supprimer des pointages')
@@ -1456,13 +1457,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         """
         user = request.user
 
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission('can_manual_checkin'):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif isinstance(user, AdminUser):
+        elif getattr(user, 'user_type', None) == 'admin':
             pass
         else:
             return Response(
@@ -1494,7 +1495,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         content_type_obj = None
         object_id = None
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             employee_id = request.data.get('employee_id')
             if employee_id:
                 try:
@@ -1511,7 +1512,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 object_id = user.id
                 user_email = user.email
                 user_full_name = user.get_full_name()
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             employee = user
             user_email = employee.email
             user_full_name = employee.get_full_name()
@@ -1566,13 +1567,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         """
         user = request.user
 
-        if isinstance(user, Employee):
+        if getattr(user, 'user_type', None) == 'employee':
             if not user.has_permission('can_manual_checkin'):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif isinstance(user, AdminUser):
+        elif getattr(user, 'user_type', None) == 'admin':
             pass
         else:
             return Response(
@@ -1601,7 +1602,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         today = timezone.now().date()
         user_email = None
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             employee_id = request.data.get('employee_id')
             if employee_id:
                 try:
@@ -1614,7 +1615,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     )
             else:
                 user_email = user.email
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             user_email = user.email
         else:
             return Response(
@@ -1674,9 +1675,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             user_email = user.email
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             user_email = user.email
         else:
             return Response(
@@ -1703,8 +1704,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         user = request.user
 
-        is_admin = isinstance(user, AdminUser)
-        is_employee_with_permission = isinstance(user, Employee) and user.has_permission('can_approve_attendance')
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('can_approve_attendance')
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -1759,9 +1760,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 {'error': 'Organization not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             user_email = user.email
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             user_email = user.email
         else:
             return Response(
@@ -1826,9 +1827,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 {'error': 'Organization not found'},
                 status=status.HTTP_404_NOT_FOUND
             )
-        if isinstance(user, AdminUser):
+        if getattr(user, 'user_type', None) == 'admin':
             user_email = user.email
-        elif isinstance(user, Employee):
+        elif getattr(user, 'user_type', None) == 'employee':
             user_email = user.email
         else:
             return Response(
@@ -1876,7 +1877,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         employee_id = request.query_params.get('employee_id', None)
 
         if employee_id:
-            if isinstance(user, Employee) and not user.has_permission('can_view_all_attendance'):
+            if getattr(user, 'user_type', None) == 'employee' and not user.has_permission('can_view_all_attendance'):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de voir les stats pointage de cet employé'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1889,7 +1890,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                     status=status.HTTP_404_NOT_FOUND
                 )
         else:
-            if not isinstance(user, Employee):
+            if not getattr(user, 'user_type', None) == 'employee':
                 return Response(
                     {'error': 'Employee ID required'},
                     status=status.HTTP_400_BAD_REQUEST
@@ -1944,13 +1945,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     @action(detail=False, methods=['post'], url_path='qr-session/create')
     def create_qr_session(self, request):
 
-        if isinstance(request.user, Employee):
+        if getattr(request.user, 'user_type', None) == 'employee':
             if not request.user.has_permission('can_create_qr_session'):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de créer des sessions QR'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-        elif not isinstance(request.user, AdminUser):
+        elif not getattr(request.user, 'user_type', None) == 'admin':
             return Response(
                 {'error': 'Authentification requise'},
                 status=status.HTTP_403_FORBIDDEN

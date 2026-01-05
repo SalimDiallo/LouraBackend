@@ -51,5 +51,3 @@ PERMISSIONS = [
     {'code': 'hr.manual_checkin', 'name': 'Pointage manuel', 'category': 'Pointages'},
     {'code': 'hr.create_qr_session', 'name': 'Générer des QR codes', 'category': 'Pointages'},
 ]
-
-

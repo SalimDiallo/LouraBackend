@@ -342,16 +342,15 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
     head_name = serializers.SerializerMethodField()
     employee_count = serializers.SerializerMethodField()
-    head_id = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    head_type = serializers.SerializerMethodField()
     # Alias pour rétrocompatibilité avec le frontend
     manager = serializers.UUIDField(write_only=True, required=False, allow_null=True)
-    head_type = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
         fields = [
             'id', 'organization', 'name', 'code', 'description',
-            'head_id', 'manager', 'head_name', 'head_type', 'employee_count', 'is_active',
+            'head', 'manager', 'head_name', 'head_type', 'employee_count', 'is_active',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
@@ -361,66 +360,36 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
     def get_head_type(self, obj):
         """Retourne le type du responsable (employee ou admin)"""
-        if obj.head_content_type:
-            return obj.head_content_type.model  # 'employee' ou 'adminuser'
+        if obj.head:
+            return obj.head.user_type
         return None
 
     def get_employee_count(self, obj):
         return obj.employees.filter(employment_status='active').count()
 
-    def _resolve_head(self, head_id, validated_data=None, instance=None):
-        """
-        Résout le head (Employee ou AdminUser) à partir d'un ID.
-        Retourne un tuple (content_type, object_id) ou (None, None) si head_id est None.
-        """
-        from django.contrib.contenttypes.models import ContentType
-        from core.models import AdminUser
-        
-        if not head_id:
-            return None, None
-            
-        # Essayer d'abord de trouver un Employee
-        employee = Employee.objects.filter(id=head_id).first()
-        if employee:
-            return ContentType.objects.get_for_model(Employee), head_id
-        
-        # Essayer de trouver un AdminUser
-        admin = AdminUser.objects.filter(id=head_id).first()
-        if admin:
-            return ContentType.objects.get_for_model(AdminUser), head_id
-        
-        raise serializers.ValidationError({
-            'head_id': 'Aucun employé ou administrateur trouvé avec cet ID'
-        })
-
     def create(self, validated_data):
-        """Gère la création avec le head polymorphique"""
-        # Accepte head_id ou manager (rétrocompatibilité)
-        head_id = validated_data.pop('head_id', None) or validated_data.pop('manager', None)
+        """Gère la création avec le head (accepte head ou manager)"""
+        from lourabackend.models import BaseUser
         
-        if head_id:
-            content_type, object_id = self._resolve_head(head_id)
-            validated_data['head_content_type'] = content_type
-            validated_data['head_object_id'] = object_id
+        # Accepte manager comme alias de head (rétrocompatibilité)
+        manager_id = validated_data.pop('manager', None)
+        if manager_id and 'head' not in validated_data:
+            from core.models import BaseUser
+            validated_data['head'] = BaseUser.objects.get(id=manager_id)
         
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        """Gère la mise à jour avec le head polymorphique"""
-        # Accepte head_id ou manager (rétrocompatibilité)
-        head_id = validated_data.pop('head_id', None)
-        manager_id = validated_data.pop('manager', None)
-        final_head_id = head_id if head_id is not None else manager_id
+        """Gère la mise à jour avec le head"""
+        from core.models import BaseUser
         
-        if final_head_id is not None:
-            if final_head_id:
-                content_type, object_id = self._resolve_head(final_head_id)
-                instance.head_content_type = content_type
-                instance.head_object_id = object_id
+        # Accepte manager comme alias de head (rétrocompatibilité)
+        manager_id = validated_data.pop('manager', None)
+        if manager_id is not None:
+            if manager_id:
+                instance.head = BaseUser.objects.get(id=manager_id)
             else:
-                # Valeur explicitement vide -> supprimer le head
-                instance.head_content_type = None
-                instance.head_object_id = None
+                instance.head = None
         
         return super().update(instance, validated_data)
 

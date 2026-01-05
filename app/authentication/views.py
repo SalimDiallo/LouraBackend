@@ -1,19 +1,27 @@
+"""
+Authentication Views
+====================
+Endpoints unifiés pour l'authentification Admin et Employee.
+"""
+
 from rest_framework import status
-from rest_framework.decorators import action
 from rest_framework.response import Response
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.views import APIView
-from rest_framework_simplejwt.tokens import RefreshToken, AccessToken
+from rest_framework_simplejwt.tokens import RefreshToken
 from rest_framework_simplejwt.exceptions import TokenError
 from django.conf import settings
 from django.utils import timezone
-from datetime import timedelta
 
-from core.models import AdminUser
-from core.serializers import UserSerializer
+from core.models import BaseUser, AdminUser
 from hr.models import Employee
-from hr.serializers import EmployeeSerializer
-from .serializers import AdminLoginSerializer, EmployeeLoginSerializer
+from .serializers import (
+    UnifiedLoginSerializer,
+    AdminRegistrationSerializer,
+    AdminUserResponseSerializer,
+    EmployeeUserResponseSerializer,
+    UserResponseSerializer,
+)
 from .utils import (
     generate_tokens_for_user,
     convert_uuids_to_strings,
@@ -23,70 +31,86 @@ from .utils import (
 )
 
 
-# -------------------------------
-# Admin Authentication Views
-# -------------------------------
+# ===============================
+# UNIFIED LOGIN
+# ===============================
 
-class AdminLoginView(APIView):
-    """API endpoint for admin user login with JWT"""
+class LoginView(APIView):
+    """
+    Endpoint unifié de connexion.
+    Fonctionne pour Admin et Employee.
+    Retourne user_type pour la redirection frontend.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = AdminLoginSerializer(data=request.data, context={'request': request})
+        serializer = UnifiedLoginSerializer(data=request.data)
+        
         if serializer.is_valid():
             user = serializer.validated_data['user']
+            user_type = serializer.validated_data['user_type']
 
-            # Generate JWT tokens using utility
-            tokens = generate_tokens_for_user(user, user_type='admin')
+            # Générer les tokens JWT
+            tokens = generate_tokens_for_user(user, user_type=user_type)
 
-            # Return user data
-            user_data = UserSerializer(user).data
+            # Mettre à jour last_login
+            user.last_login = timezone.now()
+            user.save(update_fields=['last_login'])
 
-            # Create response
+            # Sérialiser selon le type
+            if user_type == 'employee':
+                user_data = EmployeeUserResponseSerializer(user).data
+            else:
+                user_data = AdminUserResponseSerializer(user).data
+
+            user_data = convert_uuids_to_strings(user_data)
+
             response = Response({
                 'user': user_data,
-                'message': 'Connexion reussie',
+                'user_type': user_type,
                 'access': tokens['access'],
                 'refresh': tokens['refresh'],
+                'message': 'Connexion réussie'
             }, status=status.HTTP_200_OK)
 
-            # Set tokens in HTTP-only cookies
             set_jwt_cookies(response, tokens['access'], tokens['refresh'])
             return response
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# -------------------------------
-# Employee Authentication Views
-# -------------------------------
+# ===============================
+# ADMIN REGISTRATION
+# ===============================
 
-class EmployeeLoginView(APIView):
-    """API endpoint for employee login"""
+class RegisterAdminView(APIView):
+    """
+    Inscription d'un Admin avec création d'organisation.
+    Crée simultanément AdminUser + Organization.
+    """
     permission_classes = [AllowAny]
 
     def post(self, request):
-        serializer = EmployeeLoginSerializer(data=request.data)
+        serializer = AdminRegistrationSerializer(data=request.data)
+        
         if serializer.is_valid():
-            employee = serializer.validated_data['employee']
+            result = serializer.save()
+            admin = result['admin']
 
-            # Generate JWT tokens using utility
-            tokens = generate_tokens_for_user(employee, user_type='employee')
+            # Générer les tokens JWT
+            tokens = generate_tokens_for_user(admin, user_type='admin')
 
-            # Update last login
-            employee.last_login = timezone.now()
-            employee.save(update_fields=['last_login'])
-
-            # Return employee data
-            employee_data = EmployeeSerializer(employee).data
-            employee_data = convert_uuids_to_strings(employee_data)
+            # Sérialiser
+            user_data = AdminUserResponseSerializer(admin).data
+            user_data = convert_uuids_to_strings(user_data)
 
             response = Response({
-                'employee': employee_data,
-                'message': 'Connexion reussie',
+                'user': user_data,
+                'user_type': 'admin',
                 'access': tokens['access'],
                 'refresh': tokens['refresh'],
-            }, status=status.HTTP_200_OK)
+                'message': 'Inscription réussie'
+            }, status=status.HTTP_201_CREATED)
 
             set_jwt_cookies(response, tokens['access'], tokens['refresh'])
             return response
@@ -94,53 +118,47 @@ class EmployeeLoginView(APIView):
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
 
-# -------------------------------
-# Common Authentication Views
-# -------------------------------
+# ===============================
+# LOGOUT
+# ===============================
 
 class LogoutView(APIView):
-    """API endpoint for user logout - blacklist refresh token"""
+    """Déconnexion avec blacklist du refresh token"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         try:
-            # Get refresh token from cookie or request body
             refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
             if not refresh_token:
                 refresh_token = request.data.get('refresh')
 
             if refresh_token:
-                # Blacklist the refresh token
                 token = RefreshToken(refresh_token)
                 token.blacklist()
 
-            # Create response
             response = Response({
-                'message': 'Deconnexion reussie'
+                'message': 'Déconnexion réussie'
             }, status=status.HTTP_200_OK)
-
-            # Clear cookies
             clear_jwt_cookies(response)
-
             return response
 
-        except Exception as e:
+        except Exception:
             response = Response({
-                'error': 'Erreur lors de la deconnexion'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Still clear cookies even if blacklist fails
+                'message': 'Déconnexion réussie'
+            }, status=status.HTTP_200_OK)
             clear_jwt_cookies(response)
-
             return response
 
+
+# ===============================
+# TOKEN REFRESH
+# ===============================
 
 class RefreshTokenView(APIView):
-    """API endpoint to refresh access token using refresh token (supports both admin and employee)"""
+    """Rafraîchissement du token d'accès"""
     permission_classes = [AllowAny]
 
     def post(self, request):
-        # Get refresh token from cookie or request body
         refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
         if not refresh_token:
             refresh_token = request.data.get('refresh')
@@ -151,165 +169,146 @@ class RefreshTokenView(APIView):
             }, status=status.HTTP_400_BAD_REQUEST)
 
         try:
-            # Get user info from token to determine type
             token_data = get_user_from_token(refresh_token)
+            user_id = token_data.get('user_id')
             user_type = token_data.get('user_type', 'admin')
 
-            if user_type == 'employee':
-                # Handle employee token refresh
-                user_id = token_data.get('user_id')
-                employee = Employee.objects.get(id=user_id)
+            # Récupérer l'utilisateur
+            user = BaseUser.objects.get(id=user_id)
 
-                # Check if employee is active
-                if not employee.is_active:
-                    return Response({
-                        'error': 'Compte desactive'
-                    }, status=status.HTTP_401_UNAUTHORIZED)
+            if not user.is_active:
+                return Response({
+                    'error': 'Compte désactivé'
+                }, status=status.HTTP_401_UNAUTHORIZED)
 
-                # Generate new tokens
-                tokens = generate_tokens_for_user(employee, user_type='employee')
-                access_token = tokens['access']
-                new_refresh_token = tokens['refresh']
+            # Générer nouveaux tokens
+            tokens = generate_tokens_for_user(user.get_concrete_user(), user_type=user_type)
 
-            else:
-                # Handle admin token refresh (standard way)
-                refresh = RefreshToken(refresh_token)
-                access_token = str(refresh.access_token)
-                new_refresh_token = str(refresh) if settings.SIMPLE_JWT.get('ROTATE_REFRESH_TOKENS', False) else refresh_token
-
-            # Create response
             response = Response({
-                'access': access_token,
-                'refresh': new_refresh_token,
-                'message': 'Token rafraichi avec succes'
+                'access': tokens['access'],
+                'refresh': tokens['refresh'],
+                'message': 'Token rafraîchi'
             }, status=status.HTTP_200_OK)
 
-            # Set new tokens in cookies
-            set_jwt_cookies(response, access_token, new_refresh_token)
-
+            set_jwt_cookies(response, tokens['access'], tokens['refresh'])
             return response
 
-        except Employee.DoesNotExist:
+        except BaseUser.DoesNotExist:
             return Response({
                 'error': 'Utilisateur introuvable'
             }, status=status.HTTP_404_NOT_FOUND)
-        except TokenError as e:
+        except TokenError:
             return Response({
-                'error': 'Token invalide ou expire'
+                'error': 'Token invalide ou expiré'
             }, status=status.HTTP_401_UNAUTHORIZED)
-        except Exception as e:
+        except Exception:
             return Response({
-                'error': 'Erreur lors du rafraichissement du token'
+                'error': 'Erreur lors du rafraîchissement'
             }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
 
+# ===============================
+# CURRENT USER
+# ===============================
+
 class CurrentUserView(APIView):
-    """API endpoint to get current authenticated user (supports both admin and employee)"""
+    """Retourne l'utilisateur connecté avec ses permissions"""
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         user = request.user
+        user_type = getattr(user, 'user_type', 'unknown')
 
-        # Check if user is an Employee
-        if isinstance(user, Employee):
-            # Use Employee serializer
-            serializer = EmployeeSerializer(user)
-            user_data = serializer.data
-            user_data = convert_uuids_to_strings(user_data)
-            
-            return Response({
-                'user_type': 'employee',
-                'user': user_data,
-            }, status=status.HTTP_200_OK)
+        # Récupérer l'utilisateur concret
+        concrete_user = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+
+        if user_type == 'employee':
+            serializer = EmployeeUserResponseSerializer(concrete_user)
         else:
-            # Use AdminUser serializer
-            serializer = UserSerializer(user)
-            print(serializer.data)
-            return Response({
-                'user_type': 'admin',
-                'user': serializer.data,
-            }, status=status.HTTP_200_OK)
+            serializer = AdminUserResponseSerializer(concrete_user)
 
+        user_data = convert_uuids_to_strings(serializer.data)
+
+        return Response(user_data, status=status.HTTP_200_OK)
+
+
+# ===============================
+# PROFILE UPDATE
+# ===============================
 
 class UpdateProfileView(APIView):
-    """API endpoint to update current user profile (supports both admin and employee)"""
+    """Mise à jour du profil utilisateur"""
     permission_classes = [IsAuthenticated]
 
     def patch(self, request):
         user = request.user
         data = request.data
 
-        # Check if user is an Employee
-        if isinstance(user, Employee):
-            # Update employee fields
-            allowed_fields = ['phone', 'address', 'emergency_contact', 'emergency_phone']
-            
-            for field in allowed_fields:
+        # Champs modifiables par tous
+        common_fields = ['first_name', 'last_name', 'phone', 'avatar_url', 'language', 'timezone']
+        
+        # Champs supplémentaires pour Employee
+        employee_fields = ['address', 'city', 'country', 'emergency_contact']
+
+        try:
+            # Mettre à jour les champs communs
+            for field in common_fields:
                 if field in data:
                     setattr(user, field, data[field])
-            
-            try:
-                user.save()
-                serializer = EmployeeSerializer(user)
-                user_data = serializer.data
-                user_data = convert_uuids_to_strings(user_data)
 
-                return Response({
-                    'user_type': 'employee',
-                    'employee': user_data,
-                    'message': 'Profil mis à jour avec succès'
-                }, status=status.HTTP_200_OK)
-            except Exception as e:
-                return Response({
-                    'error': f'Erreur lors de la mise à jour: {str(e)}'
-                }, status=status.HTTP_400_BAD_REQUEST)
-        else:
-            # Update admin user fields
-            allowed_fields = ['first_name', 'last_name']
-            
-            for field in allowed_fields:
-                if field in data:
-                    setattr(user, field, data[field])
-            
-            try:
-                user.save()
-                serializer = UserSerializer(user)
+            # Si c'est un Employee, mettre à jour les champs spécifiques
+            if hasattr(user, 'user_type') and user.user_type == 'employee':
+                for field in employee_fields:
+                    if field in data:
+                        setattr(user, field, data[field])
 
-                return Response({
-                    'user_type': 'admin',
-                    'user': serializer.data,
-                    'message': 'Profil mis à jour avec succès'
-                }, status=status.HTTP_200_OK)
-            except Exception as e:
-                return Response({
-                    'error': f'Erreur lors de la mise à jour: {str(e)}'
-                }, status=status.HTTP_400_BAD_REQUEST)
+            user.save()
 
+            # Sérialiser
+            if hasattr(user, 'user_type') and user.user_type == 'employee':
+                serializer = EmployeeUserResponseSerializer(user)
+            else:
+                serializer = AdminUserResponseSerializer(user)
+
+            return Response({
+                'user': convert_uuids_to_strings(serializer.data),
+                'message': 'Profil mis à jour'
+            }, status=status.HTTP_200_OK)
+
+        except Exception as e:
+            return Response({
+                'error': f'Erreur: {str(e)}'
+            }, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ===============================
+# PASSWORD CHANGE
+# ===============================
 
 class ChangePasswordView(APIView):
-    """API endpoint to change password (supports both admin and employee)"""
+    """Changement de mot de passe"""
     permission_classes = [IsAuthenticated]
 
     def post(self, request):
         user = request.user
         data = request.data
 
-        # Validate required fields
         old_password = data.get('old_password')
         new_password = data.get('new_password')
-        new_password_confirm = data.get('new_password_confirm')
+        confirm_password = data.get('new_password_confirm', data.get('confirm_password'))
 
+        # Validations
         if not old_password:
             return Response({
-                'error': 'Le mot de passe actuel est requis'
+                'error': 'Mot de passe actuel requis'
             }, status=status.HTTP_400_BAD_REQUEST)
 
         if not new_password:
             return Response({
-                'error': 'Le nouveau mot de passe est requis'
+                'error': 'Nouveau mot de passe requis'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        if new_password != new_password_confirm:
+        if new_password != confirm_password:
             return Response({
                 'error': 'Les mots de passe ne correspondent pas'
             }, status=status.HTTP_400_BAD_REQUEST)
@@ -319,33 +318,28 @@ class ChangePasswordView(APIView):
                 'error': 'Le mot de passe doit contenir au moins 8 caractères'
             }, status=status.HTTP_400_BAD_REQUEST)
 
-        # Check if user is an Employee
-        if isinstance(user, Employee):
-            # Verify old password for employee
-            if not user.check_password(old_password):
-                return Response({
-                    'error': 'Le mot de passe actuel est incorrect'
-                }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Set new password
-            user.set_password(new_password)
-            user.save()
-
+        if not user.check_password(old_password):
             return Response({
-                'message': 'Mot de passe modifié avec succès'
-            }, status=status.HTTP_200_OK)
-        else:
-            # Verify old password for admin
-            if not user.check_password(old_password):
-                return Response({
-                    'error': 'Le mot de passe actuel est incorrect'
-                }, status=status.HTTP_400_BAD_REQUEST)
+                'error': 'Mot de passe actuel incorrect'
+            }, status=status.HTTP_400_BAD_REQUEST)
 
-            # Set new password
-            user.set_password(new_password)
-            user.save()
+        user.set_password(new_password)
+        user.save()
 
-            return Response({
-                'message': 'Mot de passe modifié avec succès'
-            }, status=status.HTTP_200_OK)
+        return Response({
+            'message': 'Mot de passe modifié avec succès'
+        }, status=status.HTTP_200_OK)
 
+
+# ===============================
+# LEGACY VIEWS (Rétrocompatibilité)
+# ===============================
+
+class AdminLoginView(LoginView):
+    """Alias pour rétrocompatibilité"""
+    pass
+
+
+class EmployeeLoginView(LoginView):
+    """Alias pour rétrocompatibilité"""
+    pass

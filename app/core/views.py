@@ -10,53 +10,10 @@ from django.conf import settings
 
 from .models import Organization, Category
 from .serializers import (
-    RegisterSerializer,
-    UserSerializer,
     OrganizationSerializer,
     OrganizationCreateSerializer,
     CategorySerializer
 )
-from authentication.utils import set_jwt_cookies, clear_jwt_cookies
-
-
-# -------------------------------
-# Authentication Views
-# -------------------------------
-
-class RegisterView(APIView):
-    """API endpoint for user registration with JWT"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-
-            # Return user data
-            user_data = UserSerializer(user).data
-
-            # Create response
-            response = Response({
-                'user': user_data,
-                'message': 'Inscription reussie',
-                'access': access_token,  # Also return in body for flexibility
-                'refresh': refresh_token,
-            }, status=status.HTTP_201_CREATED)
-
-            # Set tokens in HTTP-only cookies
-            set_jwt_cookies(response, access_token, refresh_token)
-
-            return response
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-# Login, Logout, Refresh and CurrentUser views have been moved to authentication app
 
 
 # -------------------------------
@@ -70,21 +27,24 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     serializer_class = OrganizationSerializer
 
     def get_queryset(self):
-        """Return only organizations owned by the current user"""
-        # Import Employee to check user type
-        from hr.models import Employee
-
+        """Return only organizations accessible by the current user"""
         user = self.request.user
+        user_type = getattr(user, 'user_type', None)
 
-        # If user is an Employee, return their organization
-        if isinstance(user, Employee):
-            if user.organization_id:
-                return Organization.objects.filter(id=user.organization_id)
-            # Employee without organization - return empty queryset
+        # Employee: retourne son organisation
+        if user_type == 'employee':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            org = getattr(concrete, 'organization', None)
+            if org:
+                return Organization.objects.filter(id=org.id)
             return Organization.objects.none()
 
-        # If user is AdminUser, return organizations they own
-        return Organization.objects.filter(admin=user)
+        # Admin: retourne ses organisations
+        if user_type == 'admin':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            return Organization.objects.filter(admin=concrete)
+
+        return Organization.objects.none()
 
     def get_serializer_class(self):
         """Use different serializer for create action"""
@@ -193,6 +153,6 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 
 class CategoryViewSet(viewsets.ModelViewSet):
     """ViewSet for viewing categories (read-only)"""
-    permission_classes = [IsAuthenticated]
+    # permission_classes = [IsAuthenticated]
     queryset = Category.objects.all()
     serializer_class = CategorySerializer

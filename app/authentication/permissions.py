@@ -1,67 +1,67 @@
 """
-Permissions personnalisées pour l'authentification
+Authentication Permissions
+==========================
+Classes de permission pour l'authentification.
+Utilise user_type au lieu de isinstance() pour le polymorphisme BaseUser.
 """
+
 from rest_framework.permissions import BasePermission
-from hr.models import Employee
-from core.models import AdminUser
 
 
 class IsAdminUser(BasePermission):
-    """
-    Permission pour vérifier que l'utilisateur est un admin
-    """
+    """Vérifie que l'utilisateur est un Admin."""
+    
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and isinstance(request.user, AdminUser)
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return getattr(request.user, 'user_type', None) == 'admin'
 
 
 class IsEmployee(BasePermission):
-    """
-    Permission pour vérifier que l'utilisateur est un employé
-    """
+    """Vérifie que l'utilisateur est un Employee."""
+    
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and isinstance(request.user, Employee)
+        if not request.user or not request.user.is_authenticated:
+            return False
+        return getattr(request.user, 'user_type', None) == 'employee'
 
 
 class IsAdminOrEmployee(BasePermission):
-    """
-    Permission pour vérifier que l'utilisateur est soit un admin soit un employé
-    """
+    """Vérifie que l'utilisateur est authentifié (Admin ou Employee)."""
+    
     def has_permission(self, request, view):
-        return request.user and request.user.is_authenticated and (
-            isinstance(request.user, AdminUser) or isinstance(request.user, Employee)
-        )
+        if not request.user or not request.user.is_authenticated:
+            return False
+        user_type = getattr(request.user, 'user_type', None)
+        return user_type in ('admin', 'employee')
 
 
 class IsActiveUser(BasePermission):
-    """
-    Permission pour vérifier que l'utilisateur est actif
-    """
+    """Vérifie que l'utilisateur est actif."""
+    
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
-
-        # Check if user has is_active attribute
-        if hasattr(request.user, 'is_active'):
-            return request.user.is_active
-
-        return True
+        return getattr(request.user, 'is_active', True)
 
 
 class HasValidOrganization(BasePermission):
-    """
-    Permission pour vérifier que l'employé a une organisation valide et active
-    """
+    """Vérifie que l'Employee a une organisation valide et active."""
+    
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
 
-        # Only check for employees
-        if isinstance(request.user, Employee):
-            return (
-                hasattr(request.user, 'organization') and
-                request.user.organization is not None and
-                request.user.organization.is_active
-            )
+        user_type = getattr(request.user, 'user_type', None)
+        
+        # Admin: toujours OK
+        if user_type == 'admin':
+            return True
+        
+        # Employee: vérifier l'organisation
+        if user_type == 'employee':
+            user = request.user.get_concrete_user() if hasattr(request.user, 'get_concrete_user') else request.user
+            org = getattr(user, 'organization', None)
+            return org is not None and getattr(org, 'is_active', False)
 
-        # Admins always pass this check
-        return True
+        return False
