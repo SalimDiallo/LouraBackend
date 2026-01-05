@@ -12,9 +12,19 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+import os
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from backend/ directory (parent of app/)
+ENV_PATH = BASE_DIR.parent / '.env'
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+    print(f"✅ Loaded .env from {ENV_PATH}")
 
 
 # Quick-start development settings - unsuitable for production

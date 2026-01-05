@@ -6,94 +6,7 @@ from django.core.validators import MinValueValidator, MaxValueValidator
 from decimal import Decimal
 
 from lourabackend.models import BaseProfile, TimeStampedModel
-from core.models import Organization
-
-
-# ===============================
-# PERMISSIONS MANAGEMENT
-# ===============================
-
-class Permission(TimeStampedModel):
-    """
-    Permission: Définit les permissions granulaires pour les employés
-    """
-
-    code = models.CharField(
-        max_length=100,
-        unique=True,
-        help_text="Code unique de la permission (ex: hr.view_employee)"
-    )
-    name = models.CharField(
-        max_length=200,
-        help_text="Nom lisible de la permission"
-    )
-    category = models.CharField(
-        max_length=100,
-        help_text="Catégorie de la permission (ex: Employés, Départements)"
-    )
-    description = models.TextField(blank=True)
-
-    class Meta:
-        db_table = 'hr_permissions'
-        verbose_name = "Permission"
-        verbose_name_plural = "Permissions"
-        ordering = ['category', 'name']
-
-    def __str__(self):
-        return f"{self.name} ({self.code})"
-
-
-class Role(TimeStampedModel):
-    """
-    Role: Regroupe un ensemble de permissions
-    Peut être un rôle système prédéfini ou un rôle personnalisé
-    """
-
-    organization = models.ForeignKey(
-        Organization,
-        on_delete=models.CASCADE,
-        related_name='roles',
-        null=True,
-        blank=True,
-        help_text="Organisation (null pour les rôles système)"
-    )
-
-    code = models.CharField(
-        max_length=100,
-        help_text="Code unique du rôle (ex: super_admin, hr_manager)"
-    )
-    name = models.CharField(
-        max_length=200,
-        help_text="Nom du rôle"
-    )
-    description = models.TextField(blank=True)
-
-    permissions = models.ManyToManyField(
-        Permission,
-        related_name='roles',
-        blank=True,
-        help_text="Permissions associées à ce rôle"
-    )
-
-    is_system_role = models.BooleanField(
-        default=False,
-        help_text="Rôle système prédéfini (non modifiable)"
-    )
-    is_active = models.BooleanField(default=True)
-
-    class Meta:
-        db_table = 'hr_roles'
-        verbose_name = "Rôle"
-        verbose_name_plural = "Rôles"
-        unique_together = [['organization', 'code']]
-        ordering = ['name']
-
-    def __str__(self):
-        return f"{self.name} ({'Système' if self.is_system_role else self.organization.name if self.organization else 'Global'})"
-
-    def get_all_permissions(self):
-        """Retourne toutes les permissions de ce rôle"""
-        return list(self.permissions.values_list('code', flat=True))
+from core.models import Organization, Role, Permission
 
 
 # ===============================
@@ -305,7 +218,7 @@ class Employee(BaseProfile):
             return self.first_name
         elif self.last_name:
             return self.last_name
-        return self.user.email if hasattr(self, 'user') and self.user else self.employee_id
+        return self.user.email if hasattr(self, 'user') and self.user else "Employé"
 
 
 # ===============================
@@ -325,14 +238,16 @@ class Department(TimeStampedModel):
     code = models.CharField(max_length=20, blank=True)
     description = models.TextField(blank=True)
 
-    # Department head
-    head = models.ForeignKey(
-        Employee,
+    # Department head - Generic Foreign Key to support both Employee and AdminUser
+    head_content_type = models.ForeignKey(
+        ContentType,
         on_delete=models.SET_NULL,
         null=True,
         blank=True,
-        related_name='headed_departments'
+        related_name='department_heads'
     )
+    head_object_id = models.UUIDField(null=True, blank=True)
+    head = GenericForeignKey('head_content_type', 'head_object_id')
 
     is_active = models.BooleanField(default=True)
 
@@ -345,6 +260,16 @@ class Department(TimeStampedModel):
 
     def __str__(self):
         return f"{self.name} ({self.organization.name})"
+
+    def get_head_name(self):
+        """Retourne le nom du responsable, qu'il soit Employee ou AdminUser"""
+        if self.head:
+            if hasattr(self.head, 'get_full_name'):
+                return self.head.get_full_name()
+            elif hasattr(self.head, 'full_name'):
+                return self.head.full_name
+            return str(self.head)
+        return None
 
 
 class Position(TimeStampedModel):

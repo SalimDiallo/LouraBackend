@@ -49,7 +49,7 @@ from .serializers import (
 )
 
 # Permissions
-from .permissions import (
+from .api_permissions import (
     IsHRAdminOrReadOnly, IsHRAdmin,
     IsManagerOrHRAdmin, IsAdminUserOrEmployee,
     RequiresPermission, RequiresCRUDPermission, CanAccessOwnOrManage,
@@ -169,10 +169,23 @@ class DepartmentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminUserOrEmployee, RequiresDepartmentPermission]
     
+    
+
+
     # Configuration du mixin
     organization_field = 'organization'
     view_permission = 'can_view_department'
     create_permission = 'can_create_department'
+
+    @action(detail=True, methods=['post'] , url_path='deactivate')
+    def deactivate(self, request, pk=None):
+        """Désactive un département."""
+        return super().deactivate(request, pk)
+
+    @action(detail=True, methods=['post'] , url_path='activate')
+    def activate(self, request, pk=None):
+        """Active un département."""
+        return super().activate(request, pk)
 
 
 class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
@@ -189,6 +202,7 @@ class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     organization_field = 'organization'
     view_permission = 'can_view_position'
     create_permission = 'can_create_position'
+
 
 
 class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
@@ -833,7 +847,7 @@ class HROverviewStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif isinstance(user, Employee):
-            if user.organization != organization or not user.has_permission("can_view_employee"):
+            if user.organization != organization or not user.has_permission("hr.view_employees"):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
@@ -935,7 +949,8 @@ class DepartmentStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif isinstance(user, Employee):
-            if user.organization != organization or not user.has_permission("can_view_department"):
+            print(user.get_all_permissions)
+            if user.organization != organization or not user.has_permission("hr.view_departments"):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN

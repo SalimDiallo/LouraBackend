@@ -1,17 +1,15 @@
-# AI Module - Agent Service
 """
-Service d'agent IA utilisant Ollama pour les modèles locaux
+AI Agent Service - Multi-Provider Support
+Enhanced with flexible LLM provider switching
 """
 import json
 import time
 from typing import Optional, List, Dict, Any
 from dataclasses import dataclass
 
-try:
-    import ollama
-    OLLAMA_AVAILABLE = True
-except ImportError:
-    OLLAMA_AVAILABLE = False
+from .provider_manager import ProviderManager, ProviderType
+from .providers.base import LLMMessage, LLMResponse
+from .config import ai_config
 
 
 @dataclass
@@ -25,13 +23,26 @@ class ToolResult:
 
 class LouraAIAgent:
     """
-    Agent IA pour Loura utilisant Ollama (modèles locaux)
+    Agent IA pour Loura avec support multi-providers
+
+    Usage:
+        # Auto-detect provider
+        agent = LouraAIAgent(organization=org)
+
+        # Use specific provider
+        agent = LouraAIAgent(organization=org, provider='gemini')
+
+        # Switch provider at runtime
+        agent.switch_provider('ollama', 'qwen2.5:14b')
+
+        # Chat
+        response = agent.chat("Donne-moi les stats RH", agent_mode=True)
     """
-    
-    # Modèle par défaut
-    DEFAULT_MODEL = "llama3.2"
-    
-    # Prompt système pour l'assistant
+
+    # Défaut pour compatibilité
+    DEFAULT_MODEL = "gemini-2.5-flash"
+
+    # Prompts système
     SYSTEM_PROMPT = """Tu es l'assistant IA de Loura, une application de gestion d'entreprise.
 Organisation: {org_name}
 
@@ -44,88 +55,136 @@ RÈGLES STRICTES:
 Réponds en français, de manière professionnelle mais amicale.
 """
 
-    AGENT_SYSTEM_PROMPT = """Tu es l'agent IA de Loura avec accès aux données réelles de l'entreprise.
-
-Organisation: {org_name}
+    AGENT_SYSTEM_PROMPT = """Tu es l'agent IA de Loura - Assistant de gestion d'entreprise pour {org_name}.
 
 OUTILS DISPONIBLES:
 {tools_description}
 
-RÈGLES ABSOLUES - À RESPECTER IMPÉRATIVEMENT:
-1. Tu NE DOIS JAMAIS inventer ou halluciner des données.
-2. TOUTE donnée que tu mentionnes DOIT provenir d'un outil.
-3. Si aucun outil n'a été exécuté, tu DOIS d'abord appeler un outil.
-4. Si un outil retourne des données vides, dis "Aucune donnée trouvée".
-5. JAMAIS de noms, chiffres ou informations inventés.
+⛔ RÈGLES ANTI-HALLUCINATION - ABSOLUMENT INTERDITES:
+1. Tu NE DOIS JAMAIS inventer de données, chiffres, noms ou statistiques
+2. Tu NE DOIS JAMAIS extrapoler ou deviner des informations non fournies
+3. Tu NE DOIS JAMAIS "compléter" des données partielles avec des suppositions
+4. Tu NE DOIS JAMAIS donner d'exemples avec des données fictives
+5. Si tu n'as pas exécuté d'outil → DIS "Je vais chercher ces informations" et appelle un outil
+6. Si l'outil retourne "Aucune donnée" → DIS EXACTEMENT "Aucune donnée trouvée" + propose une alternative
 
-FORMAT D'APPEL D'OUTIL:
+🎯 PROCESSUS OBLIGATOIRE:
+1. L'utilisateur pose une question → APPELLE un outil approprié
+2. Attends les DONNÉES RÉELLES retournées par l'outil  
+3. Réponds UNIQUEMENT à partir des données reçues
+4. Si donnée absente → NE PAS inventer, dire "non disponible"
+
+📋 FORMAT D'APPEL D'OUTIL:
+```
 <action>
-{{"tool": "nom_outil", "params": {{}}}}
+{{"tool": "nom_outil", "params": {{"param": "valeur"}}}}
 </action>
+```
 
-OUTILS ET QUAND LES UTILISER:
-- liste_employes: Pour lister TOUS les employés
-- liste_departements: Pour lister les départements
-- liste_produits: Pour lister les produits en stock
-- rechercher_employes: Pour chercher un employé spécifique (param: query)
-- statistiques_rh: Pour les stats RH globales
-- verifier_stock: Pour vérifier un stock produit (param: product_name)
-- conges_en_cours: Pour voir qui est en congé
-- fiches_paie_recentes: Pour les fiches de paie récentes (param: limit)
+✅ FORMAT DE RÉPONSE CORRECT:
+- Maximum 3 phrases
+- Chiffres en **gras** avec émojis
+- Structure: Donnée → Insight → Action
+- Exemples UNIQUEMENT si données réelles disponibles
 
-IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune invention.
-"""
+❌ CE QUE TU NE DOIS JAMAIS FAIRE:
+- "Par exemple, vous pourriez avoir 45 employés..." → INTERDIT
+- "Imaginons que le stock soit de..." → INTERDIT  
+- "En général, les entreprises ont..." → INTERDIT
+- Donner des chiffres sans les avoir reçus d'un outil → INTERDIT
 
-    def __init__(self, organization=None, model: str = None):
+📊 EXEMPLES DE RÉPONSES CORRECTES:
+Q: "Combien d'employés ?"
+A: [Appelle d'abord liste_employes ou statistiques_rh, puis répond avec les vrais chiffres]
+
+Q: "Montre le stock"  
+A: [Appelle liste_produits ou verifier_stock, puis répond avec les données réelles]
+
+RAPPEL FINAL: Tu es UN RAPPORTEUR DE DONNÉES, pas un créateur. Zéro invention."""
+
+    def __init__(
+        self,
+        organization=None,
+        provider: Optional[str] = None,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None
+    ):
+        """
+        Initialize AI Agent
+
+        Args:
+            organization: Organization instance
+            provider: LLM provider (gemini|ollama|openai|anthropic|auto)
+            model: Model name (optional, uses provider default)
+            api_key: API key (optional, uses environment variable)
+        """
         self.organization = organization
-        self.model = model or self.DEFAULT_MODEL
+        self._model = model
+
+        # Initialize provider manager
+        if provider and provider != 'auto':
+            provider_type = ProviderType(provider)
+            self.provider_manager = ProviderManager(provider_type, model, api_key)
+        else:
+            self.provider_manager = ProviderManager()
+
+        # Register tools (importé du code existant)
         self.tools = self._register_tools()
-        
+
+    @property
+    def model(self) -> str:
+        """Return current model name"""
+        info = self.provider_manager.get_provider_info()
+        return info.get('model', self._model or self.DEFAULT_MODEL)
+
     def _register_tools(self) -> Dict[str, callable]:
         """Enregistre les outils disponibles pour l'agent"""
-        return {
-            "liste_employes": {
-                "function": self._list_employees,
-                "description": "Liste tous les employés de l'organisation",
-                "params": []
-            },
-            "rechercher_employes": {
-                "function": self._search_employees,
-                "description": "Recherche des employés par nom, département ou poste",
-                "params": ["query"]
-            },
-            "statistiques_rh": {
-                "function": self._get_hr_stats,
-                "description": "Obtient les statistiques RH de l'organisation",
-                "params": []
-            },
-            "liste_departements": {
-                "function": self._list_departments,
-                "description": "Liste tous les départements de l'organisation",
-                "params": []
-            },
-            "liste_produits": {
-                "function": self._list_products,
-                "description": "Liste tous les produits en stock",
-                "params": []
-            },
-            "verifier_stock": {
-                "function": self._check_stock,
-                "description": "Vérifie le stock d'un produit par nom",
-                "params": ["product_name"]
-            },
-            "conges_en_cours": {
-                "function": self._get_active_leaves,
-                "description": "Liste les employés actuellement en congé",
-                "params": []
-            },
-            "fiches_paie_recentes": {
-                "function": self._get_recent_payslips,
-                "description": "Récupère les fiches de paie récentes",
-                "params": ["limit"]
-            },
-        }
-    
+        # ... (copier tout le code de _register_tools de agent_old.py)
+        # Pour simplifier, je vais importer les fonctions existantes
+        from .agent_old import LouraAIAgent as OldAgent
+        old_agent = OldAgent(self.organization)
+        return old_agent.tools
+
+    def switch_provider(
+        self,
+        provider: str,
+        model: Optional[str] = None,
+        api_key: Optional[str] = None
+    ) -> bool:
+        """
+        Switch to a different LLM provider
+
+        Args:
+            provider: Provider name (gemini|ollama|openai|anthropic)
+            model: Model name (optional)
+            api_key: API key (optional)
+
+        Returns:
+            True if successful
+
+        Example:
+            agent.switch_provider('gemini', 'gemini-1.5-pro')
+            agent.switch_provider('ollama', 'qwen2.5:14b')
+        """
+        provider_type = ProviderType(provider)
+        return self.provider_manager.set_provider(provider_type, model, api_key)
+
+    def get_provider_info(self) -> Dict:
+        """Get information about current LLM provider"""
+        return self.provider_manager.get_provider_info()
+
+    def list_available_providers(self) -> List[Dict]:
+        """List all available providers"""
+        return self.provider_manager.list_available_providers()
+
+    def list_available_models(self) -> List[str]:
+        """List available models for current provider"""
+        return self.provider_manager.list_models()
+
+    def get_available_models(self) -> List[str]:
+        """Alias for list_available_models (compatibility with views.py)"""
+        return self.list_available_models()
+
     def _get_tools_description(self) -> str:
         """Génère la description des outils pour le prompt"""
         descriptions = []
@@ -134,293 +193,40 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
             descriptions.append(f"- {name}: {tool['description']} (params: {params})")
         return "\n".join(descriptions)
 
-    # ==================== OUTILS MÉTIER ====================
-    
-    def _list_employees(self) -> ToolResult:
-        """Liste tous les employés de l'organisation"""
-        start = time.time()
-        try:
-            from hr.models import Employee
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)[:20]
-            
-            results = [
-                {
-                    "id": str(e.id),
-                    "nom": f"{e.first_name} {e.last_name}",
-                    "email": e.email,
-                    "poste": str(e.position) if e.position else "Non défini",
-                    "departement": e.department.name if e.department else "Non assigné",
-                    "statut": e.employment_status or "actif",
-                }
-                for e in employees
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-    
-    def _list_products(self) -> ToolResult:
-        """Liste tous les produits"""
-        start = time.time()
-        try:
-            from inventory.models import Product, Stock
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            products = Product.objects.filter(organization=self.organization)[:20]
-            
-            results = []
-            for p in products:
-                stocks = Stock.objects.filter(product=p)
-                total_qty = sum(s.quantity for s in stocks)
-                results.append({
-                    "id": str(p.id),
-                    "nom": p.name,
-                    "sku": p.sku,
-                    "categorie": p.category.name if p.category else "Non catégorisé",
-                    "prix": float(p.selling_price) if p.selling_price else 0,
-                    "stock": total_qty,
-                })
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _search_employees(self, query: str = "") -> ToolResult:
-        """Recherche des employés"""
-        start = time.time()
-        try:
-            from hr.models import Employee
-            from django.db.models import Q
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)
-            
-            # Filtrer si une requête est fournie
-            if query:
-                employees = employees.filter(
-                    Q(first_name__icontains=query) |
-                    Q(last_name__icontains=query) |
-                    Q(email__icontains=query) |
-                    Q(employee_id__icontains=query)
-                )
-            
-            employees = employees[:10]
-            
-            results = [
-                {
-                    "id": str(e.id),
-                    "nom": e.full_name,
-                    "email": e.email,
-                    "poste": e.position.title if e.position else None,
-                    "departement": e.department.name if e.department else None,
-                    "statut": e.employment_status,
-                }
-                for e in employees
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _get_hr_stats(self) -> ToolResult:
-        """Statistiques RH"""
-        start = time.time()
-        try:
-            from hr.models import Employee, Department
-            from django.db import models
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)
-            
-            stats = {
-                "total_employes": employees.count(),
-                "employes_actifs": employees.filter(employment_status='active').count(),
-                "en_conge": employees.filter(employment_status='on_leave').count(),
-                "suspendus": employees.filter(employment_status='suspended').count(),
-                "total_departements": Department.objects.filter(organization=self.organization).count(),
-            }
-            
-            return ToolResult(
-                success=True,
-                data=stats,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _list_departments(self) -> ToolResult:
-        """Liste les départements"""
-        start = time.time()
-        try:
-            from hr.models import Department
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            departments = Department.objects.filter(
-                organization=self.organization,
-                is_active=True
-            )
-            
-            results = [
-                {
-                    "id": str(d.id),
-                    "nom": d.name,
-                    "code": d.code,
-                    "description": d.description,
-                }
-                for d in departments
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _check_stock(self, product_name: str = "") -> ToolResult:
-        """Vérifie le stock d'un produit"""
-        start = time.time()
-        try:
-            from inventory.models import Product, Stock
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            products = Product.objects.filter(organization=self.organization)
-            
-            # Filtrer si un nom de produit est fourni
-            if product_name:
-                products = products.filter(name__icontains=product_name)
-            
-            products = products[:5]
-            
-            results = []
-            for p in products:
-                stocks = Stock.objects.filter(product=p)
-                total_qty = sum(s.quantity for s in stocks)
-                results.append({
-                    "produit": p.name,
-                    "sku": p.sku,
-                    "stock_total": total_qty,
-                    "stock_min": p.min_stock_level,
-                    "alerte": total_qty <= p.min_stock_level if p.min_stock_level else False,
-                })
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _get_active_leaves(self) -> ToolResult:
-        """Récupère les congés en cours"""
-        start = time.time()
-        try:
-            from hr.models import LeaveRequest
-            from django.utils import timezone
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            today = timezone.now().date()
-            leaves = LeaveRequest.objects.filter(
-                employee__organization=self.organization,
-                status='approved',
-                start_date__lte=today,
-                end_date__gte=today
-            )[:20]
-            
-            results = [
-                {
-                    "employe": l.employee.full_name,
-                    "type": l.leave_type.name if l.leave_type else "N/A",
-                    "debut": str(l.start_date),
-                    "fin": str(l.end_date),
-                }
-                for l in leaves
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _get_recent_payslips(self, limit: int = 10) -> ToolResult:
-        """Récupère les fiches de paie récentes"""
-        start = time.time()
-        try:
-            from hr.models import Payroll
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            payslips = Payroll.objects.filter(
-                employee__organization=self.organization
-            ).order_by('-created_at')[:limit]
-            
-            results = [
-                {
-                    "employe": p.employee.full_name,
-                    "periode": p.payroll_period.name if p.payroll_period else "N/A",
-                    "net": float(p.net_salary),
-                    "statut": p.status,
-                }
-                for p in payslips
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    # ==================== MÉTHODES PRINCIPALES ====================
-
-    def chat(self, message: str, conversation_history: List[Dict] = None, agent_mode: bool = False) -> Dict:
+    def chat(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+        agent_mode: bool = False
+    ) -> Dict:
         """
-        Envoie un message au modèle et retourne la réponse
+        Send message to AI agent
+
+        Args:
+            message: User message
+            conversation_history: Previous messages
+            agent_mode: Enable tool execution
+
+        Returns:
+            Dict with content, tool_calls, tool_results, metadata
         """
         start_time = time.time()
-        
-        if not OLLAMA_AVAILABLE:
-            return self._fallback_response(message, agent_mode)
-        
+
+        # Check provider availability
+        if not self.provider_manager.current_provider:
+            return {
+                "success": False,
+                "content": "Aucun provider IA disponible. Configurez une clé API.",
+                "error": "No provider available",
+                "tool_calls": [],
+                "tool_results": [],
+                "response_time_ms": 0,
+            }
+
         try:
-            # Construire le prompt système
+            # Build system prompt
             org_name = self.organization.name if self.organization else "Non définie"
-            
+
             if agent_mode:
                 system_prompt = self.AGENT_SYSTEM_PROMPT.format(
                     org_name=org_name,
@@ -428,236 +234,125 @@ IMPORTANT: Réponds UNIQUEMENT avec les données reçues des outils. Aucune inve
                 )
             else:
                 system_prompt = self.SYSTEM_PROMPT.format(org_name=org_name)
-            
-            # Construire les messages
-            messages = [{"role": "system", "content": system_prompt}]
-            
+
+            # Build messages
+            messages = [LLMMessage(role="system", content=system_prompt)]
+
             if conversation_history:
-                for msg in conversation_history[-10:]:  # Garder les 10 derniers messages
-                    messages.append({
-                        "role": msg.get("role", "user"),
-                        "content": msg.get("content", "")
-                    })
-            
-            messages.append({"role": "user", "content": message})
-            
-            # Appel à Ollama
-            response = ollama.chat(
-                model=self.model,
-                messages=messages
+                for msg in conversation_history[-10:]:
+                    messages.append(LLMMessage(
+                        role=msg.get("role", "user"),
+                        content=msg.get("content", "")
+                    ))
+
+            messages.append(LLMMessage(role="user", content=message))
+
+            # Convert tools to standard format
+            tools_list = None
+            if agent_mode:
+                tools_list = [
+                    {
+                        "name": name,
+                        "description": tool["description"],
+                        "params": tool["params"]
+                    }
+                    for name, tool in self.tools.items()
+                ]
+
+            # Call LLM provider
+            response = self.provider_manager.chat(
+                messages=messages,
+                temperature=ai_config.TEMPERATURE,
+                max_tokens=ai_config.MAX_TOKENS,
+                tools=tools_list
             )
-            
-            # Nouvelle API Ollama: response.message.content au lieu de dict
-            content = response.message.content if hasattr(response, 'message') else str(response)
-            
-            # Si mode agent, traiter les actions
+
+            if not response.success:
+                return {
+                    "success": False,
+                    "content": response.content,
+                    "error": response.error,
+                    "tool_calls": [],
+                    "tool_results": [],
+                    "response_time_ms": response.response_time_ms,
+                }
+
+            content = response.content
             tool_calls = []
             tool_results = []
-            
-            if agent_mode and "<action>" in content:
-                _, tool_calls, tool_results = self._process_agent_actions(content)
-                
-                # Si des outils ont été exécutés, rappeler l'IA avec les résultats réels
-                if tool_results:
-                    # Construire le message avec les résultats réels
-                    results_data = self._format_tool_results_for_ai(tool_results)
-                    
-                    # Ajouter la réponse précédente et les résultats
-                    messages.append({"role": "assistant", "content": content})
-                    messages.append({
-                        "role": "user", 
-                        "content": f"""Voici les données RÉELLES récupérées par les outils. 
-Réponds à l'utilisateur en utilisant UNIQUEMENT ces données. 
-NE JAMAIS inventer de données supplémentaires.
 
-DONNÉES RÉELLES:
+            # Process agent actions if in agent mode
+            if agent_mode and "<action>" in content:
+                content, tool_calls, tool_results = self._process_agent_actions(content)
+
+                # If tools were executed, get final response with real data
+                if tool_results:
+                    results_data = self._format_tool_results_for_ai(tool_results)
+
+                    messages.append(LLMMessage(role="assistant", content=content))
+                    messages.append(LLMMessage(
+                        role="user",
+                        content=f"""⛔ RAPPEL CRITIQUE - ZÉRO HALLUCINATION:
+Tu DOIS répondre en utilisant EXCLUSIVEMENT les données ci-dessous.
+NE JAMAIS inventer, extrapoler ou "compléter" avec des informations non présentes.
+
+DONNÉES RÉELLES RETOURNÉES PAR LES OUTILS:
 {results_data}
 
-Formule une réponse claire et concise basée UNIQUEMENT sur ces données."""
-                    })
-                    
-                    # Deuxième appel pour obtenir la réponse finale
-                    final_response = ollama.chat(
-                        model=self.model,
-                        messages=messages
+RÈGLES DE RÉPONSE:
+1. Cite UNIQUEMENT les chiffres exacts présents dans les données
+2. Si une info n'est pas dans les données → dis "non disponible" 
+3. Maximum 3 phrases, format: Donnée → Insight → Action
+4. Utilise **gras** pour les chiffres clés + émojis pertinents
+5. Si "Aucune donnée trouvée" → dis-le clairement et propose une alternative
+
+Formule ta réponse maintenant:"""
+                    ))
+
+                    final_response = self.provider_manager.chat(
+                        messages=messages,
+                        temperature=ai_config.TEMPERATURE,
+                        max_tokens=ai_config.MAX_TOKENS,
                     )
-                    content = final_response.message.content if hasattr(final_response, 'message') else str(final_response)
-            
+                    content = final_response.content if final_response.success else content
+
             response_time = int((time.time() - start_time) * 1000)
-            
+            provider_info = self.get_provider_info()
+
             return {
                 "success": True,
                 "content": content,
                 "tool_calls": tool_calls,
                 "tool_results": tool_results,
                 "response_time_ms": response_time,
-                "model": self.model,
+                "model": provider_info.get("model", "unknown"),
+                "provider": provider_info.get("provider", "unknown"),
+                "tokens_used": response.tokens_used,
             }
-            
+
         except Exception as e:
             return {
                 "success": False,
-                "content": f"Erreur de communication avec le modèle IA: {str(e)}",
+                "content": f"Erreur IA: {str(e)}",
                 "error": str(e),
+                "tool_calls": [],
+                "tool_results": [],
                 "response_time_ms": int((time.time() - start_time) * 1000),
             }
-    
-    def _format_tool_results_for_ai(self, tool_results: List[Dict]) -> str:
-        """Formate les résultats des outils pour l'IA de manière lisible"""
-        formatted = []
-        for result in tool_results:
-            tool_name = result.get("tool", "unknown")
-            if result.get("success"):
-                data = result.get("data", [])
-                if isinstance(data, list):
-                    if len(data) == 0:
-                        formatted.append(f"[{tool_name}] Aucune donnée trouvée.")
-                    else:
-                        items = []
-                        for item in data:
-                            if isinstance(item, dict):
-                                # Formater chaque item de manière lisible
-                                item_str = ", ".join([f"{k}: {v}" for k, v in item.items() if v])
-                                items.append(f"  - {item_str}")
-                            else:
-                                items.append(f"  - {item}")
-                        formatted.append(f"[{tool_name}] {len(data)} résultat(s):\n" + "\n".join(items))
-                elif isinstance(data, dict):
-                    items = [f"  - {k}: {v}" for k, v in data.items()]
-                    formatted.append(f"[{tool_name}] Données:\n" + "\n".join(items))
-                else:
-                    formatted.append(f"[{tool_name}] {data}")
-            else:
-                error = result.get("error", "Erreur inconnue")
-                formatted.append(f"[{tool_name}] Erreur: {error}")
-        
-        return "\n\n".join(formatted)
 
     def _process_agent_actions(self, content: str) -> tuple:
-        """Traite les actions demandées par l'agent"""
-        import re
-        
-        tool_calls = []
-        tool_results = []
-        
-        # Essayer plusieurs patterns pour extraire les actions
-        # Pattern 1: JSON entre balises <action>
-        action_pattern = r'<action>\s*(.*?)\s*</action>'
-        matches = re.findall(action_pattern, content, re.DOTALL | re.IGNORECASE)
-        
-        for match in matches:
-            try:
-                # Essayer de parser comme JSON
-                action = json.loads(match.strip())
-                tool_name = action.get("tool")
-                params = action.get("params", {})
-                
-                if tool_name in self.tools:
-                    tool_calls.append({"tool": tool_name, "params": params})
-                    
-                    # Exécuter l'outil
-                    tool_func = self.tools[tool_name]["function"]
-                    if params:
-                        result = tool_func(**params)
-                    else:
-                        result = tool_func()
-                    
-                    tool_results.append({
-                        "tool": tool_name,
-                        "success": result.success,
-                        "data": result.data,
-                        "error": result.error,
-                    })
-                    
-            except json.JSONDecodeError:
-                # Essayer de parser comme XML-like: <tool_name /> ou <tool_name></tool_name>
-                inner_match = re.search(r'<(\w+)\s*/>', match) or re.search(r'<(\w+)>', match)
-                if inner_match:
-                    tool_name = inner_match.group(1)
-                    if tool_name in self.tools:
-                        tool_calls.append({"tool": tool_name, "params": {}})
-                        tool_func = self.tools[tool_name]["function"]
-                        result = tool_func()
-                        tool_results.append({
-                            "tool": tool_name,
-                            "success": result.success,
-                            "data": result.data,
-                            "error": result.error,
-                        })
-                continue
-            except Exception as e:
-                tool_results.append({
-                    "tool": tool_name if 'tool_name' in locals() else "unknown",
-                    "success": False,
-                    "error": str(e),
-                })
-        
-        # Si aucune action JSON trouvée, chercher des mentions directes d'outils
-        if not tool_results:
-            for tool_name in self.tools.keys():
-                # Chercher le nom de l'outil mentionné directement
-                if f"<{tool_name}" in content.lower() or f'"{tool_name}"' in content:
-                    tool_calls.append({"tool": tool_name, "params": {}})
-                    tool_func = self.tools[tool_name]["function"]
-                    result = tool_func()
-                    tool_results.append({
-                        "tool": tool_name,
-                        "success": result.success,
-                        "data": result.data,
-                        "error": result.error,
-                    })
-                    break  # Un seul outil à la fois pour éviter la confusion
-        
-        # Nettoyer le contenu des balises action
-        clean_content = re.sub(action_pattern, '', content, flags=re.DOTALL | re.IGNORECASE).strip()
-        
-        return clean_content, tool_calls, tool_results
+        """Process agent tool calls (same as before)"""
+        # ... (copier le code de agent_old.py)
+        from .agent_old import LouraAIAgent as OldAgent
+        old_agent = OldAgent(self.organization)
+        return old_agent._process_agent_actions(content)
 
-    def _fallback_response(self, message: str, agent_mode: bool) -> Dict:
-        """Réponse de secours si Ollama n'est pas disponible"""
-        if agent_mode:
-            content = """🤖 **Mode Agent**
+    def _format_tool_results_for_ai(self, tool_results: List[Dict]) -> str:
+        """Format tool results for AI (same as before)"""
+        from .agent_old import LouraAIAgent as OldAgent
+        old_agent = OldAgent(self.organization)
+        return old_agent._format_tool_results_for_ai(tool_results)
 
-⚠️ Le modèle IA local (Ollama) n'est pas disponible.
-
-Pour activer l'IA locale:
-1. Installez Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Démarrez le service: `ollama serve`
-3. Téléchargez un modèle: `ollama pull llama3.2`
-4. Installez le package Python: `pip install ollama`
-
-En attendant, je peux simuler certaines actions basiques."""
-        else:
-            content = """👋 Bonjour !
-
-Je suis l'assistant IA de Loura, mais le modèle local n'est pas encore configuré.
-
-**Pour activer l'IA locale:**
-1. Installez Ollama
-2. Téléchargez un modèle (llama3.2, mistral, etc.)
-3. Redémarrez le serveur
-
-En attendant, n'hésitez pas à explorer l'application ! 🚀"""
-        
-        return {
-            "success": True,
-            "content": content,
-            "tool_calls": [],
-            "tool_results": [],
-            "response_time_ms": 0,
-            "model": "fallback",
-        }
-
-    def get_available_models(self) -> List[str]:
-        """Retourne la liste des modèles disponibles sur Ollama"""
-        if not OLLAMA_AVAILABLE:
-            return []
-        
-        try:
-            result = ollama.list()
-            # Nouvelle API Ollama: result.models au lieu de result.get("models")
-            if hasattr(result, 'models'):
-                return [m.model for m in result.models if hasattr(m, 'model')]
-            return []
-        except Exception:
-            return []
+    # Note: Les autres méthodes (_list_employees, _get_hr_stats, etc.)
+    # sont déjà dans agent_old.py et seront importées automatiquement
+    # via l'héritage implicite des tools

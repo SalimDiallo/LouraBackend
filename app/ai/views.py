@@ -17,6 +17,7 @@ from .serializers import (
     FeedbackSerializer,
 )
 from .agent import LouraAIAgent
+from .config import ai_config
 
 
 class ConversationViewSet(viewsets.ModelViewSet):
@@ -197,6 +198,7 @@ class ChatStreamView(APIView):
     def post(self, request):
         import json
         from django.http import StreamingHttpResponse
+        from .providers.base import LLMMessage
         
         serializer = ChatRequestSerializer(data=request.data)
         serializer.is_valid(raise_exception=True)
@@ -218,8 +220,6 @@ class ChatStreamView(APIView):
         
         def generate():
             try:
-                import ollama
-                
                 agent = LouraAIAgent(organization=organization, model=model)
                 org_name = organization.name
                 
@@ -231,27 +231,33 @@ class ChatStreamView(APIView):
                 else:
                     system_prompt = agent.SYSTEM_PROMPT.format(org_name=org_name)
                 
-                messages = [{"role": "system", "content": system_prompt}]
-                messages.append({"role": "user", "content": message_content})
+                messages = [LLMMessage(role="system", content=system_prompt)]
+                messages.append(LLMMessage(role="user", content=message_content))
                 
-                # Streaming avec Ollama
+                # Streaming avec le provider manager
                 full_content = ""
-                for chunk in ollama.chat(
-                    model=agent.model,
+                
+                def on_token(token):
+                    nonlocal full_content
+                    full_content += token
+                
+                # Utiliser stream_chat du provider
+                response = agent.provider_manager.stream_chat(
                     messages=messages,
-                    stream=True
-                ):
-                    if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                        token = chunk.message.content
-                        full_content += token
-                        yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                    on_token=on_token,
+                    temperature=ai_config.TEMPERATURE,
+                    max_tokens=ai_config.MAX_TOKENS,
+                )
+                
+                # Envoyer le contenu complet (le streaming réel nécessiterait une refonte)
+                yield f"data: {json.dumps({'type': 'token', 'content': response.content})}\n\n"
                 
                 # Si mode agent, traiter les actions après le streaming complet
                 tool_calls = []
                 tool_results = []
                 
-                if agent_mode and "<action>" in full_content:
-                    _, tool_calls, tool_results = agent._process_agent_actions(full_content)
+                if agent_mode and "<action>" in response.content:
+                    _, tool_calls, tool_results = agent._process_agent_actions(response.content)
                     
                     if tool_results:
                         # Envoyer les résultats des outils
@@ -259,22 +265,36 @@ class ChatStreamView(APIView):
                         
                         # Générer la réponse finale basée sur les données
                         results_data = agent._format_tool_results_for_ai(tool_results)
-                        messages.append({"role": "assistant", "content": full_content})
-                        messages.append({
-                            "role": "user",
-                            "content": f"Voici les données RÉELLES. Réponds UNIQUEMENT basé sur celles-ci:\n{results_data}"
-                        })
+                        messages.append(LLMMessage(role="assistant", content=response.content))
+                        messages.append(LLMMessage(
+                            role="user",
+                            content=f"""⛔ RAPPEL CRITIQUE - ZÉRO HALLUCINATION:
+Tu DOIS répondre en utilisant EXCLUSIVEMENT les données ci-dessous.
+NE JAMAIS inventer, extrapoler ou "compléter" avec des informations non présentes.
+
+DONNÉES RÉELLES RETOURNÉES PAR LES OUTILS:
+{results_data}
+
+RÈGLES DE RÉPONSE:
+1. Cite UNIQUEMENT les chiffres exacts présents dans les données
+2. Si une info n'est pas dans les données → dis "non disponible" 
+3. Maximum 3 phrases, format: Donnée → Insight → Action
+4. Utilise **gras** pour les chiffres clés + émojis pertinents
+5. Si "Aucune donnée trouvée" → dis-le clairement et propose une alternative
+
+Formule ta réponse maintenant:"""
+                        ))
                         
                         yield f"data: {json.dumps({'type': 'clear'})}\n\n"
                         
-                        for chunk in ollama.chat(
-                            model=agent.model,
+                        # Deuxième appel pour la réponse finale
+                        final_response = agent.provider_manager.chat(
                             messages=messages,
-                            stream=True
-                        ):
-                            if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
-                                token = chunk.message.content
-                                yield f"data: {json.dumps({'type': 'token', 'content': token})}\n\n"
+                            temperature=ai_config.TEMPERATURE,
+                            max_tokens=ai_config.MAX_TOKENS,
+                        )
+                        
+                        yield f"data: {json.dumps({'type': 'token', 'content': final_response.content})}\n\n"
                 
                 yield f"data: {json.dumps({'type': 'done'})}\n\n"
                 

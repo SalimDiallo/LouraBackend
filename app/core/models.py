@@ -5,6 +5,93 @@ from django.utils import timezone
 from lourabackend.models import  TimeStampedModel
 
 # -------------------------------
+# PERMISSIONS MANAGEMENT
+# -------------------------------
+
+class Permission(TimeStampedModel):
+    """
+    Permission: Définit les permissions granulaires pour les employés
+    """
+
+    code = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Code unique de la permission (ex: hr.view_employee)"
+    )
+    name = models.CharField(
+        max_length=200,
+        help_text="Nom lisible de la permission"
+    )
+    category = models.CharField(
+        max_length=100,
+        help_text="Catégorie de la permission (ex: Employés, Départements)"
+    )
+    description = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'core_permissions'
+        verbose_name = "Permission"
+        verbose_name_plural = "Permissions"
+        ordering = ['category', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+
+class Role(TimeStampedModel):
+    """
+    Role: Regroupe un ensemble de permissions
+    Peut être un rôle système prédéfini ou un rôle personnalisé
+    """
+
+    organization = models.ForeignKey(
+        'Organization',
+        on_delete=models.CASCADE,
+        related_name='roles',
+        null=True,
+        blank=True,
+        help_text="Organisation (null pour les rôles système)"
+    )
+
+    code = models.CharField(
+        max_length=100,
+        help_text="Code unique du rôle (ex: super_admin, hr_manager)"
+    )
+    name = models.CharField(
+        max_length=200,
+        help_text="Nom du rôle"
+    )
+    description = models.TextField(blank=True)
+
+    permissions = models.ManyToManyField(
+        Permission,
+        related_name='roles',
+        blank=True,
+        help_text="Permissions associées à ce rôle"
+    )
+
+    is_system_role = models.BooleanField(
+        default=False,
+        help_text="Rôle système prédéfini (non modifiable)"
+    )
+    is_active = models.BooleanField(default=True)
+
+    class Meta:
+        db_table = 'core_roles'
+        verbose_name = "Rôle"
+        verbose_name_plural = "Rôles"
+        unique_together = [['organization', 'code']]
+        ordering = ['name']
+
+    def __str__(self):
+        return f"{self.name} ({'Système' if self.is_system_role else self.organization.name if self.organization else 'Global'})"
+
+    def get_all_permissions(self):
+        """Retourne toutes les permissions de ce rôle"""
+        return list(self.permissions.values_list('code', flat=True))
+
+
+# -------------------------------
 # Category Model for Organization
 # -------------------------------
 class Category(models.Model):
@@ -87,6 +174,13 @@ class AdminUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         :return: QuerySet of Organization instances
         """
         return self.organizations.all()
+
+    def has_permission(self, permission_code):
+        """
+        AdminUser a toutes les permissions par défaut.
+        On ne vérifie pas les permissions spécifiques pour les admins d'organisation.
+        """
+        return True
 
         
 

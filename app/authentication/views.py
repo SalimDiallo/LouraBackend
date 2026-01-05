@@ -216,15 +216,15 @@ class CurrentUserView(APIView):
             serializer = EmployeeSerializer(user)
             user_data = serializer.data
             user_data = convert_uuids_to_strings(user_data)
-
+            
             return Response({
                 'user_type': 'employee',
-                'employee': user_data,
+                'user': user_data,
             }, status=status.HTTP_200_OK)
         else:
             # Use AdminUser serializer
             serializer = UserSerializer(user)
-
+            print(serializer.data)
             return Response({
                 'user_type': 'admin',
                 'user': serializer.data,
