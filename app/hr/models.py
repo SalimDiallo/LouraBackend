@@ -272,7 +272,13 @@ class Position(TimeStampedModel):
 
 
 class Contract(TimeStampedModel):
-    """Contrat de travail"""
+    """
+    Contrat de travail
+    
+    Règle métier importante : Un employé ne peut avoir qu'un seul contrat actif
+    à un instant donné. Quand un contrat est activé, les autres contrats de
+    l'employé sont automatiquement désactivés.
+    """
 
     employee = models.ForeignKey(
         Employee,
@@ -321,6 +327,70 @@ class Contract(TimeStampedModel):
 
     def __str__(self):
         return f"{self.employee.get_full_name()} - {self.get_contract_type_display()}"
+
+    def save(self, *args, **kwargs):
+        """
+        Override save pour garantir un seul contrat actif par employé.
+        Si ce contrat est activé, désactive les autres contrats de l'employé
+        et met à jour la référence du contrat actif sur l'employé.
+        """
+        # Déterminer si c'est une création ou une mise à jour
+        is_new = self.pk is None
+        
+        # Si ce contrat devient actif, désactiver les autres contrats de l'employé
+        if self.is_active:
+            # Désactiver tous les autres contrats actifs de cet employé
+            Contract.objects.filter(
+                employee=self.employee,
+                is_active=True
+            ).exclude(pk=self.pk).update(is_active=False)
+        
+        super().save(*args, **kwargs)
+        
+        # Mettre à jour la référence du contrat actif sur l'employé
+        self._update_employee_contract()
+
+    def _update_employee_contract(self):
+        """Met à jour le champ contract de l'employé avec le contrat actif courant."""
+        if self.is_active:
+            # Ce contrat est actif, le lier à l'employé
+            if self.employee.contract_id != self.pk:
+                Employee.objects.filter(pk=self.employee.pk).update(contract=self)
+        else:
+            # Ce contrat n'est plus actif, vérifier s'il y a un autre contrat actif
+            active_contract = Contract.objects.filter(
+                employee=self.employee,
+                is_active=True
+            ).first()
+            
+            if active_contract:
+                Employee.objects.filter(pk=self.employee.pk).update(contract=active_contract)
+            elif self.employee.contract_id == self.pk:
+                # Aucun contrat actif et c'était ce contrat qui était lié
+                Employee.objects.filter(pk=self.employee.pk).update(contract=None)
+
+    def activate(self):
+        """Active ce contrat et désactive tous les autres contrats de l'employé."""
+        self.is_active = True
+        self.save()
+
+    def deactivate(self):
+        """Désactive ce contrat."""
+        self.is_active = False
+        self.save()
+
+    @classmethod
+    def get_active_contract(cls, employee):
+        """Retourne le contrat actif d'un employé, s'il existe."""
+        return cls.objects.filter(employee=employee, is_active=True).first()
+
+    @property
+    def is_expired(self):
+        """Vérifie si le contrat a expiré (basé sur end_date)."""
+        from django.utils import timezone
+        if self.end_date:
+            return self.end_date < timezone.now().date()
+        return False
 
 
 # ===============================

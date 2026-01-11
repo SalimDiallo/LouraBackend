@@ -210,7 +210,12 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet pour la gestion des contrats.
     
-    Utilise BaseOrganizationViewSetMixin pour le filtrage et création automatiques.
+    Règle métier importante : Un employé ne peut avoir qu'un seul contrat actif
+    à un instant donné. L'activation d'un contrat désactive automatiquement
+    les autres contrats de l'employé.
+    
+    Note: Ce ViewSet surcharge perform_create car Contract n'a pas de champ
+    organization direct - il est lié via employee.organization.
     """
     queryset = Contract.objects.all()
     serializer_class = ContractSerializer
@@ -221,18 +226,156 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     view_permission = 'can_view_contract'
     create_permission = 'can_create_contract'
 
+    def perform_create(self, serializer):
+        """
+        Crée un contrat sans passer organization (Contract n'a pas ce champ).
+        Valide que l'employé appartient à l'organisation de l'utilisateur.
+        """
+        from rest_framework import serializers as drf_serializers
+        
+        user = self.request.user
+        user_type = getattr(user, 'user_type', None)
+        
+        # Vérifier la permission pour Employee
+        if user_type == 'employee' and self.create_permission:
+            if not user.has_permission(self.create_permission):
+                raise drf_serializers.ValidationError({'permission': 'Permission refusée'})
+        
+        # Valider que l'employé appartient à l'organisation de l'utilisateur
+        employee = serializer.validated_data.get('employee')
+        if employee:
+            if user_type == 'admin':
+                if not user.organizations.filter(id=employee.organization_id).exists():
+                    raise drf_serializers.ValidationError({
+                        'employee': "Cet employé n'appartient pas à vos organisations"
+                    })
+            elif user_type == 'employee':
+                if user.organization != employee.organization:
+                    raise drf_serializers.ValidationError({
+                        'employee': "Cet employé n'appartient pas à votre organisation"
+                    })
+        
+        # Sauvegarder sans passer organization
+        serializer.save()
+
     def get_queryset(self):
         user = self.request.user
+        employee_id = self.request.query_params.get('employee')
 
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
-            return Contract.objects.filter(employee__organization_id__in=org_ids)
+            queryset = Contract.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("can_view_contract"):
                 if user.is_hr_admin():
-                    return Contract.objects.filter(employee__organization=user.organization)
-                return Contract.objects.filter(employee=user)
-        return Contract.objects.none()
+                    queryset = Contract.objects.filter(employee__organization=user.organization)
+                else:
+                    queryset = Contract.objects.filter(employee=user)
+            else:
+                queryset = Contract.objects.none()
+        else:
+            queryset = Contract.objects.none()
+
+        # Filtrer par employé si spécifié
+        if employee_id:
+            queryset = queryset.filter(employee_id=employee_id)
+        
+        # Filtrer par statut actif si spécifié
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None:
+            queryset = queryset.filter(is_active=is_active.lower() == 'true')
+
+        return queryset.select_related('employee')
+
+    @action(detail=True, methods=['post'], url_path='activate')
+    def activate(self, request, pk=None):
+        """
+        Active ce contrat.
+        
+        Règle métier : L'activation d'un contrat désactive automatiquement
+        tous les autres contrats actifs de l'employé.
+        """
+        contract = self.get_object()
+        
+        if contract.is_active:
+            return Response(
+                {'message': 'Ce contrat est déjà actif'},
+                status=status.HTTP_200_OK
+            )
+        
+        # La méthode activate() du modèle gère la désactivation des autres contrats
+        contract.activate()
+        
+        serializer = self.get_serializer(contract)
+        return Response({
+            'message': f'Contrat activé avec succès. Les autres contrats de {contract.employee.get_full_name()} ont été désactivés.',
+            'contract': serializer.data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=True, methods=['post'], url_path='deactivate')
+    def deactivate(self, request, pk=None):
+        """
+        Désactive ce contrat.
+        
+        Note : Si c'était le seul contrat actif, l'employé n'aura plus de contrat actif.
+        """
+        contract = self.get_object()
+        
+        if not contract.is_active:
+            return Response(
+                {'message': 'Ce contrat est déjà inactif'},
+                status=status.HTTP_200_OK
+            )
+        
+        contract.deactivate()
+        
+        serializer = self.get_serializer(contract)
+        return Response({
+            'message': 'Contrat désactivé avec succès',
+            'contract': serializer.data
+        }, status=status.HTTP_200_OK)
+
+    @action(detail=False, methods=['get'], url_path='active/(?P<employee_id>[^/.]+)')
+    def get_active_for_employee(self, request, employee_id=None):
+        """
+        Retourne le contrat actif d'un employé.
+        
+        Returns 404 si l'employé n'a pas de contrat actif.
+        """
+        try:
+            from .models import Employee
+            employee = Employee.objects.get(pk=employee_id)
+        except Employee.DoesNotExist:
+            return Response(
+                {'error': 'Employé non trouvé'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+        
+        # Vérifier les permissions
+        user = request.user
+        if getattr(user, 'user_type', None) == 'admin':
+            if not user.organizations.filter(id=employee.organization_id).exists():
+                return Response(
+                    {'error': 'Accès non autorisé'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        elif getattr(user, 'user_type', None) == 'employee':
+            if user.organization != employee.organization:
+                return Response(
+                    {'error': 'Accès non autorisé'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
+        active_contract = Contract.get_active_contract(employee)
+        
+        if not active_contract:
+            return Response(
+                {'message': 'Aucun contrat actif pour cet employé', 'contract': None},
+                status=status.HTTP_200_OK
+            )
+        
+        serializer = self.get_serializer(active_contract)
+        return Response(serializer.data, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, pk=None):

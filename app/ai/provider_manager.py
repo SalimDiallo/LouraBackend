@@ -1,262 +1,232 @@
 """
-Provider Manager
-Easy switching between different LLM providers
+Simple Ollama Provider Manager
 """
 import os
-from typing import Optional, Dict, List
-from enum import Enum
+import time
+from typing import List, Dict, Optional, Callable
+from dataclasses import dataclass
 
-from .providers.base import BaseLLMProvider
-from .providers.gemini import GeminiProvider
-from .providers.ollama import OllamaProvider
-from .providers.openai import OpenAIProvider
-from .providers.anthropic import AnthropicProvider
+try:
+    import ollama
+    OLLAMA_AVAILABLE = True
+except ImportError:
+    OLLAMA_AVAILABLE = False
 
-
-class ProviderType(str, Enum):
-    """Available LLM providers"""
-    GEMINI = "gemini"
-    OLLAMA = "ollama"
-    OPENAI = "openai"
-    ANTHROPIC = "anthropic"
+from .config import ai_config
 
 
-class ProviderManager:
+@dataclass
+class LLMMessage:
+    """Standard message format"""
+    role: str  # 'system', 'user', 'assistant'
+    content: str
+
+
+@dataclass
+class LLMResponse:
+    """Standard response format"""
+    content: str
+    tool_calls: List[Dict]
+    tool_results: List[Dict]
+    response_time_ms: int
+    tokens_used: Optional[int] = None
+    model: Optional[str] = None
+    success: bool = True
+    error: Optional[str] = None
+
+
+class OllamaManager:
     """
-    Manage multiple LLM providers with easy switching
-
+    Simplified Ollama Manager
+    
     Usage:
-        # Initialize with default provider
-        manager = ProviderManager()
-
-        # Switch provider
-        manager.set_provider(ProviderType.GEMINI, model="gemini-1.5-flash")
-
-        # Use provider
-        response = manager.chat(messages)
+        manager = OllamaManager()
+        if manager.available:
+            response = manager.chat([LLMMessage(role="user", content="Hello")])
     """
 
-    # Default configurations
-    DEFAULT_CONFIGS = {
-        ProviderType.GEMINI: {
-            "model": "gemini-1.5-flash",
-            "api_key_env": "GOOGLE_API_KEY",
-        },
-        ProviderType.OLLAMA: {
-            "model": "llama3.2",
-            "api_key_env": None,
-        },
-        ProviderType.OPENAI: {
-            "model": "gpt-4o-mini",
-            "api_key_env": "OPENAI_API_KEY",
-        },
-        ProviderType.ANTHROPIC: {
-            "model": "claude-3-5-sonnet-20241022",
-            "api_key_env": "ANTHROPIC_API_KEY",
-        },
-    }
+    def __init__(self, model: Optional[str] = None):
+        self.model = model or ai_config.MODEL
+        self._available = None
 
-    def __init__(
-        self,
-        provider: Optional[ProviderType] = None,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None
-    ):
-        """
-        Initialize provider manager
+    @property
+    def available(self) -> bool:
+        """Check if Ollama is available"""
+        if self._available is None:
+            self._available = self._check_availability()
+        return self._available
 
-        Args:
-            provider: Which provider to use (default: auto-detect)
-            model: Model name (default: provider's default)
-            api_key: API key (default: from environment)
-        """
-        self.providers: Dict[ProviderType, BaseLLMProvider] = {}
-        self.current_provider: Optional[BaseLLMProvider] = None
-        self.current_provider_type: Optional[ProviderType] = None
-
-        # Auto-detect or use specified provider
-        if provider:
-            self.set_provider(provider, model, api_key)
-        else:
-            self._auto_detect_provider()
-
-    def _auto_detect_provider(self):
-        """Auto-detect first available provider"""
-        import os
+    def _check_availability(self) -> bool:
+        """Check if Ollama server is running and model exists"""
+        if not OLLAMA_AVAILABLE:
+            print("❌ Package 'ollama' non installé. Exécutez: pip install ollama")
+            return False
         
-        # Vérifier si un provider est forcé via AI_PROVIDER
-        forced_provider = os.getenv('AI_PROVIDER', 'auto').lower()
-        
-        if forced_provider != 'auto':
-            provider_map = {
-                'gemini': ProviderType.GEMINI,
-                'ollama': ProviderType.OLLAMA,
-                'openai': ProviderType.OPENAI,
-                'anthropic': ProviderType.ANTHROPIC,
-            }
-            if forced_provider in provider_map:
-                provider_type = provider_map[forced_provider]
-                config = self.DEFAULT_CONFIGS[provider_type]
-                api_key = os.getenv(config["api_key_env"]) if config["api_key_env"] else None
-                provider = self._create_provider(provider_type, config["model"], api_key)
-                
-                if provider and provider.available:
-                    self.current_provider = provider
-                    self.current_provider_type = provider_type
-                    self.providers[provider_type] = provider
-                    print(f"✅ Using forced provider: {provider_type.value}")
-                    return
-                else:
-                    print(f"⚠️ Forced provider '{forced_provider}' not available, falling back to auto-detect")
-        
-        # Priority order: Gemini > OpenAI > Anthropic > Ollama
-        priority = [
-            ProviderType.GEMINI,
-            ProviderType.OPENAI,
-            ProviderType.ANTHROPIC,
-            ProviderType.OLLAMA,
-        ]
-
-        for provider_type in priority:
-            config = self.DEFAULT_CONFIGS[provider_type]
-            api_key = os.getenv(config["api_key_env"]) if config["api_key_env"] else None
-
-            provider = self._create_provider(provider_type, config["model"], api_key)
-
-            if provider and provider.available:
-                self.current_provider = provider
-                self.current_provider_type = provider_type
-                self.providers[provider_type] = provider
-                print(f"✅ Auto-detected provider: {provider_type.value}")
-                return
-
-        # Fallback message
-        print("⚠️ No LLM provider available. Please configure API keys.")
-
-    def _create_provider(
-        self,
-        provider_type: ProviderType,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None
-    ) -> Optional[BaseLLMProvider]:
-        """Create provider instance"""
-        provider_classes = {
-            ProviderType.GEMINI: GeminiProvider,
-            ProviderType.OLLAMA: OllamaProvider,
-            ProviderType.OPENAI: OpenAIProvider,
-            ProviderType.ANTHROPIC: AnthropicProvider,
-        }
-
-        provider_class = provider_classes.get(provider_type)
-        if not provider_class:
-            return None
-
         try:
-            return provider_class(api_key=api_key, model=model)
-        except Exception as e:
-            print(f"❌ Failed to create {provider_type.value} provider: {e}")
-            return None
-
-    def set_provider(
-        self,
-        provider_type: ProviderType,
-        model: Optional[str] = None,
-        api_key: Optional[str] = None
-    ) -> bool:
-        """
-        Switch to a different provider
-
-        Args:
-            provider_type: Provider to switch to
-            model: Model name (optional)
-            api_key: API key (optional)
-
-        Returns:
-            True if successful, False otherwise
-        """
-        # Always create new provider if model or api_key specified
-        if model or api_key:
-            provider = self._create_provider(provider_type, model, api_key)
-            if provider and provider.available:
-                self.providers[provider_type] = provider
-                self.current_provider = provider
-                self.current_provider_type = provider_type
+            result = ollama.list()
+            if hasattr(result, 'models'):
+                available_models = [m.model for m in result.models if hasattr(m, 'model')]
+                # Check if our model exists
+                model_base = self.model.split(':')[0]
+                found = any(model_base in m for m in available_models)
+                
+                if not found:
+                    print(f"⚠️ Modèle '{self.model}' non trouvé. Modèles disponibles: {available_models}")
+                    print(f"💡 Exécutez: ollama pull {self.model}")
+                    return False
+                
+                print(f"✅ Ollama disponible avec modèle: {self.model}")
                 return True
             return False
-
-        # Check if already initialized
-        if provider_type in self.providers:
-            self.current_provider = self.providers[provider_type]
-            self.current_provider_type = provider_type
-            return True
-
-        # Create new provider
-        provider = self._create_provider(provider_type, model, api_key)
-
-        if provider and provider.available:
-            self.providers[provider_type] = provider
-            self.current_provider = provider
-            self.current_provider_type = provider_type
-            return True
-
-        return False
-
-    def get_current_provider(self) -> Optional[BaseLLMProvider]:
-        """Get current active provider"""
-        return self.current_provider
-
-    def get_provider_info(self) -> Dict:
-        """Get info about current provider"""
-        if not self.current_provider:
-            return {"available": False, "provider": None}
-
-        return {
-            "available": True,
-            "provider": self.current_provider_type.value if self.current_provider_type else None,
-            "model": self.current_provider.model,
-            "all_providers": list(self.providers.keys())
-        }
-
-    def list_available_providers(self) -> List[Dict]:
-        """List all available providers with their status"""
-        result = []
-
-        for provider_type in ProviderType:
-            config = self.DEFAULT_CONFIGS[provider_type]
-            api_key_env = config["api_key_env"]
-            has_api_key = bool(os.getenv(api_key_env)) if api_key_env else True
-
-            # Try to initialize to check availability
-            if provider_type not in self.providers:
-                provider = self._create_provider(provider_type)
-            else:
-                provider = self.providers[provider_type]
-
-            result.append({
-                "provider": provider_type.value,
-                "available": provider.available if provider else False,
-                "has_api_key": has_api_key,
-                "default_model": config["model"],
-                "is_current": provider_type == self.current_provider_type
-            })
-
-        return result
+        except Exception as e:
+            print(f"❌ Ollama non accessible: {e}")
+            print("💡 Assurez-vous qu'Ollama est démarré: ollama serve")
+            return False
 
     def list_models(self) -> List[str]:
-        """List available models for current provider"""
-        if not self.current_provider:
+        """List available Ollama models"""
+        if not OLLAMA_AVAILABLE:
             return []
-        return self.current_provider.list_models()
+        try:
+            result = ollama.list()
+            if hasattr(result, 'models'):
+                return [m.model for m in result.models if hasattr(m, 'model')]
+            return []
+        except:
+            return []
 
-    # Delegate methods to current provider
-    def chat(self, *args, **kwargs):
-        """Send chat request using current provider"""
-        if not self.current_provider:
-            raise ValueError("No LLM provider available")
-        return self.current_provider.chat(*args, **kwargs)
+    def get_provider_info(self) -> Dict:
+        """Get provider info"""
+        return {
+            "provider": "ollama",
+            "model": self.model,
+            "available": self.available,
+            "host": ai_config.OLLAMA_HOST
+        }
 
-    def stream_chat(self, *args, **kwargs):
-        """Stream chat using current provider"""
-        if not self.current_provider:
-            raise ValueError("No LLM provider available")
-        return self.current_provider.stream_chat(*args, **kwargs)
+    def chat(
+        self,
+        messages: List[LLMMessage],
+        temperature: float = None,
+        max_tokens: int = None,
+        tools: Optional[List[Dict]] = None,
+        **kwargs
+    ) -> LLMResponse:
+        """Send chat request to Ollama"""
+        start = time.time()
+        
+        temperature = temperature or ai_config.TEMPERATURE
+        max_tokens = max_tokens or ai_config.MAX_TOKENS
+
+        if not self.available:
+            return LLMResponse(
+                content="❌ Ollama non disponible. Vérifiez que le serveur est démarré.",
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=0,
+                success=False,
+                error="Ollama not available"
+            )
+
+        try:
+            ollama_messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in messages
+            ]
+            
+            response = ollama.chat(
+                model=self.model,
+                messages=ollama_messages,
+                options={
+                    "temperature": temperature,
+                    "num_predict": max_tokens,
+                }
+            )
+
+            content = response.message.content if hasattr(response, 'message') else str(response)
+            response_time = int((time.time() - start) * 1000)
+
+            return LLMResponse(
+                content=content,
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=response_time,
+                model=self.model,
+                success=True
+            )
+        except Exception as e:
+            return LLMResponse(
+                content=f"Erreur Ollama: {str(e)}",
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=int((time.time() - start) * 1000),
+                success=False,
+                error=str(e)
+            )
+
+    def stream_chat(
+        self,
+        messages: List[LLMMessage],
+        on_token: Callable[[str], None],
+        temperature: float = None,
+        max_tokens: int = None,
+        tools: Optional[List[Dict]] = None,
+        **kwargs
+    ) -> LLMResponse:
+        """Stream chat response from Ollama"""
+        start = time.time()
+        
+        temperature = temperature or ai_config.TEMPERATURE
+        max_tokens = max_tokens or ai_config.MAX_TOKENS
+
+        if not self.available:
+            return LLMResponse(
+                content="Ollama non disponible",
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=0,
+                success=False,
+                error="Ollama not available"
+            )
+
+        try:
+            ollama_messages = [
+                {"role": msg.role, "content": msg.content}
+                for msg in messages
+            ]
+            full_content = ""
+
+            for chunk in ollama.chat(
+                model=self.model,
+                messages=ollama_messages,
+                stream=True,
+                options={"temperature": temperature, "num_predict": max_tokens}
+            ):
+                if hasattr(chunk, 'message') and hasattr(chunk.message, 'content'):
+                    token = chunk.message.content
+                    full_content += token
+                    on_token(token)
+
+            response_time = int((time.time() - start) * 1000)
+
+            return LLMResponse(
+                content=full_content,
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=response_time,
+                model=self.model,
+                success=True
+            )
+        except Exception as e:
+            return LLMResponse(
+                content=f"Erreur Ollama streaming: {str(e)}",
+                tool_calls=[],
+                tool_results=[],
+                response_time_ms=int((time.time() - start) * 1000),
+                success=False,
+                error=str(e)
+            )
+
+
+# Alias pour compatibilité
+ProviderManager = OllamaManager
