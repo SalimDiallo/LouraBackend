@@ -329,17 +329,3 @@ class ChangePasswordView(APIView):
         return Response({
             'message': 'Mot de passe modifié avec succès'
         }, status=status.HTTP_200_OK)
-
-
-# ===============================
-# LEGACY VIEWS (Rétrocompatibilité)
-# ===============================
-
-class AdminLoginView(LoginView):
-    """Alias pour rétrocompatibilité"""
-    pass
-
-
-class EmployeeLoginView(LoginView):
-    """Alias pour rétrocompatibilité"""
-    pass

@@ -39,6 +39,10 @@ class Command(BaseCommand):
                 'name': 'Restauration',
                 'description': 'Restaurants, hôtels, services de restauration'
             },
+             {
+                'name': 'BTP',
+                'description': 'Restaurants, hôtels, services de restauration'
+            },
         ]
 
         created_count = 0

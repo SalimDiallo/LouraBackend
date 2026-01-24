@@ -1,3 +1,4 @@
+from core.models import BaseUser
 from rest_framework import serializers
 from django.contrib.auth.password_validation import validate_password
 from core.models import Permission, Role
@@ -272,23 +273,68 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
 
 
 class EmployeeListSerializer(serializers.ModelSerializer):
-    """Serializer for listing employees - Minimal info"""
+    """Serializer for listing employees - Minimal info with salary"""
 
     full_name = serializers.SerializerMethodField()
+    department = serializers.SerializerMethodField()
     department_name = serializers.CharField(source='department.name', read_only=True)
     position_title = serializers.CharField(source='position.title', read_only=True)
     role_name = serializers.CharField(source='assigned_role.name', read_only=True)
+    
+    # Salary information from active contract
+    base_salary = serializers.SerializerMethodField()
+    currency = serializers.SerializerMethodField()
+    salary_period = serializers.SerializerMethodField()
+    salary_period_display = serializers.SerializerMethodField()
+    contract_type = serializers.SerializerMethodField()
+    contract_type_display = serializers.SerializerMethodField()
+    gender = serializers.CharField(read_only=True)
 
     class Meta:
         model = Employee
         fields = [
             'id', 'email', 'full_name', 'employee_id',
-            'department_name', 'position_title', 'role_name',
-            'employment_status', 'is_active'
+            'department', 'department_name', 'position_title', 'role_name', 'gender',
+            'employment_status', 'is_active',
+            # Salary fields
+            'base_salary', 'currency', 'salary_period', 'salary_period_display',
+            'contract_type', 'contract_type_display'
         ]
 
     def get_full_name(self, obj):
         return obj.get_full_name()
+
+    def get_department(self, obj):
+        """Convert department UUID to string"""
+        return str(obj.department.id) if obj.department else None
+
+    def _get_active_contract(self, obj):
+        """Récupère le contrat actif de l'employé"""
+        return obj.contracts.filter(is_active=True).first()
+
+    def get_base_salary(self, obj):
+        contract = self._get_active_contract(obj)
+        return float(contract.base_salary) if contract else None
+
+    def get_currency(self, obj):
+        contract = self._get_active_contract(obj)
+        return contract.currency if contract else None
+
+    def get_salary_period(self, obj):
+        contract = self._get_active_contract(obj)
+        return contract.salary_period if contract else None
+
+    def get_salary_period_display(self, obj):
+        contract = self._get_active_contract(obj)
+        return contract.get_salary_period_display() if contract else None
+
+    def get_contract_type(self, obj):
+        contract = self._get_active_contract(obj)
+        return contract.contract_type if contract else None
+
+    def get_contract_type_display(self, obj):
+        contract = self._get_active_contract(obj)
+        return contract.get_contract_type_display() if contract else None
 
 
 class EmployeeUpdateSerializer(serializers.ModelSerializer):
@@ -369,19 +415,17 @@ class DepartmentSerializer(serializers.ModelSerializer):
 
     def create(self, validated_data):
         """Gère la création avec le head (accepte head ou manager)"""
-        from lourabackend.models import BaseUser
         
         # Accepte manager comme alias de head (rétrocompatibilité)
         manager_id = validated_data.pop('manager', None)
         if manager_id and 'head' not in validated_data:
-            from core.models import BaseUser
             validated_data['head'] = BaseUser.objects.get(id=manager_id)
+            print(validated_data)
         
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
         """Gère la mise à jour avec le head"""
-        from core.models import BaseUser
         
         # Accepte manager comme alias de head (rétrocompatibilité)
         manager_id = validated_data.pop('manager', None)
@@ -580,6 +624,9 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
             'payslip_count', 'total_net_salary', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
+        extra_kwargs = {
+            'payment_date': {'required': False, 'allow_null': True},
+        }
 
     def get_payslip_count(self, obj):
         return obj.payslips.count()
@@ -588,6 +635,34 @@ class PayrollPeriodSerializer(serializers.ModelSerializer):
         from django.db.models import Sum
         total = obj.payslips.aggregate(total=Sum('net_salary'))['total']
         return float(total) if total else 0.0
+
+    def validate_name(self, value):
+        """Valide que le nom de la période est unique pour cette organisation"""
+        # Récupérer l'organisation depuis le contexte (sera fournie par le viewset)
+        request = self.context.get('request')
+        if request:
+            # Essayer de récupérer l'organisation via subdomain ou query params
+            org_subdomain = request.query_params.get('organization_subdomain')
+            if org_subdomain:
+                from core.models import Organization
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain)
+                    # Vérifier si une période avec ce nom existe déjà
+                    existing = PayrollPeriod.objects.filter(
+                        organization=organization,
+                        name=value
+                    )
+                    # Exclure l'instance actuelle en cas de mise à jour
+                    if self.instance:
+                        existing = existing.exclude(pk=self.instance.pk)
+                    
+                    if existing.exists():
+                        raise serializers.ValidationError(
+                            f"Une période de paie avec le nom \"{value}\" existe déjà pour cette organisation."
+                        )
+                except Organization.DoesNotExist:
+                    pass
+        return value
 
 
 class PayslipItemSerializer(serializers.ModelSerializer):
@@ -784,7 +859,6 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 # ===============================
 # AUTHENTICATION SERIALIZERS
 # ===============================
-# EmployeeLoginSerializer has been moved to authentication app
 
 
 class EmployeeChangePasswordSerializer(serializers.Serializer):
@@ -825,7 +899,6 @@ class AttendanceSerializer(serializers.ModelSerializer):
     employee_id_number = serializers.SerializerMethodField()
     department_name = serializers.SerializerMethodField()
     approved_by_name = serializers.SerializerMethodField()
-    approved_by_admin_name = serializers.SerializerMethodField()
     is_on_break = serializers.SerializerMethodField()
 
     class Meta:
@@ -837,7 +910,7 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'check_out', 'check_out_location', 'check_out_notes',
             'break_start', 'break_end', 'is_on_break', 'total_hours', 'break_duration',
             'status', 'approval_status', 'is_approved',
-            'approved_by', 'approved_by_name', 'approved_by_admin', 'approved_by_admin_name',
+            'approved_by', 'approved_by_name',
             'approval_date', 'rejection_reason', 'notes', 'is_overtime', 'overtime_hours',
             'created_at', 'updated_at'
         ]
@@ -850,22 +923,31 @@ class AttendanceSerializer(serializers.ModelSerializer):
         return str(obj.id) if obj.id else None
 
     def get_employee(self, obj):
-        return str(obj.employee.id) if obj.employee else None
+        # Get employee from user (if user is an Employee)
+        if hasattr(obj.user, 'employee_id'):
+            return str(obj.user.id)
+        return str(obj.user.id) if obj.user else None
 
     def get_employee_name(self, obj):
-        return obj.employee.get_full_name() if obj.employee else None
+        # Use cached user_full_name or fallback to user.get_full_name()
+        if obj.user_full_name:
+            return obj.user_full_name
+        return obj.user.get_full_name() if obj.user else None
 
     def get_employee_id_number(self, obj):
-        return obj.employee.employee_id if obj.employee else None
+        # Get employee_id if user is an Employee
+        if hasattr(obj.user, 'employee_id'):
+            return obj.user.employee_id
+        return None
 
     def get_department_name(self, obj):
-        return obj.employee.department.name if obj.employee and obj.employee.department else None
+        # Get department if user is an Employee
+        if hasattr(obj.user, 'department') and obj.user.department:
+            return obj.user.department.name
+        return None
 
     def get_approved_by_name(self, obj):
         return obj.approved_by.get_full_name() if obj.approved_by else None
-
-    def get_approved_by_admin_name(self, obj):
-        return obj.approved_by_admin.get_full_name() if obj.approved_by_admin else None
 
     def get_is_on_break(self, obj):
         """Check if currently on break"""
@@ -878,7 +960,7 @@ class AttendanceCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Attendance
         fields = [
-            'employee', 'date', 'check_in', 'check_in_location', 'check_in_notes',
+            'user', 'date', 'check_in', 'check_in_location', 'check_in_notes',
             'check_out', 'check_out_location', 'check_out_notes',
             'break_start', 'break_end', 'status', 'notes'
         ]
@@ -1224,7 +1306,7 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
         from django.utils import timezone
 
         session = validated_data['session']
-        employee = validated_data['employee']
+        employee = validated_data['employee']  # This is the Employee object
         mode = validated_data.get('mode', 'auto')
         location = validated_data.get('location', '')
         notes = validated_data.get('notes', '')
@@ -1232,9 +1314,9 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
         now = timezone.now()
         today = now.date()
 
-        # Check for existing attendance today
+        # Check for existing attendance today - use 'user' field
         existing_attendance = Attendance.objects.filter(
-            employee=employee,
+            user=employee,  # employee IS the user (Employee inherits from BaseUser)
             organization=organization,
             date=today
         ).first()
@@ -1283,8 +1365,9 @@ class QRAttendanceCheckInSerializer(serializers.Serializer):
                 })
             else:
                 # Mode is auto or check_in - do CHECK-IN
+                # Use 'user' field instead of 'employee'
                 attendance = Attendance.objects.create(
-                    employee=employee,
+                    user=employee,  # employee IS the user (Employee inherits from BaseUser)
                     organization=organization,
                     user_email=employee.email,
                     user_full_name=employee.get_full_name(),

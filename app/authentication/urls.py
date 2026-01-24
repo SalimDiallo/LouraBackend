@@ -13,9 +13,6 @@ from .views import (
     CurrentUserView,
     UpdateProfileView,
     ChangePasswordView,
-    # Legacy
-    AdminLoginView,
-    EmployeeLoginView,
 )
 
 urlpatterns = [
@@ -29,8 +26,4 @@ urlpatterns = [
     # === Profile management ===
     path('profile/update/', UpdateProfileView.as_view(), name='update-profile'),
     path('profile/change-password/', ChangePasswordView.as_view(), name='change-password'),
-
-    # === Legacy endpoints (rétrocompatibilité) ===
-    path('admin/login/', AdminLoginView.as_view(), name='admin-login'),
-    path('employee/login/', EmployeeLoginView.as_view(), name='employee-login'),
 ]

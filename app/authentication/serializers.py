@@ -100,8 +100,6 @@ class AdminRegistrationSerializer(serializers.Serializer):
         return email
 
     def create(self, validated_data):
-        # Créer l'AdminUser
-        print(validated_data)
         admin = AdminUser.objects.create_user(
             email=validated_data['email'],
             password=validated_data['password'],
@@ -188,14 +186,3 @@ class EmployeeUserResponseSerializer(UserResponseSerializer):
     def get_permissions(self, obj):
         """Retourne la liste des permissions de l'employé"""
         return list(obj.get_all_permissions().values_list('code', flat=True))
-
-
-# Legacy serializers pour rétrocompatibilité
-class AdminLoginSerializer(UnifiedLoginSerializer):
-    """Alias pour rétrocompatibilité"""
-    pass
-
-
-class EmployeeLoginSerializer(UnifiedLoginSerializer):
-    """Alias pour rétrocompatibilité"""
-    pass

@@ -48,14 +48,13 @@ from .serializers import (
     AttendanceCheckOutSerializer, AttendanceApprovalSerializer, AttendanceStatsSerializer
 )
 
-# Permissions
-from .api_permissions import (
-    IsHRAdminOrReadOnly, IsHRAdmin,
+# Permissions (depuis le nouveau fichier unifié)
+from .permissions import (
+    IsHRAdmin,
     IsManagerOrHRAdmin, IsAdminUserOrEmployee,
-    RequiresPermission, RequiresCRUDPermission, CanAccessOwnOrManage,
-    IsDepartmentHeadOrHR, IsManagerOfEmployee,
+    CanAccessOwnOrManage,
     RequiresEmployeePermission, RequiresDepartmentPermission,
-    RequiresPositionPermission, RequiresContractPermission,
+    RequiresContractPermission,
     RequiresLeavePermission, RequiresPayrollPermission,
     RequiresAttendancePermission, RequiresRolePermission
 )
@@ -69,7 +68,8 @@ from core.mixins import (
 )
 
 # Services - Logique métier séparée (Service Layer Pattern)
-from .services import EmployeeService, LeaveService, PayrollService
+# Note: Les services sont disponibles mais pas encore intégrés dans les views
+# from .services import EmployeeService, LeaveService, PayrollService
 
 # Utils centralisés
 from authentication.utils import convert_uuids_to_strings
@@ -84,8 +84,6 @@ logger = logging.getLogger(__name__)
 # -------------------------------
 # EMPLOYEE AUTHENTICATION VIEWS
 # -------------------------------
-# EmployeeLoginView, EmployeeRefreshTokenView, EmployeeLogoutView, and EmployeeMeView
-# have been moved to authentication app
 
 
 class EmployeeChangePasswordView(APIView):
@@ -132,9 +130,53 @@ class EmployeeViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     
     # Configuration du mixin
     organization_field = 'organization'
-    view_permission = 'can_view_employee'
-    create_permission = 'can_create_employee'
-    activation_permission = 'can_activate_employee'
+    view_permission = 'hr.view_employees'
+    create_permission = 'hr.create_employees'
+    activation_permission = 'hr.activate_employees'
+    
+    # Filtres et recherche (pour référence, filtrage manuel dans get_queryset)
+    filterset_fields = ['department', 'position', 'employment_status', 'is_active']
+    search_fields = ['first_name', 'last_name', 'email', 'employee_id']
+
+    def get_queryset(self):
+        """
+        Retourne le queryset avec filtrage par organisation et filtres supplémentaires.
+        """
+        queryset = super().get_queryset()
+        
+        # Filtrage par département
+        department = self.request.query_params.get('department')
+        if department:
+            queryset = queryset.filter(department_id=department)
+        
+        # Filtrage par position
+        position = self.request.query_params.get('position')
+        if position:
+            queryset = queryset.filter(position_id=position)
+        
+        # Filtrage par statut d'emploi
+        employment_status = self.request.query_params.get('employment_status')
+        if employment_status:
+            queryset = queryset.filter(employment_status=employment_status)
+        
+        # Filtrage par is_active
+        is_active = self.request.query_params.get('is_active')
+        if is_active is not None and is_active != '':
+            is_active_bool = is_active.lower() in ('true', '1', 'yes')
+            queryset = queryset.filter(is_active=is_active_bool)
+        
+        # Recherche
+        search = self.request.query_params.get('search')
+        if search:
+            from django.db.models import Q
+            queryset = queryset.filter(
+                Q(first_name__icontains=search) |
+                Q(last_name__icontains=search) |
+                Q(email__icontains=search) |
+                Q(employee_id__icontains=search)
+            )
+        
+        return queryset
 
     def get_serializer_class(self):
         """Choisit le serializer approprié selon l'action."""
@@ -169,14 +211,12 @@ class DepartmentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     queryset = Department.objects.all()
     serializer_class = DepartmentSerializer
     permission_classes = [IsAdminUserOrEmployee, RequiresDepartmentPermission]
-    
-    
-
 
     # Configuration du mixin
     organization_field = 'organization'
-    view_permission = 'can_view_department'
-    create_permission = 'can_create_department'
+    view_permission = 'hr.view_departments'
+    create_permission = 'hr.create_departments'
+    allow_list_without_permission = True  # Permet de lister pour les dropdowns
 
     @action(detail=True, methods=['post'] , url_path='deactivate')
     def deactivate(self, request, pk=None):
@@ -187,6 +227,28 @@ class DepartmentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def activate(self, request, pk=None):
         """Active un département."""
         return super().activate(request, pk)
+
+    def destroy(self, request, *args, **kwargs):
+        """
+        Supprime un département.
+        
+        Vérifie qu'aucun employé n'est associé au département avant suppression.
+        """
+        department = self.get_object()
+        
+        # Vérifier s'il y a des employés associés
+        employee_count = department.employees.count()
+        if employee_count > 0:
+            return Response(
+                {
+                    'error': f'Impossible de supprimer ce département. '
+                             f'{employee_count} employé(s) y sont encore affecté(s). '
+                             f'Veuillez d\'abord réaffecter ou supprimer ces employés.'
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+        
+        return super().destroy(request, *args, **kwargs)
 
 
 class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
@@ -201,8 +263,9 @@ class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     
     # Configuration du mixin
     organization_field = 'organization'
-    view_permission = 'can_view_position'
-    create_permission = 'can_create_position'
+    view_permission = 'hr.view_positions'
+    create_permission = 'hr.create_positions'
+    allow_list_without_permission = True  # Permet de lister pour les dropdowns
 
 
 
@@ -223,8 +286,8 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     
     # Configuration du mixin - les contrats sont liés à employee.organization
     organization_field = 'employee__organization'
-    view_permission = 'can_view_contract'
-    create_permission = 'can_create_contract'
+    view_permission = 'hr.view_contracts'
+    create_permission = 'hr.create_contracts'
 
     def perform_create(self, serializer):
         """
@@ -401,7 +464,8 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 class LeaveTypeViewSet(viewsets.ModelViewSet):
     """ViewSet for managing leave types"""
     serializer_class = LeaveTypeSerializer
-    permission_classes = [IsAdminUserOrEmployee, RequiresLeavePermission]
+    # Remove RequiresLeavePermission for listing; set permissions for modification only
+    permission_classes = [IsAdminUserOrEmployee]
 
     def get_queryset(self):
         user = self.request.user
@@ -410,8 +474,8 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveType.objects.filter(organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_view_leave"):
-                return LeaveType.objects.filter(organization=user.organization)
+            # No permission required to list leave types
+            return LeaveType.objects.filter(organization=user.organization)
         return LeaveType.objects.none()
 
     def perform_create(self, serializer):
@@ -439,7 +503,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
                         'organization': 'Organisation non trouvée ou accès refusé'
                     })
         elif getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission("can_manage_leave_types"):
+            if not user.has_permission("hr.manage_leave_types"):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
         else:
@@ -460,44 +524,55 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_manage_leave_balances") or user.is_hr_admin():
+            if user.has_permission("hr.manage_leave_balances") or user.is_hr_admin():
                 return LeaveBalance.objects.filter(employee__organization=user.organization)
             return LeaveBalance.objects.filter(employee=user)
         return LeaveBalance.objects.none()
 
 
 class LeaveRequestViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing leave requests"""
+    """
+    ViewSet for managing leave requests.
+    Tous les employés peuvent créer une demande de congé.
+    Seule l'approbation (et rejet) requiert des permissions spéciales.
+    La liste de toutes les demandes n'est visible que si on a la permission hr.view_leave.
+    """
     serializer_class = LeaveRequestSerializer
-    permission_classes = [IsAdminUserOrEmployee, RequiresLeavePermission]
+    permission_classes = [IsAdminUserOrEmployee]
 
     def get_queryset(self):
+        """
+        Retourne le queryset de LeaveRequest accessible à l'utilisateur courant.
+        Note IMPORTANTE :
+          - Par défaut, DRF appelle get_queryset() même pour les endpoints retrieve (détail: /pk/).
+          - Si le queryset exclut l'objet demandé (ex: simple employé ne voit pas ses propres demandes dans la liste),
+            alors une requête GET /leave-requests/{id}/ retournera 404: No LeaveRequest matches the given query.
+        
+        Ce comportement arrive car DRF fait un filter(pk=...) sur le queryset retourné ici.
+        """
         user = self.request.user
-
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_view_leave"):
-                # HR admin or manager can see all requests in organization
-                if user.is_hr_admin():
-                    return LeaveRequest.objects.filter(employee__organization=user.organization)
-                # Check if user is a manager (has subordinates or manager role)
-                if user.assigned_role and user.assigned_role.code == 'manager':
-                    return LeaveRequest.objects.filter(employee__organization=user.organization)
-                if user.subordinates.exists():
-                    return LeaveRequest.objects.filter(employee__organization=user.organization)
-                # Regular employees only see their own requests
+            if user.has_permission("hr.approve_leave_requests"):
+                return LeaveRequest.objects.filter(
+                    employee__organization=user.organization
+                ).exclude(employee=user)
+            # On veut permettre à l'employé de voir ses propres demandes dans retrieve OU destroy
+            # Récriture ici: pour retrieve et destroy, inclure LeaveRequest de l'utilisateur
+            if self.action in ["retrieve", "destroy"]:
                 return LeaveRequest.objects.filter(employee=user)
+            return LeaveRequest.objects.none()
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
-        if getattr(self.request.user, 'user_type', None) == 'employee':
-            if not self.request.user.has_permission('can_create_leave'):
-                raise serializers.ValidationError({'permission': 'Permission refusée'})
-            leave_request = serializer.save(employee=self.request.user)
-        elif getattr(self.request.user, 'user_type', None) == 'admin':
-            # AdminUser creating a leave request for an employee
+        user = self.request.user
+        if getattr(user, 'user_type', None) == 'employee':
+            # Toute employé peut créer une demande, sans permission spécifique
+            leave_request = serializer.save(employee=user)
+        elif getattr(user, 'user_type', None) == 'admin':
+            # AdminUser créant une demande pour un employé spécifique
             employee_id = self.request.data.get('employee')
             if not employee_id:
                 raise serializers.ValidationError({
@@ -530,7 +605,17 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         balance.save()
 
     def perform_destroy(self, instance):
-        if instance.status == 'pending':
+        user = self.request.user
+        # Si employé: peut supprimer sa propre demande uniquement si non approuvée
+        if getattr(user, 'user_type', None) == 'employee':
+            if instance.employee != user:
+                raise serializers.ValidationError({'detail': "Vous ne pouvez supprimer que vos propres demandes."})
+            if instance.status == 'approved':
+                raise serializers.ValidationError({'detail': "Impossible de supprimer une demande déjà approuvée."})
+        # Si admin, il peut supprimer toute demande
+
+        # Mise à jour LeaveBalance que si la demande est encore pending ou rejetée mais pas approuvée
+        if instance.status == 'pending' or instance.status == 'rejected':
             year = instance.start_date.year
             balance = LeaveBalance.objects.filter(
                 employee=instance.employee,
@@ -544,7 +629,6 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], permission_classes=[IsManagerOrHRAdmin])
     def approve(self, request, pk=None):
-        # requires can_approve_leave
         leave_request = self.get_object()
         serializer = LeaveRequestApprovalSerializer(data=request.data)
 
@@ -565,7 +649,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             balance.pending_days -= leave_request.total_days
             balance.save()
 
-            return Response({'message': 'Demande approuvee'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Demande approuvée'}, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -591,7 +675,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
                 balance.pending_days -= leave_request.total_days
                 balance.save()
 
-            return Response({'message': 'Demande rejetee'}, status=status.HTTP_200_OK)
+            return Response({'message': 'Demande rejetée'}, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
@@ -599,16 +683,69 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
     def export_pdf(self, request, pk=None):
         """Export a leave request as PDF"""
         from .pdf_generator import generate_leave_request_pdf
-        
+
         leave_request = self.get_object()
         pdf_buffer = generate_leave_request_pdf(leave_request)
-        
+
         employee_name = leave_request.employee.get_full_name().replace(' ', '_')
         filename = f"Conge_{employee_name}_{leave_request.start_date.strftime('%Y%m%d')}.pdf"
-        
+
         response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+    @action(detail=False, methods=['get'], url_path='history')
+    def history(self, request):
+        """
+        Endpoint qui retourne l'historique paginé et filtrable des demandes de congé de l'utilisateur courant (employé).
+        - Seul un employé peut voir son historique.
+        - Un admin a une réponse vide.
+        """
+        user = request.user
+        if not hasattr(user, "user_type") or user.user_type not in ("employee", "admin"):
+            return Response({'detail': 'Utilisateur non autorisé'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Seul l'employé peut voir son propre historique
+        if user.user_type == "employee":
+            qs = LeaveRequest.objects.filter(employee=user)
+        else:
+            # Admin: réponse vide
+            return Response({
+                "count": 0,
+                "next": None,
+                "previous": None,
+                "results": [],
+            }, status=status.HTTP_200_OK)
+
+        # Optional filters
+        status_param = request.query_params.get('status')
+        leave_type_param = request.query_params.get('leave_type')
+        start_date_param = request.query_params.get('start_date')
+        end_date_param = request.query_params.get('end_date')
+
+        if status_param:
+            qs = qs.filter(status=status_param)
+        if leave_type_param:
+            qs = qs.filter(leave_type=leave_type_param)
+        if start_date_param:
+            qs = qs.filter(start_date__gte=start_date_param)
+        if end_date_param:
+            qs = qs.filter(end_date__lte=end_date_param)
+
+        # Pagination
+        page = self.paginate_queryset(qs.order_by('-start_date'))
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        else:
+            serializer = self.get_serializer(qs.order_by('-start_date'), many=True)
+            return Response({
+                "count": qs.count(),
+                "next": None,
+                "previous": None,
+                "results": serializer.data,
+            })
+
 
 # -------------------------------
 # PAYROLL VIEWS
@@ -740,7 +877,9 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
         payroll_period_id = request.data.get('payroll_period')
         employee_filters = request.data.get('employee_filters', {})
-        auto_deduct_advances = request.data.get('auto_deduct_advances', True)  # ✨ Nouveau paramètre
+        auto_deduct_advances = request.data.get('auto_deduct_advances', True)
+        auto_approve = request.data.get('auto_approve', False)  # ✨ Nouveau paramètre
+        employee_ids = request.data.get('employee_ids', [])  # ✨ Nouveau paramètre - Liste d'IDs spécifiques
 
         if not payroll_period_id:
             return Response(
@@ -756,11 +895,20 @@ class PayslipViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        employees = Employee.objects.filter(
-            organization=payroll_period.organization,
-            employment_status='active'
-        )
+        # ✨ Filtrer par IDs spécifiques si fournis, sinon tous les employés actifs
+        if employee_ids:
+            employees = Employee.objects.filter(
+                organization=payroll_period.organization,
+                id__in=employee_ids,
+                employment_status='active'
+            )
+        else:
+            employees = Employee.objects.filter(
+                organization=payroll_period.organization,
+                employment_status='active'
+            )
 
+        # Appliquer les filtres additionnels
         if employee_filters.get('department'):
             employees = employees.filter(department_id=employee_filters['department'])
         if employee_filters.get('position'):
@@ -788,7 +936,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
                 base_salary = contract.base_salary
                 currency = contract.currency
 
-                # ✨ NOUVEAU : Récupérer les avances payées non déduites
+                # ✨ SIMPLIFIÉ : Récupérer les avances APPROUVÉES non déduites
                 paid_advances = []
                 advance_deduction_items = []
                 total_advance_amount = Decimal('0')
@@ -796,7 +944,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
                 if auto_deduct_advances:
                     paid_advances = PayrollAdvance.objects.filter(
                         employee=employee,
-                        status=PayrollAdvance.AdvanceStatus.PAID,
+                        status=PayrollAdvance.AdvanceStatus.APPROVED,  # ✨ Changé de PAID à APPROVED
                         payslip__isnull=True  # Pas encore liée à une fiche
                     )
 
@@ -833,6 +981,9 @@ class PayslipViewSet(viewsets.ModelViewSet):
                 total_deductions = cnps_amount + tax_amount + total_advance_amount
                 net_salary = gross_salary - total_deductions
 
+                # ✨ Déterminer le statut initial (draft ou approved si auto_approve)
+                initial_status = 'approved' if auto_approve else 'draft'
+
                 # Créer la fiche de paie
                 payslip = Payslip.objects.create(
                     employee=employee,
@@ -842,7 +993,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
                     gross_salary=gross_salary,
                     total_deductions=total_deductions,
                     net_salary=net_salary,
-                    status='draft'
+                    status=initial_status
                 )
 
                 # Créer les items de déduction
@@ -863,7 +1014,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
                         advances_deducted += 1
 
                 created_count += 1
-                logger.info(f"Created payslip for {employee.get_full_name()} with {len(paid_advances)} advances deducted")
+                logger.info(f"Created payslip for {employee.get_full_name()} with {len(paid_advances)} advances deducted (status: {initial_status})")
 
             except Exception as e:
                 logger.exception(f"Error creating payslip for {employee.get_full_name()}")
@@ -875,6 +1026,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
             'skipped': skipped_count,
             'total_employees': employees.count(),
             'advances_deducted': advances_deducted,
+            'auto_approved': auto_approve,
             'errors': errors
         }, status=status.HTTP_201_CREATED)
 
@@ -1260,111 +1412,10 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
             status=status.HTTP_200_OK
         )
 
-    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
-    def mark_as_paid(self, request, pk=None):
-        """Marquer une avance comme payée"""
-        advance = self.get_object()
-        user = request.user
+    # SIMPLIFIÉ: Les actions mark_as_paid et deduct_from_payslip ont été supprimées.
+    # Les avances approuvées sont maintenant automatiquement déduites lors de la génération
+    # des fiches de paie via l'action generate_for_period du PayslipViewSet.
 
-        # Vérifier que l'utilisateur a la permission
-        if getattr(user, 'user_type', None) == 'employee':
-            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
-                return Response(
-                    {'error': 'Vous n\'avez pas la permission de marquer les avances comme payées'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        if advance.status != 'approved':
-            return Response(
-                {'error': 'Seules les avances approuvées peuvent être marquées comme payées'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        advance.status = 'paid'
-        advance.payment_date = request.data.get('payment_date', timezone.now().date())
-        advance.save()
-
-        return Response(
-            PayrollAdvanceSerializer(advance).data,
-            status=status.HTTP_200_OK
-        )
-
-    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
-    def deduct_from_payslip(self, request, pk=None):
-        """Déduire l'avance d'une fiche de paie (fermer l'avance)"""
-
-        advance = self.get_object()
-        user = request.user
-
-        # Log de débogage
-        logger.info(f"Deduct from payslip called for advance {advance.id}")
-        logger.info(f"Request data: {request.data}")
-        logger.info(f"Advance status: {advance.status}")
-
-        # Vérifier que l'utilisateur a la permission
-        if getattr(user, 'user_type', None) == 'employee':
-            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
-                logger.warning(f"User {user.email} lacks permission to deduct advances")
-                return Response(
-                    {'error': 'Vous n\'avez pas la permission de déduire des avances'},
-                    status=status.HTTP_403_FORBIDDEN
-                )
-
-        if advance.status != 'paid':
-            logger.warning(f"Advance {advance.id} has status {advance.status}, expected 'paid'")
-            return Response(
-                {'error': f'Seules les avances payées peuvent être déduites. Statut actuel: {advance.get_status_display()}'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        payslip_id = request.data.get('payslip_id')
-        logger.info(f"Payslip ID received: {payslip_id}")
-
-        if not payslip_id:
-            logger.error("No payslip_id provided in request")
-            return Response(
-                {'error': 'L\'ID de la fiche de paie est requis (payslip_id)'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
-
-        try:
-            logger.info(f"Looking for payslip with ID: {payslip_id}")
-            payslip = Payslip.objects.get(id=payslip_id)
-            logger.info(f"Payslip found: {payslip.id} for employee {payslip.employee.get_full_name()}")
-
-            # Vérifier que la fiche de paie appartient au même employé
-            if payslip.employee != advance.employee:
-                logger.error(f"Employee mismatch: payslip employee {payslip.employee.id} != advance employee {advance.employee.id}")
-                return Response(
-                    {'error': 'La fiche de paie doit appartenir au même employé que l\'avance'},
-                    status=status.HTTP_400_BAD_REQUEST
-                )
-
-            # Marquer l'avance comme déduite
-            logger.info(f"Marking advance {advance.id} as deducted")
-            advance.status = 'deducted'
-            advance.payslip = payslip
-            advance.deduction_month = payslip.payroll_period.end_date
-            advance.save()
-            logger.info(f"Advance {advance.id} successfully marked as deducted")
-
-            return Response(
-                PayrollAdvanceSerializer(advance).data,
-                status=status.HTTP_200_OK
-            )
-
-        except Payslip.DoesNotExist:
-            logger.error(f"Payslip with ID {payslip_id} not found")
-            return Response(
-                {'error': f'Fiche de paie non trouvée (ID: {payslip_id})'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-        except Exception as e:
-            logger.exception(f"Unexpected error while deducting advance: {str(e)}")
-            return Response(
-                {'error': f'Erreur inattendue: {str(e)}'},
-                status=status.HTTP_500_INTERNAL_SERVER_ERROR
-            )
 
 
 # -------------------------------
@@ -1388,8 +1439,10 @@ class PermissionViewSet(viewsets.ReadOnlyModelViewSet):
 class RoleViewSet(viewsets.ModelViewSet):
     """ViewSet for managing roles"""
     queryset = Role.objects.all()
+    serializer_class = RoleSerializer
     permission_classes = [IsAdminUserOrEmployee, RequiresRolePermission]
-
+    allow_list_without_permission = True  # Permet de lister pour les dropdowns
+    
     def get_queryset(self):
         user = self.request.user
 
@@ -1532,7 +1585,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Attendance.objects.none()
 
         queryset = Attendance.objects.filter(organization=organization).select_related(
-            'employee', 'employee__department', 'approved_by', 'approved_by_admin'
+            'user', 'organization', 'approved_by'
         )
 
         if getattr(user, 'user_type', None) == 'admin':
@@ -1617,7 +1670,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         serializer = AttendanceCheckInSerializer(data=request.data)
         if not serializer.is_valid():
             return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-        from django.contrib.contenttypes.models import ContentType
 
         organization_slug = request.headers.get('X-Organization-Slug')
         if not organization_slug:
@@ -1635,8 +1687,6 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         today = timezone.now().date()
         employee = None
-        content_type_obj = None
-        object_id = None
 
         if getattr(user, 'user_type', None) == 'admin':
             employee_id = request.data.get('employee_id')
@@ -1651,8 +1701,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                         status=status.HTTP_404_NOT_FOUND
                     )
             else:
-                content_type_obj = ContentType.objects.get_for_model(AdminUser)
-                object_id = user.id
+                # Admin pointe pour lui-même
                 user_email = user.email
                 user_full_name = user.get_full_name()
         elif getattr(user, 'user_type', None) == 'employee':
@@ -1685,10 +1734,13 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             existing.save()
             attendance = existing
         else:
+            # Déterminer l'utilisateur à associer
+            # Si employee est défini, c'est lui l'utilisateur
+            # Sinon c'est l'admin lui-même
+            attendance_user = employee if employee else user
+            
             attendance = Attendance.objects.create(
-                employee=employee,
-                content_type=content_type_obj,
-                object_id=object_id,
+                user=attendance_user,
                 organization=organization,
                 user_email=user_email,
                 user_full_name=user_full_name,
@@ -1871,12 +1923,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             attendance.approval_status = 'rejected'
             attendance.is_approved = False
             attendance.rejection_reason = serializer.validated_data.get('rejection_reason', '')
-        if is_admin:
-            attendance.approved_by_admin = user
-            attendance.approved_by = None
-        else:
-            attendance.approved_by = user
-            attendance.approved_by_admin = None
+        
+        # Utiliser approved_by pour tous les types d'utilisateurs
+        attendance.approved_by = user
 
         attendance.approval_date = timezone.now()
         attendance.save()

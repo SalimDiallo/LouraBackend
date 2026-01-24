@@ -6,12 +6,12 @@
 ### ======================================
 ### SETUP
 ### ======================================
-@email = admin@gmail.com
-@password = Max1234@
+@email = b@gmail.com
+@password = Brahim2025@
 
 # LOGIN to get Access Token
 # --------------------------------------------------------
-POST {{baseUrl}}/auth/admin/login/
+POST {{baseUrl}}/auth/login/
 Content-Type: application/json
 
 {
@@ -21,10 +21,13 @@ Content-Type: application/json
 
 ### VARIABLES (Update after login/creation)
 # --------------------------------------------------------
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY3Mzk1NDc4LCJpYXQiOjE3NjczOTQ1NzgsImp0aSI6ImUzMzFmMTliZTkzOTQ2YmVhY2Y1M2UyNTYwYjM2MDNiIiwidXNlcl9pZCI6ImI3NjkyMWFjLWUyODEtNGJhNS1iMjQ4LWQ1M2EzN2M0NDdiYiJ9.lV1sPzZ6Y-vChp-2l7iVfD9L1F2k9YI-h4K7Yk0K3w0
-@orgId = fa12c6dd-7ace-4d76-8385-e1d7ad6bb92a
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY5MjY3MTI4LCJpYXQiOjE3NjkyNjYyMjgsImp0aSI6IjQyYmViMTkyODkwNzRmYzA5MDI4OGQ2OTA1NWY5ZWZlIiwidXNlcl9pZCI6Ijg3ZmMyY2ZjLTczNzktNDNlZi1hMzhkLTQ1ZDUzNzMxMTk3OCIsImVtYWlsIjoiYkBnbWFpbC5jb20iLCJ1c2VyX3R5cGUiOiJlbXBsb3llZSJ9.y0xDjL_q7wudXKNQZmeHg7miEzhcIKndGMds-USAeZo
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2OTg3MTAyOCwiaWF0IjoxNzY5MjY2MjI4LCJqdGkiOiI5ZTM1NTA1Y2NkMzM0ZDJjYmQ2NTA3YTlmZjhmN2ZlNSIsInVzZXJfaWQiOiI4N2ZjMmNmYy03Mzc5LTQzZWYtYTM4ZC00NWQ1MzczMTE5NzgiLCJlbWFpbCI6ImJAZ21haWwuY29tIiwidXNlcl90eXBlIjoiZW1wbG95ZWUifQ.FORW8XVnyiOhf0L_Zxd3DGPtSxqTqkshOFa_d7werVY
+@orgId = 25366171-1272-4f9e-bb17-d0a041f6d147
 # Subdomain of the created organization
-@orgSubdomain = my-super-organization-e892d1
+@orgSubdomain = loura-azebev
+
+
 
 
 ### ======================================
@@ -104,6 +107,7 @@ Authorization: Bearer {{accessToken}}
 ### 3.1 List System Roles
 GET {{hrUrl}}/roles/?organization={{orgId}}&is_system_role=true
 Authorization: Bearer {{accessToken}}
+
 
 
 ### ======================================
@@ -212,4 +216,9 @@ Authorization: Bearer {{accessToken}}
 
 ### 6.3 List Leave Types
 GET {{hrUrl}}/leave-types/?organization={{orgId}}
+Authorization: Bearer {{accessToken}}
+
+
+### 6.3 List history leave
+GET {{hrUrl}}/leave-requests/history/?organization={{orgId}}
 Authorization: Bearer {{accessToken}}

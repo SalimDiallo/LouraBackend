@@ -128,6 +128,9 @@ class OrganizationQuerySetMixin(OrganizationResolverMixin):
     # Permission requise (Admin = bypass, Employee = vérification)
     view_permission = None
     
+    # Si True, permet le LIST sans vérifier view_permission (utile pour les dropdowns)
+    allow_list_without_permission = False
+    
     def get_base_queryset(self):
         """Point d'extension pour les sous-classes."""
         return super().get_queryset()
@@ -179,8 +182,14 @@ class OrganizationQuerySetMixin(OrganizationResolverMixin):
         """Filtre pour Employee - accès à son organisation seulement."""
         employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
         
-        # Vérifier la permission
-        if self.view_permission:
+        # Vérifier la permission (sauf pour list si allow_list_without_permission=True)
+        action = getattr(self, 'action', None)
+        skip_permission_check = (
+            self.allow_list_without_permission and 
+            action == 'list'
+        )
+        
+        if self.view_permission and not skip_permission_check:
             if not employee.has_permission(self.view_permission):
                 return queryset.none()
         

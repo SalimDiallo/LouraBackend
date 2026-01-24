@@ -168,11 +168,66 @@ class Employee(BaseUser):
         return f"{self.get_full_name()} ({self.organization.name})"
 
     def has_permission(self, permission_code):
-        """Vérifie si l'employé a une permission"""
-        if self.custom_permissions.filter(code=permission_code).exists():
+        """
+        Vérifie si l'employé a une permission.
+        Supporte les anciens formats (can_view_employee) et les convertit
+        vers le nouveau format (hr.view_employees).
+        """
+        # Mapping des anciens codes vers les nouveaux
+        LEGACY_MAPPING = {
+            # Employees
+            'can_view_employee': 'hr.view_employees',
+            'can_create_employee': 'hr.create_employees',
+            'can_update_employee': 'hr.update_employees',
+            'can_delete_employee': 'hr.delete_employees',
+            'can_activate_employee': 'hr.update_employees',
+            # Departments
+            'can_view_department': 'hr.view_departments',
+            'can_create_department': 'hr.create_departments',
+            'can_update_department': 'hr.update_departments',
+            'can_delete_department': 'hr.delete_departments',
+            # Positions
+            'can_view_position': 'hr.view_positions',
+            'can_create_position': 'hr.create_positions',
+            'can_update_position': 'hr.update_positions',
+            'can_delete_position': 'hr.delete_positions',
+            # Contracts
+            'can_view_contract': 'hr.view_contracts',
+            'can_create_contract': 'hr.create_contracts',
+            'can_update_contract': 'hr.update_contracts',
+            'can_delete_contract': 'hr.delete_contracts',
+            # Roles
+            'can_view_role': 'hr.view_roles',
+            'can_create_role': 'hr.create_roles',
+            'can_update_role': 'hr.update_roles',
+            'can_delete_role': 'hr.delete_roles',
+            # Leave
+            'can_view_leave': 'hr.view_leave_requests',
+            'can_create_leave': 'hr.create_leave_requests',
+            'can_approve_leave': 'hr.approve_leave_requests',
+            # Payroll
+            'can_view_payroll': 'hr.view_payroll',
+            'can_create_payroll': 'hr.create_payroll',
+            'can_update_payroll': 'hr.update_payroll',
+            'can_export_payroll': 'hr.export_payroll',
+            # Attendance
+            'can_view_attendance': 'hr.view_attendance',
+            'can_view_all_attendance': 'hr.view_all_attendance',
+            'can_create_attendance': 'hr.create_attendance',
+            'can_update_attendance': 'hr.update_attendance',
+            'can_delete_attendance': 'hr.delete_attendance',
+            'can_approve_attendance': 'hr.approve_attendance',
+            'can_manual_checkin': 'hr.manual_checkin',
+            'can_create_qr_session': 'hr.create_qr_session',
+        }
+        
+        # Normaliser le code de permission
+        normalized_code = LEGACY_MAPPING.get(permission_code, permission_code)
+        
+        if self.custom_permissions.filter(code=normalized_code).exists():
             return True
         if self.assigned_role:
-            return self.assigned_role.permissions.filter(code=permission_code).exists()
+            return self.assigned_role.permissions.filter(code=normalized_code).exists()
         return False
 
     def get_all_permissions(self):
@@ -512,7 +567,7 @@ class PayrollPeriod(TimeStampedModel):
     name = models.CharField(max_length=100)
     start_date = models.DateField()
     end_date = models.DateField()
-    payment_date = models.DateField()
+    payment_date = models.DateField(null=True, blank=True)
 
     STATUS_CHOICES = [
         ('draft', 'Brouillon'),
@@ -615,8 +670,7 @@ class PayrollAdvance(TimeStampedModel):
         PENDING = 'pending', 'En attente'
         APPROVED = 'approved', 'Approuvée'
         REJECTED = 'rejected', 'Rejetée'
-        PAID = 'paid', 'Payée'
-        DEDUCTED = 'deducted', 'Déduite'
+        DEDUCTED = 'deducted', 'Déduite'  # Simplifié: plus de statut PAID intermédiaire
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='payroll_advances')
     amount = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.01'))])

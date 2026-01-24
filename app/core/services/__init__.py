@@ -1,9 +1,7 @@
 """
 Core Services - Service Layer pour les opérations métier
 
-Ce module implémente le Service Layer Pattern pour séparer la logique métier
-des vues et des modèles. Chaque service encapsule une responsabilité unique.
+Ce module est réservé pour les futurs services.
 """
-from .organization_service import OrganizationService
 
-__all__ = ['OrganizationService']
+__all__ = []

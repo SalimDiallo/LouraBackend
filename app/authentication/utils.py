@@ -169,31 +169,3 @@ def get_user_from_token(token_string):
     except jwt.InvalidTokenError:
         raise TokenError('Invalid token')
 
-
-def validate_token_type(token_string, expected_type='refresh'):
-    """
-    Valider qu'un token est du type attendu
-
-    Args:
-        token_string: Le token JWT
-        expected_type: 'refresh' ou 'access'
-
-    Returns:
-        bool: True si le token est du bon type
-    """
-    try:
-        token_data = get_user_from_token(token_string)
-        # Pour les tokens admin, on ne vérifie pas le token_type car il n'existe pas
-        if token_data.get('user_type') == 'admin':
-            return True
-
-        import jwt
-        decoded = jwt.decode(
-            token_string,
-            settings.SIMPLE_JWT['SIGNING_KEY'],
-            algorithms=[settings.SIMPLE_JWT['ALGORITHM']]
-        )
-
-        return decoded.get('token_type', 'access') == expected_type
-    except Exception:
-        return False
