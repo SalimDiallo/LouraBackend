@@ -47,7 +47,7 @@ from .models import (
     ProformaInvoice, ProformaItem,
     PurchaseOrder, PurchaseOrderItem,
     DeliveryNote, DeliveryNoteItem,
-    CreditSale, CreditPayment
+    CreditSale
 )
 
 # Serializers
@@ -67,7 +67,7 @@ from .serializers import (
     ProformaCreateUpdateSerializer, ProformaItemCreateSerializer,
     PurchaseOrderSerializer, PurchaseOrderItemSerializer,
     DeliveryNoteSerializer, DeliveryNoteItemSerializer,
-    CreditSaleSerializer, CreditPaymentSerializer
+    CreditSaleSerializer
 )
 
 # Mixins
@@ -436,7 +436,8 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         if movement.movement_type == 'in':
             stock.quantity = stock_quantity + movement_quantity
         elif movement.movement_type == 'out':
-            stock.quantity = stock_quantity - movement_quantity
+            # Sécurité : le stock ne peut jamais être négatif
+            stock.quantity = max(Decimal('0'), stock_quantity - movement_quantity)
         elif movement.movement_type == 'adjustment':
             # Pour les ajustements, on vérifie aussi que le résultat ne soit pas négatif
             if movement_quantity < Decimal('0'):
@@ -446,8 +447,8 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 })
             stock.quantity = movement_quantity
         elif movement.movement_type == 'transfer' and movement.destination_warehouse:
-            # Decrease from source warehouse
-            stock.quantity = stock_quantity - movement_quantity
+            # Decrease from source warehouse (sécurité : jamais négatif)
+            stock.quantity = max(Decimal('0'), stock_quantity - movement_quantity)
             # Increase in destination warehouse
             dest_stock, created = Stock.objects.get_or_create(
                 product=movement.product,
@@ -1826,10 +1827,52 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         - Des mouvements de sortie (1 par article vendu)
         - La mise à jour des stocks
         - Une vente à crédit si applicable
+        
+        IMPORTANT: Vérifie que le stock est suffisant AVANT la création.
+        Le stock ne peut jamais devenir négatif.
         """
         from django.db import transaction
+        from rest_framework.exceptions import ValidationError
         
         organization = self.get_organization_from_request()
+        
+        # Récupérer les données des items avant la création
+        items_data = serializer.validated_data.get('items', [])
+        warehouse = serializer.validated_data.get('warehouse')
+        
+        # === VALIDATION: Client obligatoire pour vente à crédit ===
+        is_credit_sale = serializer.validated_data.get('is_credit_sale', False)
+        customer = serializer.validated_data.get('customer')
+        if is_credit_sale and not customer:
+            raise ValidationError({
+                'customer': "Un client est obligatoire pour une vente à crédit.",
+                'detail': "Sélectionnez un client pour créer cette vente à crédit."
+            })
+        
+        # === VALIDATION: Vérifier le stock AVANT de créer la vente ===
+        stock_errors = []
+        for item_data in items_data:
+            product = item_data.get('product')
+            quantity_requested = Decimal(str(item_data.get('quantity', 0)))
+            
+            # Récupérer le stock actuel
+            current_stock = Stock.objects.filter(
+                product=product,
+                warehouse=warehouse
+            ).first()
+            
+            current_quantity = Decimal(str(current_stock.quantity)) if current_stock else Decimal('0')
+            
+            if current_quantity < quantity_requested:
+                stock_errors.append(
+                    f"Stock insuffisant pour '{product.name}': disponible {float(current_quantity)}, demandé {float(quantity_requested)}"
+                )
+        
+        if stock_errors:
+            raise ValidationError({
+                'items': stock_errors,
+                'detail': "Impossible de créer la vente. Le stock ne peut pas devenir négatif."
+            })
         
         with transaction.atomic():
             # Créer la vente (le serializer génère le numéro et les items)
@@ -1854,13 +1897,15 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                     sale=sale  # Liaison directe avec la vente
                 ))
                 
-                # Mettre à jour le stock
+                # Mettre à jour le stock (garantir que le stock ne devient jamais négatif)
                 stock, _ = Stock.objects.get_or_create(
                     product=item.product,
                     warehouse=warehouse,
                     defaults={'quantity': Decimal('0')}
                 )
-                stock.quantity -= item.quantity
+                new_quantity = stock.quantity - item.quantity
+                # Sécurité supplémentaire : le stock ne peut jamais être négatif
+                stock.quantity = max(Decimal('0'), new_quantity)
                 stocks_to_update.append(stock)
             
             # Créer tous les mouvements en une seule requête
@@ -1878,6 +1923,9 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             
             # Créer la vente à crédit si nécessaire
             if sale.is_credit_sale and sale.customer:
+                # Get due_date from validated_data if passed via serializer (None if not specified)
+                due_date = serializer.validated_data.get('due_date')
+                
                 CreditSale.objects.create(
                     organization=organization,
                     sale=sale,
@@ -1885,17 +1933,18 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                     total_amount=sale.total_amount,
                     paid_amount=sale.paid_amount,
                     remaining_amount=sale.get_remaining_amount(),
-                    due_date=timezone.now().date() + timedelta(days=30)
+                    due_date=due_date  # Can be None if not specified
                 )
             
             # Créer un paiement si un montant a été payé
             if sale.paid_amount > 0:
-                receipt_number = DocumentNumberFactory.generate(
-                    model_class=Payment,
-                    organization=organization,
-                    doc_type='receipt',
-                    field_name='receipt_number'
-                )
+                # Retry generation if receipt_number is not unique,
+                # to handle race conditions where the same number might have been generated by another process
+                import uuid
+                unique = uuid.uuid4().hex[:6].upper()
+                fallback_receipt_number = f'REC-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+                receipt_number = fallback_receipt_number
+                print(receipt_number)
                 Payment.objects.create(
                     organization=organization,
                     sale=sale,
@@ -1926,16 +1975,11 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 {'error': f'Le montant dépasse le solde restant ({remaining})'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Generate receipt number
-        # REFACTORED: Now uses DocumentNumberFactory
-        receipt_number = DocumentNumberFactory.generate(
-            model_class=Payment,
-            organization=sale.organization,
-            doc_type='receipt',  # Uses default prefix 'REC'
-            field_name='receipt_number'
-        )
-        
+                
+        import uuid
+        unique = uuid.uuid4().hex[:6].upper()
+        fallback_receipt_number = f'REC-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+        receipt_number = fallback_receipt_number
         # Create payment
         payment = Payment.objects.create(
             organization=sale.organization,
@@ -1954,9 +1998,9 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         sale.calculate_totals()
         sale.save()
         
-        # Update credit sale if exists
+        # Update credit sale if exists - use sync to get accurate values from payments
         if hasattr(sale, 'credit_info'):
-            sale.credit_info.paid_amount += amount
+            sale.credit_info.sync_from_sale()
             sale.credit_info.update_status()
             sale.credit_info.save()
         
@@ -1977,6 +2021,20 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
         response['Content-Disposition'] = f'attachment; filename="{filename}"'
         return response
+
+    @action(detail=True, methods=['get'], url_path='invoice')
+    def generate_invoice(self, request, organization_slug=None, pk=None):
+        """Generate invoice PDF for a sale"""
+        sale = self.get_object()
+        from .pdf_sales import generate_invoice_pdf
+        
+        pdf_buffer = generate_invoice_pdf(sale)
+        filename = f"Facture_{sale.sale_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
 
     @action(detail=True, methods=['post'])
     def cancel(self, request, organization_slug=None, pk=None):
@@ -2505,71 +2563,129 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 status__in=['pending', 'partial']
             )
 
-        return queryset.select_related('sale', 'customer', 'organization').prefetch_related('payments')
+        return queryset.select_related('sale', 'customer', 'organization').prefetch_related('sale__payments', 'sale__items')
+
+    def retrieve(self, request, *args, **kwargs):
+        """Override retrieve to sync amounts from actual payments before returning"""
+        instance = self.get_object()
+        # Sync with actual payments to fix any discrepancies
+        instance.sync_from_sale()
+        instance.update_status()
+        instance.save()
+        serializer = self.get_serializer(instance)
+        return Response(serializer.data)
+
+    def list(self, request, *args, **kwargs):
+        """Override list to sync all credit sales with their actual payments"""
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        # Sync each credit sale with its actual payments
+        for credit_sale in queryset:
+            credit_sale.sync_from_sale()
+            credit_sale.update_status()
+            credit_sale.save()
+        
+        # Re-fetch after sync
+        queryset = self.filter_queryset(self.get_queryset())
+        
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = self.get_serializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+
+        serializer = self.get_serializer(queryset, many=True)
+        return Response(serializer.data)
+    
+    @action(detail=True, methods=['post'])
+    def sync(self, request, organization_slug=None, pk=None):
+        """Manually sync a credit sale with its actual payments"""
+        credit_sale = self.get_object()
+        credit_sale.sync_from_sale()
+        credit_sale.update_status()
+        credit_sale.save()
+        return Response({
+            'message': 'Créance synchronisée avec les paiements',
+            'credit_sale': CreditSaleSerializer(credit_sale).data
+        })
+    
+    @action(detail=False, methods=['post'], url_path='sync-all')
+    def sync_all(self, request, organization_slug=None):
+        """Sync all credit sales with their actual payments"""
+        organization = self.get_organization_from_request()
+        credit_sales = CreditSale.objects.filter(organization=organization)
+        
+        synced_count = 0
+        for credit_sale in credit_sales:
+            credit_sale.sync_from_sale()
+            credit_sale.update_status()
+            credit_sale.save()
+            synced_count += 1
+        
+        return Response({
+            'message': f'{synced_count} créances synchronisées',
+            'synced_count': synced_count
+        })
 
     @action(detail=True, methods=['post'])
     def add_payment(self, request, organization_slug=None, pk=None):
-        """Add a credit payment"""
+        """Add a credit payment with transaction.atomic"""
+        from django.db import transaction
+        from django.db.models import Sum
+
         credit_sale = self.get_object()
-        amount = Decimal(str(request.data.get('amount', 0)))
         
+        # Sync first to get accurate remaining_amount
+        credit_sale.sync_from_sale()
+        
+        amount = Decimal(str(request.data.get('amount', 0)))
+
         if amount <= 0:
             return Response(
                 {'error': 'Le montant doit être supérieur à 0'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         if amount > credit_sale.remaining_amount:
             return Response(
                 {'error': f'Le montant dépasse le solde restant ({credit_sale.remaining_amount})'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
-        # Create credit payment
-        payment = CreditPayment.objects.create(
-            credit_sale=credit_sale,
-            payment_date=timezone.now().date(),
-            amount=amount,
-            payment_method=request.data.get('payment_method', 'cash'),
-            reference=request.data.get('reference', ''),
-            notes=request.data.get('notes', '')
-        )
-        
-        # Also create a Payment on the sale so it appears in payment history
-        receipt_number = DocumentNumberFactory.generate(
-            model_class=Payment,
-            organization=credit_sale.organization,
-            doc_type='receipt',
-            field_name='receipt_number'
-        )
-        Payment.objects.create(
-            organization=credit_sale.organization,
-            sale=credit_sale.sale,
-            receipt_number=receipt_number,
-            amount=amount,
-            payment_method=request.data.get('payment_method', 'cash'),
-            customer_name=credit_sale.customer.name if credit_sale.customer else '',
-            customer_phone=credit_sale.customer.phone if credit_sale.customer else '',
-            reference=request.data.get('reference', ''),
-            notes=f"Paiement créance - {request.data.get('notes', '')}"
-        )
-        
-        # Update the sale totals
-        credit_sale.sale.paid_amount += amount
-        credit_sale.sale.calculate_totals()
-        credit_sale.sale.save()
-        
-        # Update credit sale
-        credit_sale.paid_amount += amount
-        credit_sale.remaining_amount = credit_sale.total_amount - credit_sale.paid_amount
-        if credit_sale.remaining_amount <= 0:
-            credit_sale.status = 'paid'
-        elif credit_sale.paid_amount > 0:
-            credit_sale.status = 'partial'
-        credit_sale.save()
-        
+
+        with transaction.atomic():
+          
+            # Create a Payment on the sale so it appears in payment history
+            receipt_number = DocumentNumberFactory.generate(
+                model_class=Payment,
+                organization=credit_sale.organization,
+                doc_type='receipt',
+                field_name='receipt_number'
+            )
+            Payment.objects.create(
+                organization=credit_sale.organization,
+                sale=credit_sale.sale,
+                receipt_number=receipt_number,
+                amount=amount,
+                payment_method=request.data.get('payment_method', 'cash'),
+                customer_name=credit_sale.customer.name if credit_sale.customer else '',
+                customer_phone=credit_sale.customer.phone if credit_sale.customer else '',
+                reference=request.data.get('reference', ''),
+                notes=f"Paiement créance - {request.data.get('notes', '')}"
+            )
+
+            # Sync sale paid_amount from actual payments
+            total_paid = credit_sale.sale.payments.aggregate(
+                total=Sum('amount')
+            )['total'] or Decimal('0.00')
+            credit_sale.sale.paid_amount = total_paid
+            credit_sale.sale.calculate_totals()
+            credit_sale.sale.save()
+
+            # Sync credit sale from actual payments
+            credit_sale.sync_from_sale()
+            credit_sale.update_status()
+            credit_sale.save()
+
         return Response({
-            'payment': CreditPaymentSerializer(payment).data,
             'credit_sale': CreditSaleSerializer(credit_sale).data
         })
 
@@ -2586,6 +2702,37 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             'message': 'Rappel enregistré',
             'credit_sale': CreditSaleSerializer(credit_sale).data
         })
+
+    @action(detail=True, methods=['get'], url_path='export-pdf')
+    def export_pdf(self, request, organization_slug=None, pk=None):
+        """Export credit sale statement as PDF"""
+        credit_sale = self.get_object()
+        # Sync before exporting to get accurate values
+        credit_sale.sync_from_sale()
+        credit_sale.update_status()
+        
+        from .pdf_sales import generate_credit_sale_statement_pdf
+        
+        pdf_buffer = generate_credit_sale_statement_pdf(credit_sale)
+        filename = f"Releve_Creance_{credit_sale.sale.sale_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
+    @action(detail=True, methods=['get'], url_path='invoice')
+    def invoice(self, request, organization_slug=None, pk=None):
+        """Export invoice for the credit sale"""
+        credit_sale = self.get_object()
+        from .pdf_sales import generate_invoice_pdf
+        
+        pdf_buffer = generate_invoice_pdf(credit_sale.sale)
+        filename = f"Facture_{credit_sale.sale.sale_number}.pdf"
+        
+        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
+        response['Content-Disposition'] = f'attachment; filename="{filename}"'
+        return response
+
 
     @action(detail=False, methods=['get'])
     def summary(self, request, organization_slug=None):

@@ -20,3 +20,23 @@ class UserTypeMiddleware(MiddlewareMixin):
         else:
             request.user_type = None
         return None
+
+
+class TokenFromQueryParamMiddleware(MiddlewareMixin):
+    """
+    Middleware pour permettre l'authentification via token dans les query params.
+    Utilisé principalement pour les téléchargements de fichiers (PDF) où l'on ne peut
+    pas utiliser les headers Authorization dans les liens <a>.
+    
+    Usage: ?token=<jwt_access_token>
+    """
+    
+    def process_request(self, request):
+        # Vérifie si un token est présent dans les query params
+        token = request.GET.get('token')
+        
+        if token and 'HTTP_AUTHORIZATION' not in request.META:
+            # Ajoute le token comme header Authorization
+            request.META['HTTP_AUTHORIZATION'] = f'Bearer {token}'
+        
+        return None

@@ -70,6 +70,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.JWTAuthCookieMiddleware',  # JWT from cookies
+    'authentication.middleware.TokenFromQueryParamMiddleware',  # JWT from query params
 ]
 
 ROOT_URLCONF = 'lourabackend.urls'

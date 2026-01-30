@@ -21,7 +21,7 @@ from .serializers import (
 # -------------------------------
 
 class OrganizationViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing organizations"""
+    """ViewSet for managing organizations and their settings"""
     permission_classes = [IsAuthenticated]
     queryset = Organization.objects.all()
     serializer_class = OrganizationSerializer
@@ -57,21 +57,84 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer.save(admin=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        """Override create to return OrganizationSerializer for response"""
-        serializer = self.get_serializer(data=request.data)
+        """
+        Override create to handle organization creation and associated settings (if provided).
+        """
+        data = request.data.copy()
+        settings_data = data.pop("settings", None)
+
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        instance = serializer.instance
+
+        # Create settings if provided
+        if settings_data:
+            from .models import OrganizationSettings
+            settings_serializer = None
+            # settings_data may be dict or string (eg, via multipart/form). Force dict.
+            if isinstance(settings_data, str):
+                import json
+                settings_data = json.loads(settings_data)
+            try:
+                org_settings = instance.organization_settings
+                # should not happen on create, but just in case, update
+                for k, v in settings_data.items():
+                    setattr(org_settings, k, v)
+                org_settings.save()
+            except AttributeError:
+                OrganizationSettings.objects.create(organization=instance, **settings_data)
 
         # Use OrganizationSerializer for the response to include all fields
-        instance = serializer.instance
         response_serializer = OrganizationSerializer(instance)
-
         headers = self.get_success_headers(response_serializer.data)
         return Response(
             response_serializer.data,
             status=status.HTTP_201_CREATED,
             headers=headers
         )
+
+    def update(self, request, *args, **kwargs):
+        """
+        Update the organization and create or update OrganizationSettings if 'settings' in payload
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+
+        data = request.data.copy()
+        settings_data = data.pop("settings", None)
+        serializer = self.get_serializer(instance, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        # Handle settings create or update
+        if settings_data is not None:
+            from .models import OrganizationSettings
+            # Accept settings_data as dict or JSON string
+            if isinstance(settings_data, str):
+                import json
+                settings_data = json.loads(settings_data)
+            try:
+                org_settings = instance.organization_settings
+                # Update existing OrganizationSettings
+                for k, v in settings_data.items():
+                    setattr(org_settings, k, v)
+                org_settings.save()
+            except OrganizationSettings.DoesNotExist:
+                # Create new OrganizationSettings
+                OrganizationSettings.objects.create(organization=instance, **settings_data)
+
+        if getattr(instance, '_prefetched_objects_cache', None):
+            instance._prefetched_objects_cache = {}
+
+        response_serializer = OrganizationSerializer(instance)
+        return Response(response_serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Ensure settings property can be passed when partially updating organization.
+        """
+        return self.update(request, *args, partial=True, **kwargs)
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
@@ -101,7 +164,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
     def upload_logo(self, request, pk=None):
         """Upload or delete organization logo"""
         organization = self.get_object()
-        
+
         if request.method == 'DELETE':
             # Delete logo
             if organization.logo:
@@ -109,7 +172,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             organization.logo = None
             organization.save()
             return Response({'message': 'Logo supprimé'}, status=status.HTTP_200_OK)
-        
+
         # Upload logo
         logo_file = request.FILES.get('logo')
         if not logo_file:
@@ -117,7 +180,7 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                 {'error': 'Aucun fichier fourni'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Validate file type
         allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml']
         if logo_file.content_type not in allowed_types:
@@ -125,21 +188,21 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                 {'error': 'Type de fichier non autorisé. Formats acceptés: JPG, PNG, GIF, WebP, SVG'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Validate file size (max 5MB)
         if logo_file.size > 5 * 1024 * 1024:
             return Response(
                 {'error': 'Le fichier est trop volumineux (max 5 Mo)'},
                 status=status.HTTP_400_BAD_REQUEST
             )
-        
+
         # Delete old logo if exists
         if organization.logo:
             organization.logo.delete(save=False)
-        
+
         organization.logo = logo_file
         organization.save()
-        
+
         serializer = self.get_serializer(organization)
         return Response({
             'message': 'Logo mis à jour avec succès',

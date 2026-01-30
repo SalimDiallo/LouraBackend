@@ -10,7 +10,7 @@ from .models import (
     ProformaInvoice, ProformaItem,
     PurchaseOrder, PurchaseOrderItem,
     DeliveryNote, DeliveryNoteItem,
-    CreditSale, CreditPayment
+    CreditSale
 )
 from .serializers_base import InventoryBaseSerializer, InventoryListSerializer
 
@@ -678,12 +678,14 @@ class SaleCreateUpdateSerializer(serializers.ModelSerializer):
     )
     sale_number = serializers.CharField(required=False, allow_blank=True)
     
+    due_date = serializers.DateField(required=False, write_only=True)
+    
     class Meta:
         model = Sale
         fields = [
             'customer', 'warehouse', 'sale_number', 'sale_date',
             'discount_type', 'discount_value', 'tax_rate',
-            'paid_amount', 'payment_method', 'is_credit_sale', 'notes', 'items'
+            'paid_amount', 'payment_method', 'is_credit_sale', 'due_date', 'notes', 'items'
         ]
     
     def create(self, validated_data):
@@ -714,7 +716,9 @@ class SaleCreateUpdateSerializer(serializers.ModelSerializer):
             
             validated_data['sale_number'] = new_number
         
-        sale = Sale.objects.create(**validated_data)
+        # Filtrer les champs qui ne sont pas dans le modèle Sale (comme due_date)
+        sale_data = {k: v for k, v in validated_data.items() if k != 'due_date'}
+        sale = Sale.objects.create(**sale_data)
         
         for item_data in items_data:
             SaleItem.objects.create(sale=sale, **item_data)
@@ -782,7 +786,7 @@ class PaymentSerializer(InventoryBaseSerializer):
         fields = [
             'id', 'organization', 'sale', 'sale_number', 'receipt_number',
             'payment_date', 'amount', 'payment_method', 'payment_method_display',
-            'reference', 'customer_name', 'customer_phone', 'notes',
+            'reference', 'customer_name', 'customer_phone', 'notes','is_credit_payment'
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -1113,26 +1117,6 @@ class DeliveryNoteSerializer(InventoryBaseSerializer):
 # CREDIT SALE SERIALIZERS
 # ===============================
 
-class CreditPaymentSerializer(InventoryBaseSerializer):
-    """Serializer for CreditPayment model"""
-
-    id = serializers.SerializerMethodField()
-    credit_sale = serializers.SerializerMethodField()
-    payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
-
-    class Meta:
-        model = CreditPayment
-        fields = [
-            'id', 'credit_sale', 'payment_date', 'amount',
-            'payment_method', 'payment_method_display', 'reference', 'notes',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at']
-
-    # get_id is inherited from InventoryBaseSerializer
-
-    def get_credit_sale(self, obj):
-        return str(obj.credit_sale.id) if obj.credit_sale else None
 
 
 class CreditSaleSerializer(InventoryBaseSerializer):
@@ -1145,7 +1129,7 @@ class CreditSaleSerializer(InventoryBaseSerializer):
     customer = serializers.SerializerMethodField()
     customer_name = serializers.CharField(source='customer.name', read_only=True)
     customer_phone = serializers.CharField(source='customer.phone', read_only=True)
-    payments = CreditPaymentSerializer(many=True, read_only=True)
+    payments = serializers.SerializerMethodField()
     payment_count = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     days_until_due = serializers.SerializerMethodField()
@@ -1165,14 +1149,40 @@ class CreditSaleSerializer(InventoryBaseSerializer):
 
     # get_id, get_organization, get_sale, get_customer are inherited from InventoryBaseSerializer
 
+    def get_payments(self, obj):
+        """Return list of payments for this credit sale via the sale relationship"""
+        if obj.sale:
+            payments = obj.sale.payments.all().order_by('-payment_date')
+            return [
+                {
+                    'id': str(p.id),
+                    'receipt_number': p.receipt_number,
+                    'amount': float(p.amount),
+                    'payment_date': p.payment_date.isoformat() if p.payment_date else None,
+                    'payment_method': p.payment_method,
+                    'payment_method_display': p.get_payment_method_display(),
+                    'reference': p.reference,
+                    'notes': p.notes,
+                }
+                for p in payments
+            ]
+        return []
+
     def get_payment_count(self, obj):
-        return obj.payments.count()
+        if obj.sale:
+            return obj.sale.payments.count()
+        return 0
 
     def get_days_until_due(self, obj):
         from django.utils import timezone
+        if not obj.due_date:
+            return None  # No due date set
         delta = obj.due_date - timezone.now().date()
         return delta.days
 
     def get_is_overdue(self, obj):
         from django.utils import timezone
+        if not obj.due_date:
+            return False  # No due date means cannot be overdue
         return obj.due_date < timezone.now().date() and obj.status not in ['paid', 'cancelled']
+

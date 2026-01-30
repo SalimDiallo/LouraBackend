@@ -22,7 +22,7 @@ class OrganizationSettingsSerializer(serializers.ModelSerializer):
 
 class OrganizationSerializer(serializers.ModelSerializer):
     """Serializer for organization"""
-    settings = OrganizationSettingsSerializer(read_only=True)
+    settings = OrganizationSettingsSerializer()
     category_details = CategorySerializer(source='category', read_only=True)
     admin_email = serializers.EmailField(source='admin.email', read_only=True)
 

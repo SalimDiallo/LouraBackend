@@ -296,6 +296,7 @@ class Organization(TimeStampedModel):
         related_name='organizations'
     )
 
+
     is_active = models.BooleanField(default=True)
 
     class Meta:

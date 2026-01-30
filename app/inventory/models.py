@@ -985,6 +985,8 @@ class Payment(TimeStampedModel):
     customer_name = models.CharField(max_length=200, blank=True, verbose_name="Nom du client")
     customer_phone = models.CharField(max_length=20, blank=True, verbose_name="Téléphone")
 
+    is_credit_payment = models.BooleanField(default=False, verbose_name="Credit payé")
+
     class Meta:
         db_table = 'inventory_payments'
         verbose_name = "Paiement"
@@ -1526,7 +1528,7 @@ class CreditSale(TimeStampedModel):
     )
     
     # Échéances
-    due_date = models.DateField(verbose_name="Date d'échéance")
+    due_date = models.DateField(null=True, blank=True, verbose_name="Date d'échéance")
     grace_period_days = models.PositiveIntegerField(default=0, verbose_name="Jours de grâce")
     
     status = models.CharField(
@@ -1551,82 +1553,49 @@ class CreditSale(TimeStampedModel):
     def __str__(self):
         return f"Crédit {self.sale.sale_number} - {self.remaining_amount} restant"
 
+    def sync_from_sale(self):
+        """
+        Synchronise les montants payés depuis la vente associée.
+        Calcule le paid_amount à partir du total réel des paiements.
+        """
+        if self.sale:
+            # Calculer le total des paiements depuis la vente
+            from django.db.models import Sum
+            total_paid = self.sale.payments.aggregate(
+                total=Sum('amount')
+            )['total'] or Decimal('0.00')
+            
+            self.paid_amount = total_paid
+            self.remaining_amount = max(Decimal('0.00'), self.total_amount - self.paid_amount)
+
     def update_status(self):
         """Met à jour le statut basé sur les paiements et la date"""
         from django.utils import timezone
         
-        self.remaining_amount = self.total_amount - self.paid_amount
+        # S'assurer que remaining_amount n'est jamais négatif
+        self.remaining_amount = max(Decimal('0.00'), self.total_amount - self.paid_amount)
         
         if self.remaining_amount <= 0:
             self.status = 'paid'
         elif self.paid_amount > 0:
-            if self.due_date < timezone.now().date():
+            # Si pas de due_date, ne peut pas être en retard
+            if self.due_date and self.due_date < timezone.now().date():
                 self.status = 'overdue'
             else:
                 self.status = 'partial'
         else:
-            if self.due_date < timezone.now().date():
+            # Si pas de due_date, ne peut pas être en retard
+            if self.due_date and self.due_date < timezone.now().date():
                 self.status = 'overdue'
             else:
                 self.status = 'pending'
 
     def save(self, *args, **kwargs):
-        self.remaining_amount = self.total_amount - self.paid_amount
+        # S'assurer que remaining_amount n'est jamais négatif
+        self.remaining_amount = max(Decimal('0.00'), self.total_amount - self.paid_amount)
         super().save(*args, **kwargs)
 
 
-class CreditPayment(TimeStampedModel):
-    """
-    CreditPayment: Paiement partiel pour une vente à crédit
-    """
-    PAYMENT_METHOD_CHOICES = [
-        ('cash', 'Espèces'),
-        ('bank_transfer', 'Virement bancaire'),
-        ('mobile_money', 'Mobile Money'),
-        ('check', 'Chèque'),
-        ('card', 'Carte bancaire'),
-        ('other', 'Autre'),
-    ]
-
-    credit_sale = models.ForeignKey(
-        CreditSale,
-        on_delete=models.CASCADE,
-        related_name='payments',
-        verbose_name="Vente à crédit"
-    )
-    payment_date = models.DateField(verbose_name="Date de paiement")
-    amount = models.DecimalField(
-        max_digits=14,
-        decimal_places=2,
-        validators=[MinValueValidator(Decimal('0.01'))],
-        verbose_name="Montant"
-    )
-    payment_method = models.CharField(
-        max_length=20,
-        choices=PAYMENT_METHOD_CHOICES,
-        default='cash',
-        verbose_name="Mode de paiement"
-    )
-    reference = models.CharField(max_length=200, blank=True, verbose_name="Référence")
-    notes = models.TextField(blank=True)
-
-    class Meta:
-        db_table = 'inventory_credit_payments'
-        verbose_name = "Paiement de crédit"
-        verbose_name_plural = "Paiements de crédit"
-        ordering = ['-payment_date']
-
-    def __str__(self):
-        return f"Paiement {self.amount} - {self.credit_sale}"
-
-    def save(self, *args, **kwargs):
-        super().save(*args, **kwargs)
-        # Update credit sale after payment
-        self.credit_sale.paid_amount = self.credit_sale.payments.aggregate(
-            total=models.Sum('amount')
-        )['total'] or Decimal('0.00')
-        self.credit_sale.update_status()
-        self.credit_sale.save()
 
 
 # Import Supplier from main models for reference
