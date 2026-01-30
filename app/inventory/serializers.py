@@ -114,6 +114,7 @@ class SupplierSerializer(InventoryBaseSerializer):
         fields = [
             'id', 'organization', 'name', 'code', 'email', 'phone',
             'address', 'city', 'country', 'contact_person', 'tax_id',
+            'website', 'postal_code',
             'payment_terms', 'notes', 'order_count', 'total_orders_amount',
             'is_active', 'created_at', 'updated_at'
         ]

@@ -38,7 +38,7 @@ from .serializers import (
     EmployeeSerializer, EmployeeCreateSerializer, EmployeeListSerializer,
     EmployeeUpdateSerializer, EmployeeChangePasswordSerializer,
     DepartmentSerializer, PositionSerializer, ContractSerializer,
-    LeaveTypeSerializer, LeaveBalanceSerializer, LeaveRequestSerializer,
+    LeaveTypeSerializer, LeaveRequestSerializer,
     LeaveRequestApprovalSerializer,
     PayrollPeriodSerializer, PayslipSerializer, PayslipCreateSerializer,
     PayrollAdvanceSerializer, PayrollAdvanceCreateSerializer, PayrollAdvanceListSerializer,
@@ -512,22 +512,22 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         serializer.save(organization=organization)
 
 
-class LeaveBalanceViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing leave balances"""
-    serializer_class = LeaveBalanceSerializer
-    permission_classes = [IsAdminUserOrEmployee, CanAccessOwnOrManage.for_resource('leave', 'can_manage_leave_balances')]
+# class LeaveBalanceViewSet(viewsets.ModelViewSet):
+#     """ViewSet for managing leave balances"""
+#     serializer_class = LeaveBalanceSerializer
+#     permission_classes = [IsAdminUserOrEmployee, CanAccessOwnOrManage.for_resource('leave', 'can_manage_leave_balances')]
 
-    def get_queryset(self):
-        user = self.request.user
+#     def get_queryset(self):
+#         user = self.request.user
 
-        if getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
-            return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
-        elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("hr.manage_leave_balances") or user.is_hr_admin():
-                return LeaveBalance.objects.filter(employee__organization=user.organization)
-            return LeaveBalance.objects.filter(employee=user)
-        return LeaveBalance.objects.none()
+#         if getattr(user, 'user_type', None) == 'admin':
+#             org_ids = user.organizations.values_list('id', flat=True)
+#             return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
+#         elif getattr(user, 'user_type', None) == 'employee':
+#             if user.has_permission("hr.manage_leave_balances") or user.is_hr_admin():
+#                 return LeaveBalance.objects.filter(employee__organization=user.organization)
+#             return LeaveBalance.objects.filter(employee=user)
+#         return LeaveBalance.objects.none()
 
 
 class LeaveRequestViewSet(viewsets.ModelViewSet):
@@ -603,7 +603,7 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         )
         balance.pending_days += leave_request.total_days
         balance.save()
-
+    
     def perform_destroy(self, instance):
         user = self.request.user
         # Si employé: peut supprimer sa propre demande uniquement si non approuvée
@@ -873,38 +873,78 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
     @action(detail=False, methods=['post'], permission_classes=[IsHRAdmin])
     def generate_for_period(self, request):
-        """Génération intelligente de fiches de paie avec déduction automatique des avances"""
+        """Génération intelligente de fiches de paie avec déduction automatique des avances
+        
+        Supporte maintenant:
+        - Période optionnelle (mode ad-hoc)
+        - Données personnalisées par employé (salaire de base, notes, primes, déductions, avances)
+        """
 
         payroll_period_id = request.data.get('payroll_period')
         employee_filters = request.data.get('employee_filters', {})
         auto_deduct_advances = request.data.get('auto_deduct_advances', True)
-        auto_approve = request.data.get('auto_approve', False)  # ✨ Nouveau paramètre
-        employee_ids = request.data.get('employee_ids', [])  # ✨ Nouveau paramètre - Liste d'IDs spécifiques
+        auto_approve = request.data.get('auto_approve', False)
+        employee_ids = request.data.get('employee_ids', [])
+        
+        # ✨ Nouvelles données personnalisées par employé
+        # Format: { employee_id: { base_salary, notes, allowances, deductions, advance_ids } }
+        employee_custom_data = request.data.get('employee_custom_data', {})
+        
+        # ✨ Organization subdomain pour mode ad-hoc (sans période)
+        org_subdomain = request.query_params.get('organization_subdomain')
 
-        if not payroll_period_id:
-            return Response(
-                {'error': 'payroll_period est requis'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # Récupérer la période (optionnelle maintenant)
+        payroll_period = None
+        organization = None
+        
+        if payroll_period_id:
+            try:
+                payroll_period = PayrollPeriod.objects.get(id=payroll_period_id)
+                organization = payroll_period.organization
+            except PayrollPeriod.DoesNotExist:
+                return Response(
+                    {'error': 'Période de paie non trouvée'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
+        else:
+            # Mode ad-hoc: récupérer l'organisation depuis le subdomain
+            if not org_subdomain:
+                return Response(
+                    {'error': 'organization_subdomain est requis en mode ad-hoc (sans période)'},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+            try:
+                user = request.user
+                if getattr(user, 'user_type', None) == 'admin':
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                elif getattr(user, 'user_type', None) == 'employee':
+                    organization = Organization.objects.get(subdomain=org_subdomain)
+                    if organization != user.organization:
+                        return Response(
+                            {'error': 'Accès non autorisé à cette organisation'},
+                            status=status.HTTP_403_FORBIDDEN
+                        )
+                else:
+                    return Response(
+                        {'error': 'Type d\'utilisateur non autorisé'},
+                        status=status.HTTP_403_FORBIDDEN
+                    )
+            except Organization.DoesNotExist:
+                return Response(
+                    {'error': 'Organisation non trouvée'},
+                    status=status.HTTP_404_NOT_FOUND
+                )
 
-        try:
-            payroll_period = PayrollPeriod.objects.get(id=payroll_period_id)
-        except PayrollPeriod.DoesNotExist:
-            return Response(
-                {'error': 'Période de paie non trouvée'},
-                status=status.HTTP_404_NOT_FOUND
-            )
-
-        # ✨ Filtrer par IDs spécifiques si fournis, sinon tous les employés actifs
+        # Filtrer par IDs spécifiques si fournis, sinon tous les employés actifs
         if employee_ids:
             employees = Employee.objects.filter(
-                organization=payroll_period.organization,
+                organization=organization,
                 id__in=employee_ids,
                 employment_status='active'
             )
         else:
             employees = Employee.objects.filter(
-                organization=payroll_period.organization,
+                organization=organization,
                 employment_status='active'
             )
 
@@ -920,8 +960,8 @@ class PayslipViewSet(viewsets.ModelViewSet):
         errors = []
 
         for employee in employees:
-            # Vérifier si fiche existe déjà
-            if Payslip.objects.filter(employee=employee, payroll_period=payroll_period).exists():
+            # Vérifier si fiche existe déjà (seulement si période spécifiée)
+            if payroll_period and Payslip.objects.filter(employee=employee, payroll_period=payroll_period).exists():
                 skipped_count += 1
                 logger.info(f"Payslip already exists for {employee.get_full_name()}")
                 continue
@@ -933,62 +973,92 @@ class PayslipViewSet(viewsets.ModelViewSet):
                     errors.append(f"{employee.get_full_name()}: Pas de contrat actif")
                     continue
 
-                base_salary = contract.base_salary
+                # ✨ Données personnalisées pour cet employé
+                custom_data = employee_custom_data.get(str(employee.id), {})
+                
+                # Salaire de base (personnalisé ou du contrat)
+                base_salary = Decimal(str(custom_data.get('base_salary'))) if custom_data.get('base_salary') is not None else contract.base_salary
                 currency = contract.currency
+                
+                # Notes/description
+                description = custom_data.get('notes', '')
 
-                # ✨ SIMPLIFIÉ : Récupérer les avances APPROUVÉES non déduites
+                # ✨ Primes personnalisées
+                custom_allowances = custom_data.get('allowances', [])
+                total_allowances = Decimal('0')
+                allowance_items = []
+                for allowance in custom_allowances:
+                    amount = Decimal(str(allowance.get('amount', 0)))
+                    total_allowances += amount
+                    allowance_items.append({
+                        'name': allowance.get('name', 'Prime'),
+                        'amount': amount,
+                        'is_deduction': False,
+                    })
+
+                # ✨ Déductions personnalisées
+                custom_deductions = custom_data.get('deductions', [])
+                total_custom_deductions = Decimal('0')
+                deduction_items = []
+                for deduction in custom_deductions:
+                    amount = Decimal(str(deduction.get('amount', 0)))
+                    total_custom_deductions += amount
+                    deduction_items.append({
+                        'name': deduction.get('name', 'Déduction'),
+                        'amount': amount,
+                        'is_deduction': True,
+                    })
+
+                # ✨ Avances sélectionnées manuellement ou auto-déduction
+                selected_advance_ids = custom_data.get('advance_ids', [])
                 paid_advances = []
                 advance_deduction_items = []
                 total_advance_amount = Decimal('0')
 
-                if auto_deduct_advances:
+                if selected_advance_ids:
+                    # Utiliser les avances sélectionnées manuellement
+                    paid_advances = PayrollAdvance.objects.filter(
+                        id__in=selected_advance_ids,
+                        employee=employee,
+                        status=PayrollAdvance.AdvanceStatus.APPROVED,
+                        payslip__isnull=True
+                    )
+                elif auto_deduct_advances:
+                    # Auto-déduire toutes les avances approuvées non déduites
                     paid_advances = PayrollAdvance.objects.filter(
                         employee=employee,
-                        status=PayrollAdvance.AdvanceStatus.APPROVED,  # ✨ Changé de PAID à APPROVED
-                        payslip__isnull=True  # Pas encore liée à une fiche
+                        status=PayrollAdvance.AdvanceStatus.APPROVED,
+                        payslip__isnull=True
                     )
 
-                    for advance in paid_advances:
-                        advance_deduction_items.append({
-                            'name': f'Remboursement avance - {advance.reason[:30]}',
-                            'amount': advance.amount,
-                            'is_deduction': True,
-                        })
-                        total_advance_amount += advance.amount
-                        logger.info(f"Auto-deducting advance {advance.id} ({advance.amount}) for {employee.get_full_name()}")
-
-                # ✨ NOUVEAU : Ajouter déductions standards (CNPS, Impôts)
-                standard_deductions = []
-
-                # CNPS - 3.6% du salaire brut
-                cnps_amount = (base_salary * Decimal('0.036')).quantize(Decimal('0.01'))
-                standard_deductions.append({
-                    'name': 'Cotisation CNPS (3.6%)',
-                    'amount': cnps_amount,
-                    'is_deduction': True,
-                })
-
-                # Impôt sur le revenu - 10% (simplifié)
-                tax_amount = (base_salary * Decimal('0.10')).quantize(Decimal('0.01'))
-                standard_deductions.append({
-                    'name': 'Impôt sur le revenu (10%)',
-                    'amount': tax_amount,
-                    'is_deduction': True,
-                })
+                for advance in paid_advances:
+                    advance_deduction_items.append({
+                        'name': f'Remboursement avance - {advance.reason[:30] if advance.reason else "Avance"}',
+                        'amount': advance.amount,
+                        'is_deduction': True,
+                    })
+                    total_advance_amount += advance.amount
+                    logger.info(f"Deducting advance {advance.id} ({advance.amount}) for {employee.get_full_name()}")
 
                 # Calculer totaux
-                gross_salary = base_salary
-                total_deductions = cnps_amount + tax_amount + total_advance_amount
+                gross_salary = base_salary + total_allowances
+                total_deductions = total_custom_deductions + total_advance_amount
                 net_salary = gross_salary - total_deductions
+                
+                # Vérifier que le net n'est pas négatif
+                if net_salary < 0:
+                    errors.append(f"{employee.get_full_name()}: Le salaire net serait négatif ({net_salary})")
+                    continue
 
-                # ✨ Déterminer le statut initial (draft ou approved si auto_approve)
+                # Déterminer le statut initial
                 initial_status = 'approved' if auto_approve else 'draft'
 
                 # Créer la fiche de paie
                 payslip = Payslip.objects.create(
                     employee=employee,
-                    payroll_period=payroll_period,
+                    payroll_period=payroll_period,  # Peut être None en mode ad-hoc
                     base_salary=base_salary,
+                    description=description,
                     currency=currency,
                     gross_salary=gross_salary,
                     total_deductions=total_deductions,
@@ -996,25 +1066,29 @@ class PayslipViewSet(viewsets.ModelViewSet):
                     status=initial_status
                 )
 
-                # Créer les items de déduction
-                all_deductions = standard_deductions + advance_deduction_items
-                for deduction in all_deductions:
-                    PayslipItem.objects.create(
-                        payslip=payslip,
-                        **deduction
-                    )
+                # Créer les items (primes)
+                for item in allowance_items:
+                    PayslipItem.objects.create(payslip=payslip, **item)
 
-                # ✨ NOUVEAU : Lier les avances à la fiche et marquer comme déduites
-                if auto_deduct_advances and paid_advances:
+                # Créer les items (déductions)
+                for item in deduction_items:
+                    PayslipItem.objects.create(payslip=payslip, **item)
+
+                # Créer les items (avances)
+                for item in advance_deduction_items:
+                    PayslipItem.objects.create(payslip=payslip, **item)
+
+                # Lier les avances à la fiche et marquer comme déduites
+                if paid_advances:
                     for advance in paid_advances:
                         advance.status = PayrollAdvance.AdvanceStatus.DEDUCTED
                         advance.payslip = payslip
-                        advance.deduction_month = payroll_period.end_date
+                        advance.deduction_month = payroll_period.end_date if payroll_period else timezone.now().date()
                         advance.save()
                         advances_deducted += 1
 
                 created_count += 1
-                logger.info(f"Created payslip for {employee.get_full_name()} with {len(paid_advances)} advances deducted (status: {initial_status})")
+                logger.info(f"Created payslip for {employee.get_full_name()} with {len(list(paid_advances))} advances deducted (status: {initial_status})")
 
             except Exception as e:
                 logger.exception(f"Error creating payslip for {employee.get_full_name()}")
@@ -1027,6 +1101,7 @@ class PayslipViewSet(viewsets.ModelViewSet):
             'total_employees': employees.count(),
             'advances_deducted': advances_deducted,
             'auto_approved': auto_approve,
+            'ad_hoc_mode': payroll_period is None,
             'errors': errors
         }, status=status.HTTP_201_CREATED)
 

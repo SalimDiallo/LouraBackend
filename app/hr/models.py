@@ -595,7 +595,21 @@ class Payslip(TimeStampedModel):
     """Fiche de paie"""
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='payslips')
-    payroll_period = models.ForeignKey(PayrollPeriod, on_delete=models.CASCADE, related_name='payslips')
+    # Période de paie optionnelle - permet de créer des fiches de paie ad-hoc
+    payroll_period = models.ForeignKey(
+        PayrollPeriod, 
+        on_delete=models.CASCADE, 
+        related_name='payslips',
+        null=True,
+        blank=True
+    )
+    
+    # Description/titre de la fiche de paie (utile quand pas de période)
+    description = models.CharField(
+        max_length=255, 
+        blank=True,
+        help_text="Description ou titre de la fiche de paie (ex: 'Paie Janvier 2026', 'Prime exceptionnelle')"
+    )
 
     base_salary = models.DecimalField(max_digits=12, decimal_places=2, validators=[MinValueValidator(Decimal('0.00'))])
     gross_salary = models.DecimalField(max_digits=12, decimal_places=2, default=0)
@@ -623,15 +637,35 @@ class Payslip(TimeStampedModel):
         db_table = 'payslips'
         verbose_name = "Fiche de paie"
         verbose_name_plural = "Fiches de paie"
-        unique_together = [['employee', 'payroll_period']]
-        ordering = ['-payroll_period__start_date', 'employee__last_name']
+        ordering = ['-created_at', 'employee__last_name']
         indexes = [
             models.Index(fields=['employee', 'status']),
             models.Index(fields=['payroll_period', 'status']),
+            models.Index(fields=['created_at']),
+        ]
+        constraints = [
+            # Unicité conditionnelle: un employé ne peut avoir qu'une fiche par période (si période définie)
+            models.UniqueConstraint(
+                fields=['employee', 'payroll_period'],
+                name='unique_employee_period',
+                condition=models.Q(payroll_period__isnull=False)
+            ),
         ]
 
     def __str__(self):
-        return f"{self.employee.get_full_name()} - {self.payroll_period.name}"
+        if self.payroll_period:
+            return f"{self.employee.get_full_name()} - {self.payroll_period.name}"
+        elif self.description:
+            return f"{self.employee.get_full_name()} - {self.description}"
+        return f"{self.employee.get_full_name()} - {self.created_at.strftime('%B %Y')}"
+    
+    def get_display_name(self):
+        """Retourne un nom d'affichage pour la fiche de paie"""
+        if self.description:
+            return self.description
+        if self.payroll_period:
+            return self.payroll_period.name
+        return f"Paie du {self.created_at.strftime('%d/%m/%Y')}"
 
     def calculate_totals(self):
         """Calcule les totaux à partir des items"""

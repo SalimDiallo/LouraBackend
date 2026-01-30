@@ -517,15 +517,8 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         logger.info(f"Creating Order for organization: {organization.name} (ID: {organization.id})")
         logger.info(f"Serializer data: {serializer.validated_data}")
 
-        # Generate order number using DocumentNumberFactory
-        order_number = DocumentNumberFactory.generate(
-            model_class=Order,
-            organization=organization,
-            doc_type='order',
-            field_name='order_number'
-        )
 
-        serializer.save(organization=organization, order_number=order_number)
+        serializer.save(organization=organization)
 
     def get_queryset(self):
         """

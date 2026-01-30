@@ -98,6 +98,8 @@ class Supplier(TimeStampedModel):
     address = models.TextField(blank=True)
     city = models.CharField(max_length=100, blank=True)
     country = models.CharField(max_length=100, blank=True)
+    website = models.CharField(max_length=100, blank=True)
+    postal_code = models.CharField(max_length=100, blank=True)
     contact_person = models.CharField(max_length=200, blank=True)
     tax_id = models.CharField(max_length=50, blank=True, help_text="Numéro d'identification fiscale")
     payment_terms = models.CharField(max_length=200, blank=True, help_text="Conditions de paiement")

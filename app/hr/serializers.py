@@ -542,21 +542,21 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
 
 
-class LeaveBalanceSerializer(serializers.ModelSerializer):
-    """Serializer for LeaveBalance model"""
+# class LeaveBalanceSerializer(serializers.ModelSerializer):
+#     """Serializer for LeaveBalance model"""
 
-    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
-    leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
-    available_days = serializers.ReadOnlyField()
+#     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+#     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
+#     available_days = serializers.ReadOnlyField()
 
-    class Meta:
-        model = LeaveBalance
-        fields = [
-            'id', 'employee', 'employee_name', 'leave_type', 'leave_type_name',
-            'year', 'total_days', 'used_days', 'pending_days', 'available_days',
-            'created_at', 'updated_at'
-        ]
-        read_only_fields = ['id', 'created_at', 'updated_at', 'available_days']
+#     class Meta:
+#         model = LeaveBalance
+#         fields = [
+#             'id', 'employee', 'employee_name', 'leave_type', 'leave_type_name',
+#             'year', 'total_days', 'used_days', 'pending_days', 'available_days',
+#             'created_at', 'updated_at'
+#         ]
+#         read_only_fields = ['id', 'created_at', 'updated_at', 'available_days']
 
 
 class LeaveRequestSerializer(serializers.ModelSerializer):
@@ -679,10 +679,11 @@ class PayslipSerializer(serializers.ModelSerializer):
 
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
     employee_id = serializers.CharField(source='employee.employee_id', read_only=True)
-    payroll_period_name = serializers.CharField(source='payroll_period.name', read_only=True)
-    period_start = serializers.DateField(source='payroll_period.start_date', read_only=True)
-    period_end = serializers.DateField(source='payroll_period.end_date', read_only=True)
+    payroll_period_name = serializers.SerializerMethodField()
+    period_start = serializers.SerializerMethodField()
+    period_end = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
+    display_name = serializers.SerializerMethodField()
 
     # Inclure les items (primes et déductions) via des méthodes
     allowances = serializers.SerializerMethodField()
@@ -696,6 +697,7 @@ class PayslipSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'employee', 'employee_name', 'employee_id',
             'payroll_period', 'payroll_period_name', 'period_start', 'period_end',
+            'description', 'display_name',
             'base_salary', 'allowances', 'deductions',
             'gross_salary', 'total_deductions', 'net_salary',
             'currency', 'worked_hours', 'overtime_hours', 'leave_days_taken',
@@ -707,6 +709,22 @@ class PayslipSerializer(serializers.ModelSerializer):
             'id', 'gross_salary', 'total_deductions', 'net_salary',
             'created_at', 'updated_at'
         ]
+
+    def get_payroll_period_name(self, obj):
+        """Retourne le nom de la période ou None si pas de période"""
+        return obj.payroll_period.name if obj.payroll_period else None
+
+    def get_period_start(self, obj):
+        """Retourne la date de début de la période ou None"""
+        return obj.payroll_period.start_date if obj.payroll_period else None
+
+    def get_period_end(self, obj):
+        """Retourne la date de fin de la période ou None"""
+        return obj.payroll_period.end_date if obj.payroll_period else None
+
+    def get_display_name(self, obj):
+        """Retourne un nom d'affichage pour la fiche de paie"""
+        return obj.get_display_name()
 
     def get_allowances(self, obj):
         """Retourner seulement les items qui sont des primes (is_deduction=False)"""
@@ -736,22 +754,36 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
     class Meta:
         model = Payslip
         fields = [
-            'employee', 'payroll_period', 'base_salary',
+            'employee', 'payroll_period', 'description', 'base_salary',
             'allowances', 'deductions', 'advance_ids',
             'currency', 'worked_hours', 'overtime_hours', 'leave_days_taken',
             'payment_method', 'notes'
         ]
+        extra_kwargs = {
+            'payroll_period': {'required': False, 'allow_null': True},
+            'description': {'required': False, 'allow_blank': True},
+        }
 
     def validate(self, attrs):
-        """Validate that employee belongs to same organization as payroll period"""
+        """Validate payroll data"""
         employee = attrs.get('employee')
         payroll_period = attrs.get('payroll_period')
+        description = attrs.get('description', '')
 
+        # Si pas de période et pas de description, encourager une description
+        if not payroll_period and not description:
+            # Générer une description par défaut basée sur la date
+            from django.utils import timezone
+            now = timezone.now()
+            attrs['description'] = f"Paie {now.strftime('%B %Y')}"
+
+        # Valider que l'employé appartient à la même organisation que la période
         if employee and payroll_period:
             if employee.organization != payroll_period.organization:
                 raise serializers.ValidationError({
                     'employee': "L'employé doit appartenir à la même organisation que la période de paie."
                 })
+
 
         # Validate advance_ids if provided
         advance_ids = attrs.get('advance_ids', [])
@@ -759,7 +791,7 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
             advances = PayrollAdvance.objects.filter(
                 id__in=advance_ids,
                 employee=employee,
-                status=PayrollAdvance.AdvanceStatus.PAID
+                status=PayrollAdvance.AdvanceStatus.DEDUCTED
             )
             if advances.count() != len(advance_ids):
                 raise serializers.ValidationError({
