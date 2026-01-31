@@ -555,10 +555,15 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             org_ids = user.organizations.values_list('id', flat=True)
             return LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("hr.approve_leave_requests"):
-                return LeaveRequest.objects.filter(
-                    employee__organization=user.organization
-                ).exclude(employee=user)
+            if user.has_permission("hr.view_leave_requests"):
+                # INSERT_YOUR_CODE
+                exclude = self.request.query_params.get('exclude')
+                print(exclude)
+                queryset = LeaveRequest.objects.filter(employee__organization=user.organization)
+                if exclude:
+                    queryset = queryset.exclude(employee=user)
+                return queryset
+            
             # On veut permettre à l'employé de voir ses propres demandes dans retrieve OU destroy
             # Récriture ici: pour retrieve et destroy, inclure LeaveRequest de l'utilisateur
             if self.action in ["retrieve", "destroy"]:
@@ -1640,7 +1645,7 @@ class RoleViewSet(viewsets.ModelViewSet):
 
 class AttendanceViewSet(viewsets.ModelViewSet):
     """ViewSet for managing attendance records"""
-    permission_classes = [IsAdminUserOrEmployee, RequiresAttendancePermission]
+    permission_classes = [IsAdminUserOrEmployee]
     serializer_class = AttendanceSerializer
     filterset_fields = ['employee', 'date', 'status', 'is_approved']
     search_fields = ['employee__first_name', 'employee__last_name', 'employee__employee_id']
@@ -1700,17 +1705,15 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def perform_create(self, serializer):
         user = self.request.user
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('can_create_attendance'):
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied('Vous n\'avez pas la permission de créer des pointages')
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Vous n\'avez pas la permission de créer des pointages')
         serializer.save()
 
     def perform_update(self, serializer):
         user = self.request.user
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('can_update_attendance'):
-                from rest_framework.exceptions import PermissionDenied
-                raise PermissionDenied('Vous n\'avez pas la permission de modifier des pointages')
+            from rest_framework.exceptions import PermissionDenied
+            raise PermissionDenied('Vous n\'avez pas la permission de modifier des pointages')
         serializer.save()
 
     def perform_destroy(self, instance):

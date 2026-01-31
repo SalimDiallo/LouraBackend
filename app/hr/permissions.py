@@ -34,8 +34,8 @@ PERMISSIONS = [
     {'code': 'hr.create_employees', 'name': 'Créer des employés', 'category': 'Employés', 'description': 'Peut créer de nouveaux employés'},
     {'code': 'hr.update_employees', 'name': 'Modifier des employés', 'category': 'Employés', 'description': 'Peut modifier les informations des employés'},
     {'code': 'hr.delete_employees', 'name': 'Supprimer des employés', 'category': 'Employés', 'description': 'Peut supprimer des employés'},
-    {'code': 'hr.activate_employees', 'name': 'Activer/Désactiver des employés', 'category': 'Employés', 'description': 'Peut activer ou désactiver des comptes employés'},
-    {'code': 'hr.manage_employee_permissions', 'name': 'Gérer les permissions', 'category': 'Employés', 'description': 'Peut attribuer ou retirer des permissions aux employés'},
+    # {'code': 'hr.activate_employees', 'name': 'Activer/Désactiver des employés', 'category': 'Employés', 'description': 'Peut activer ou désactiver des comptes employés'},
+    # {'code': 'hr.manage_employee_permissions', 'name': 'Gérer les permissions', 'category': 'Employés', 'description': 'Peut attribuer ou retirer des permissions aux employés'},
 
     # === DEPARTMENTS ===
     {'code': 'hr.view_departments', 'name': 'Voir les départements', 'category': 'Départements', 'description': 'Peut consulter les départements'},
@@ -68,8 +68,8 @@ PERMISSIONS = [
     {'code': 'hr.update_leave', 'name': 'Modifier des congés', 'category': 'Congés', 'description': 'Peut modifier des demandes de congé'},
     {'code': 'hr.delete_leave', 'name': 'Supprimer des congés', 'category': 'Congés', 'description': 'Peut supprimer des demandes de congé'},
     {'code': 'hr.approve_leave', 'name': 'Approuver des congés', 'category': 'Congés', 'description': 'Peut approuver ou rejeter des demandes de congé'},
-    {'code': 'hr.manage_leave_types', 'name': 'Gérer les types', 'category': 'Congés', 'description': 'Peut créer et modifier les types de congé'},
-    {'code': 'hr.manage_leave_balances', 'name': 'Gérer les soldes', 'category': 'Congés', 'description': 'Peut modifier les soldes de congé'},
+    # {'code': 'hr.manage_leave_types', 'name': 'Gérer les types', 'category': 'Congés', 'description': 'Peut créer et modifier les types de congé'},
+    # {'code': 'hr.manage_leave_balances', 'name': 'Gérer les soldes', 'category': 'Congés', 'description': 'Peut modifier les soldes de congé'},
 
     # === PAYROLL (Paie) ===
     {'code': 'hr.view_payroll', 'name': 'Voir la paie', 'category': 'Paie', 'description': 'Peut consulter les informations de paie'},
@@ -80,11 +80,11 @@ PERMISSIONS = [
     {'code': 'hr.export_payroll', 'name': 'Exporter la paie', 'category': 'Paie', 'description': 'Peut exporter les bulletins en PDF'},
 
     # === ATTENDANCE (Pointages) ===
-    {'code': 'hr.view_attendance', 'name': 'Voir les pointages', 'category': 'Pointages', 'description': 'Peut consulter ses pointages'},
+    # {'code': 'hr.view_attendance', 'name': 'Voir les pointages', 'category': 'Pointages', 'description': 'Peut consulter ses pointages'},
     {'code': 'hr.view_all_attendance', 'name': 'Voir tous les pointages', 'category': 'Pointages', 'description': 'Peut consulter les pointages de tous les employés'},
-    {'code': 'hr.create_attendance', 'name': 'Créer des pointages', 'category': 'Pointages', 'description': 'Peut créer des enregistrements de pointage'},
-    {'code': 'hr.update_attendance', 'name': 'Modifier des pointages', 'category': 'Pointages', 'description': 'Peut modifier les pointages'},
-    {'code': 'hr.delete_attendance', 'name': 'Supprimer des pointages', 'category': 'Pointages', 'description': 'Peut supprimer des pointages'},
+    # {'code': 'hr.create_attendance', 'name': 'Créer des pointages', 'category': 'Pointages', 'description': 'Peut créer des enregistrements de pointage'},
+    # {'code': 'hr.update_attendance', 'name': 'Modifier des pointages', 'category': 'Pointages', 'description': 'Peut modifier les pointages'},
+    # {'code': 'hr.delete_attendance', 'name': 'Supprimer des pointages', 'category': 'Pointages', 'description': 'Peut supprimer des pointages'},
     {'code': 'hr.approve_attendance', 'name': 'Approuver des pointages', 'category': 'Pointages', 'description': 'Peut approuver ou rejeter des pointages'},
     {'code': 'hr.manual_checkin', 'name': 'Pointage manuel', 'category': 'Pointages', 'description': 'Peut effectuer un pointage manuel'},
     {'code': 'hr.create_qr_session', 'name': 'Générer des QR codes', 'category': 'Pointages', 'description': 'Peut générer des QR codes pour le pointage'},
@@ -237,7 +237,7 @@ PREDEFINED_ROLES = {
         'permissions': [
             # Employees
             'hr.view_employees', 'hr.create_employees', 'hr.update_employees',
-            'hr.delete_employees', 'hr.activate_employees', 'hr.manage_employee_permissions',
+            'hr.delete_employees', 'hr.activate_employees',
             # Departments
             'hr.view_departments', 'hr.create_departments', 'hr.update_departments',
             'hr.delete_departments',
