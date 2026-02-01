@@ -925,19 +925,19 @@ class EmployeeChangePasswordSerializer(serializers.Serializer):
 class AttendanceSerializer(serializers.ModelSerializer):
     """Serializer for Attendance model"""
 
-    id = serializers.SerializerMethodField()
-    employee = serializers.SerializerMethodField()
-    employee_name = serializers.SerializerMethodField()
+    id = serializers.UUIDField(read_only=True)
+    employee = serializers.CharField(source='user_id', read_only=True)
+    employee_name = serializers.ReadOnlyField(source='user_full_name')
     employee_id_number = serializers.SerializerMethodField()
     department_name = serializers.SerializerMethodField()
-    approved_by_name = serializers.SerializerMethodField()
+    approved_by_name = serializers.ReadOnlyField(source='approved_by.get_full_name')
     is_on_break = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
         fields = [
             'id', 'employee', 'employee_name', 'employee_id_number', 'department_name',
-            'user_email', 'user_full_name',
+            'user', 'user_email', 'user_full_name',
             'date', 'check_in', 'check_in_location', 'check_in_notes',
             'check_out', 'check_out_location', 'check_out_notes',
             'break_start', 'break_end', 'is_on_break', 'total_hours', 'break_duration',
@@ -951,35 +951,17 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'overtime_hours', 'created_at', 'updated_at'
         ]
 
-    def get_id(self, obj):
-        return str(obj.id) if obj.id else None
-
-    def get_employee(self, obj):
-        # Get employee from user (if user is an Employee)
-        if hasattr(obj.user, 'employee_id'):
-            return str(obj.user.id)
-        return str(obj.user.id) if obj.user else None
-
-    def get_employee_name(self, obj):
-        # Use cached user_full_name or fallback to user.get_full_name()
-        if obj.user_full_name:
-            return obj.user_full_name
-        return obj.user.get_full_name() if obj.user else None
-
     def get_employee_id_number(self, obj):
-        # Get employee_id if user is an Employee
+        # Access employee_id if user is an Employee
         if hasattr(obj.user, 'employee_id'):
             return obj.user.employee_id
         return None
 
     def get_department_name(self, obj):
-        # Get department if user is an Employee
+        # Access department name if user is an Employee
         if hasattr(obj.user, 'department') and obj.user.department:
             return obj.user.department.name
         return None
-
-    def get_approved_by_name(self, obj):
-        return obj.approved_by.get_full_name() if obj.approved_by else None
 
     def get_is_on_break(self, obj):
         """Check if currently on break"""
@@ -989,15 +971,32 @@ class AttendanceSerializer(serializers.ModelSerializer):
 class AttendanceCreateSerializer(serializers.ModelSerializer):
     """Serializer for creating attendance records"""
 
+    # Allow using 'employee' as an alias for 'user' in input
+    employee = serializers.PrimaryKeyRelatedField(
+        queryset=BaseUser.objects.all(),
+        source='user',
+        required=False
+    )
+
     class Meta:
         model = Attendance
         fields = [
-            'user', 'date', 'check_in', 'check_in_location', 'check_in_notes',
+            'user', 'employee', 'date', 'check_in', 'check_in_location', 'check_in_notes',
             'check_out', 'check_out_location', 'check_out_notes',
             'break_start', 'break_end', 'status', 'notes'
         ]
+        extra_kwargs = {
+            'user': {'required': False},
+        }
 
     def validate(self, attrs):
+        # Handle employee/user alias
+        if 'user' not in attrs and 'employee' in attrs:
+            attrs['user'] = attrs.pop('employee')
+        
+        if 'user' not in attrs:
+            raise serializers.ValidationError({'user': 'Ce champ est obligatoire.'})
+
         # Validate check times
         check_in = attrs.get('check_in')
         check_out = attrs.get('check_out')

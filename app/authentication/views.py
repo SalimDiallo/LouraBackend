@@ -243,12 +243,19 @@ class UpdateProfileView(APIView):
     def patch(self, request):
         user = request.user
         data = request.data
-
+        print(data)
         # Champs modifiables par tous
         common_fields = ['first_name', 'last_name', 'phone', 'avatar_url', 'language', 'timezone']
         
         # Champs supplémentaires pour Employee
-        employee_fields = ['address', 'city', 'country', 'emergency_contact']
+        employee_fields = [
+            'date_of_birth',
+            'address',
+            'city',
+            'country',
+            'emergency_contact',
+        ]
+
 
         try:
             # Mettre à jour les champs communs

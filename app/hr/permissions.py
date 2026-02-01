@@ -72,10 +72,11 @@ PERMISSIONS = [
     # {'code': 'hr.manage_leave_balances', 'name': 'Gérer les soldes', 'category': 'Congés', 'description': 'Peut modifier les soldes de congé'},
 
     # === PAYROLL (Paie) ===
-    {'code': 'hr.view_payroll', 'name': 'Voir la paie', 'category': 'Paie', 'description': 'Peut consulter les informations de paie'},
-    {'code': 'hr.create_payroll', 'name': 'Créer des bulletins', 'category': 'Paie', 'description': 'Peut créer des bulletins de paie'},
+    {'code': 'hr.view_payroll', 'name': 'Voir la paie', 'category': 'Paie', 'description': 'Peut consulter les informations de paie de tous les employés'},
+    {'code': 'hr.create_payroll', 'name': 'Créer des bulletins', 'category': 'Paie', 'description': 'Peut créer des bulletins de paie pour les employés'},
     {'code': 'hr.update_payroll', 'name': 'Modifier la paie', 'category': 'Paie', 'description': 'Peut modifier les informations de paie'},
     {'code': 'hr.delete_payroll', 'name': 'Supprimer des bulletins', 'category': 'Paie', 'description': 'Peut supprimer des bulletins de paie'},
+    {'code': 'hr.approve_payroll', 'name': 'Approuver les avances de paies', 'category': 'Paie', 'description': 'Peut approuver les avances sur salaire et valider les paies'},
     {'code': 'hr.process_payroll', 'name': 'Traiter la paie', 'category': 'Paie', 'description': 'Peut marquer les bulletins comme payés'},
     {'code': 'hr.export_payroll', 'name': 'Exporter la paie', 'category': 'Paie', 'description': 'Peut exporter les bulletins en PDF'},
 

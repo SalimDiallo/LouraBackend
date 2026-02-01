@@ -155,8 +155,22 @@ class EmployeeUserResponseSerializer(UserResponseSerializer):
     class Meta(UserResponseSerializer.Meta):
         model = Employee
         fields = UserResponseSerializer.Meta.fields + [
-            'employee_id', 'organization', 'department', 
-            'position', 'employment_status', 'permissions'
+            'employee_id',
+            'organization',
+            'department',
+            'position',
+            'employment_status',
+            'permissions',
+            'date_of_birth',
+            'address',
+            'is_active',
+            'city',
+            'country',
+            'emergency_contact',
+            'contract',
+            'hire_date',
+            'termination_date',
+            'manager',
         ]
 
     def get_organization(self, obj):

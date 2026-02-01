@@ -822,7 +822,15 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
 
 
 class PayslipViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing payslips"""
+    """ViewSet for managing payslips
+    
+    Règles métier:
+    - Tout utilisateur peut voir ses propres fiches de paie (via history)
+    - Un utilisateur avec hr.view_payroll peut voir toutes les fiches de l'organisation
+    - Un utilisateur avec hr.process_payroll peut marquer les paies comme payées
+    - Un utilisateur NE PEUT PAS marquer ses propres paies comme payées
+    - L'endpoint 'history' retourne uniquement les fiches de l'utilisateur connecté
+    """
     permission_classes = [IsAdminUserOrEmployee, CanAccessOwnOrManage.for_resource('payroll', 'can_view_payroll')]
 
     def get_serializer_class(self):
@@ -832,15 +840,20 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        exclude_own = self.request.query_params.get('exclude_own')  # Nouveau: exclure ses propres
 
         # Base queryset selon le type d'utilisateur
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             queryset = Payslip.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_view_payroll") or user.is_hr_admin():
+            if user.has_permission("hr.view_payroll") or user.is_hr_admin():
                 queryset = Payslip.objects.filter(employee__organization=user.organization)
+                # Optionnel: exclure ses propres fiches de la liste globale
+                if exclude_own and exclude_own.lower() == 'true':
+                    queryset = queryset.exclude(employee=user)
             else:
+                # Utilisateur sans permission: uniquement ses propres fiches
                 queryset = Payslip.objects.filter(employee=user)
         else:
             queryset = Payslip.objects.none()
@@ -854,17 +867,81 @@ class PayslipViewSet(viewsets.ModelViewSet):
         if status_filter:
             queryset = queryset.filter(status=status_filter)
 
-        return queryset
+        return queryset.select_related('employee', 'payroll_period')
 
-    @action(detail=True, methods=['post'], permission_classes=[IsHRAdmin])
+    @action(detail=False, methods=['get'], url_path='history')
+    def history(self, request):
+        """Endpoint pour voir l'historique de ses propres fiches de paie.
+        
+        Retourne uniquement les fiches de l'utilisateur connecté.
+        Supporte la pagination et le filtrage par statut.
+        """
+        user = request.user
+        
+        if getattr(user, 'user_type', None) == 'employee':
+            queryset = Payslip.objects.filter(employee=user)
+        elif getattr(user, 'user_type', None) == 'admin':
+            # Admin n'a pas de fiches personnelles
+            return Response({
+                "count": 0,
+                "next": None,
+                "previous": None,
+                "results": [],
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({'detail': 'Utilisateur non autorisé'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Filtrage optionnel par statut
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        queryset = queryset.order_by('-created_at').select_related('payroll_period')
+        
+        # Pagination
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = PayslipSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = PayslipSerializer(queryset, many=True)
+        return Response({
+            "count": queryset.count(),
+            "next": None,
+            "previous": None,
+            "results": serializer.data,
+        })
+
+    @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
     def mark_as_paid(self, request, pk=None):
+        """Marquer une fiche de paie comme payée
+        
+        Règles:
+        - Requiert la permission hr.process_payroll ou être admin
+        - Un utilisateur NE PEUT PAS marquer sa propre paie comme payée
+        """
         payslip = self.get_object()
+        user = request.user
+        
+        # Vérifier que l'utilisateur ne tente pas de marquer sa propre paie
+        if getattr(user, 'user_type', None) == 'employee':
+            if payslip.employee == user:
+                return Response(
+                    {'error': 'Vous ne pouvez pas marquer votre propre paie comme payée'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            if not (user.has_permission("hr.process_payroll") or user.is_hr_admin()):
+                return Response(
+                    {'error': 'Vous n\'avez pas la permission de traiter les paies'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+        
         payslip.status = 'paid'
         payslip.payment_date = timezone.now().date()
         payslip.payment_reference = request.data.get('payment_reference', '')
         payslip.save()
 
-        return Response({'message': 'Marque comme paye'}, status=status.HTTP_200_OK)
+        return Response({'message': 'Fiche marquée comme payée'}, status=status.HTTP_200_OK)
 
     @action(detail=True, methods=['get'], permission_classes=[IsAdminUserOrEmployee])
     def export_pdf(self, request, pk=None):
@@ -1365,7 +1442,16 @@ class DepartmentStatsView(APIView):
         return Response(stats, status=status.HTTP_200_OK)
 
 class PayrollAdvanceViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing payroll advance requests"""
+    """ViewSet for managing payroll advance requests
+    
+    Règles métier:
+    - Tout utilisateur peut créer une demande d'avance pour lui-même
+    - Un utilisateur avec hr.view_payroll peut voir toutes les avances de l'organisation
+    - Un utilisateur avec hr.approve_payroll peut approuver/rejeter les avances
+    - Un utilisateur NE PEUT PAS approuver/rejeter ses propres avances
+    - Tout utilisateur peut voir/modifier/supprimer ses propres demandes (si pending)
+    - L'endpoint 'history' retourne uniquement les avances de l'utilisateur connecté
+    """
     permission_classes = [IsAdminUserOrEmployee]
 
     def get_serializer_class(self):
@@ -1382,6 +1468,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         org_subdomain = self.request.query_params.get('organization_subdomain')
         status_filter = self.request.query_params.get('status')
         employee_filter = self.request.query_params.get('employee')
+        exclude_own = self.request.query_params.get('exclude_own')  # Nouveau: exclure ses propres
 
         queryset = PayrollAdvance.objects.all()
 
@@ -1399,10 +1486,14 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                 org_ids = user.organizations.values_list('id', flat=True)
                 queryset = queryset.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            # Les employés ne voient que leurs propres demandes ou celles qu'ils peuvent gérer
-            if user.has_permission("can_view_payroll") or user.is_hr_admin():
+            # Utilisateur avec permission view_payroll voit toutes les avances de l'organisation
+            if user.has_permission("hr.view_payroll") or user.is_hr_admin():
                 queryset = queryset.filter(employee__organization=user.organization)
+                # Optionnel: exclure ses propres demandes de la liste globale
+                if exclude_own and exclude_own.lower() == 'true':
+                    queryset = queryset.exclude(employee=user)
             else:
+                # Utilisateur sans permission: uniquement ses propres demandes
                 queryset = queryset.filter(employee=user)
         else:
             queryset = PayrollAdvance.objects.none()
@@ -1417,15 +1508,165 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         return queryset.select_related('employee', 'approved_by', 'payslip')
 
+    def perform_create(self, serializer):
+        """Crée une demande d'avance.
+        
+        Règles:
+        - Par défaut, crée une demande pour l'utilisateur connecté (s'il est un employé)
+        - Un admin ou utilisateur avec permission peut créer une demande pour n'importe quel employé
+        """
+        user = self.request.user
+        employee_id = self.request.data.get('employee')
+        
+        if getattr(user, 'user_type', None) == 'employee':
+            if employee_id and str(employee_id) != str(user.id):
+                # L'employé veut créer une demande pour quelqu'un d'autre
+                if not (user.has_permission("hr.create_payroll") or user.is_hr_admin()):
+                    raise serializers.ValidationError({
+                        'employee': 'Vous ne pouvez créer des demandes que pour vous-même'
+                    })
+                # Vérifier que l'employé cible est dans la même organisation
+                try:
+                    target_employee = Employee.objects.get(id=employee_id, organization=user.organization)
+                    serializer.save(employee=target_employee)
+                except Employee.DoesNotExist:
+                    raise serializers.ValidationError({
+                        'employee': 'Employé introuvable dans votre organisation'
+                    })
+            else:
+                # Demande pour soi-même
+                serializer.save(employee=user)
+        elif getattr(user, 'user_type', None) == 'admin':
+            if not employee_id:
+                raise serializers.ValidationError({
+                    'employee': 'L\'employé est requis pour créer une demande d\'avance'
+                })
+            try:
+                org_ids = user.organizations.values_list('id', flat=True)
+                target_employee = Employee.objects.get(id=employee_id, organization_id__in=org_ids)
+                serializer.save(employee=target_employee)
+            except Employee.DoesNotExist:
+                raise serializers.ValidationError({
+                    'employee': 'Employé introuvable'
+                })
+        else:
+            raise serializers.ValidationError({
+                'user': 'Type d\'utilisateur non autorisé'
+            })
+
+    def perform_update(self, serializer):
+        """Met à jour une demande d'avance.
+        
+        Règles:
+        - Un utilisateur peut modifier sa propre demande uniquement si elle est en statut 'pending'
+        - Un utilisateur avec permission peut modifier n'importe quelle demande
+        """
+        user = self.request.user
+        instance = self.get_object()
+        
+        if getattr(user, 'user_type', None) == 'employee':
+            if instance.employee == user:
+                # C'est sa propre demande
+                if instance.status != 'pending':
+                    raise serializers.ValidationError({
+                        'detail': 'Vous ne pouvez modifier que vos demandes en attente'
+                    })
+            elif not (user.has_permission("hr.update_payroll") or user.is_hr_admin()):
+                raise serializers.ValidationError({
+                    'detail': 'Vous n\'avez pas la permission de modifier cette demande'
+                })
+        
+        serializer.save()
+
+    def perform_destroy(self, instance):
+        """Supprime une demande d'avance.
+        
+        Règles:
+        - Un utilisateur peut supprimer sa propre demande uniquement si elle est en statut 'pending'
+        - Un utilisateur avec permission peut supprimer n'importe quelle demande pending ou rejected
+        """
+        user = self.request.user
+        
+        if getattr(user, 'user_type', None) == 'employee':
+            if instance.employee == user:
+                # C'est sa propre demande
+                if instance.status != 'pending':
+                    raise serializers.ValidationError({
+                        'detail': 'Vous ne pouvez supprimer que vos demandes en attente'
+                    })
+            elif not (user.has_permission("hr.delete_payroll") or user.is_hr_admin()):
+                raise serializers.ValidationError({
+                    'detail': 'Vous n\'avez pas la permission de supprimer cette demande'
+                })
+            elif instance.status in ['approved', 'deducted']:
+                raise serializers.ValidationError({
+                    'detail': 'Impossible de supprimer une avance approuvée ou déduite'
+                })
+        
+        instance.delete()
+
+    @action(detail=False, methods=['get'], url_path='history')
+    def history(self, request):
+        """Endpoint pour voir l'historique de ses propres demandes d'avance.
+        
+        Retourne uniquement les avances de l'utilisateur connecté.
+        Supporte la pagination et le filtrage par statut.
+        """
+        user = request.user
+        
+        if getattr(user, 'user_type', None) == 'employee':
+            queryset = PayrollAdvance.objects.filter(employee=user)
+        elif getattr(user, 'user_type', None) == 'admin':
+            # Admin n'a pas d'avances personnelles
+            return Response({
+                "count": 0,
+                "next": None,
+                "previous": None,
+                "results": [],
+            }, status=status.HTTP_200_OK)
+        else:
+            return Response({'detail': 'Utilisateur non autorisé'}, status=status.HTTP_403_FORBIDDEN)
+        
+        # Filtrage optionnel par statut
+        status_filter = request.query_params.get('status')
+        if status_filter:
+            queryset = queryset.filter(status=status_filter)
+        
+        queryset = queryset.order_by('-request_date', '-created_at')
+        
+        # Pagination
+        page = self.paginate_queryset(queryset)
+        if page is not None:
+            serializer = PayrollAdvanceListSerializer(page, many=True)
+            return self.get_paginated_response(serializer.data)
+        
+        serializer = PayrollAdvanceListSerializer(queryset, many=True)
+        return Response({
+            "count": queryset.count(),
+            "next": None,
+            "previous": None,
+            "results": serializer.data,
+        })
+
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
     def approve(self, request, pk=None):
-        """Approuver une demande d'avance"""
+        """Approuver une demande d'avance
+        
+        Règles:
+        - Requiert la permission hr.approve_payroll ou être admin
+        - Un utilisateur NE PEUT PAS approuver sa propre demande
+        """
         advance = self.get_object()
         user = request.user
 
-        # Vérifier que l'utilisateur a la permission d'approuver
+        # Vérifier que l'utilisateur ne tente pas d'approuver sa propre demande
         if getattr(user, 'user_type', None) == 'employee':
-            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+            if advance.employee == user:
+                return Response(
+                    {'error': 'Vous ne pouvez pas approuver votre propre demande d\'avance'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            if not (user.has_permission("hr.approve_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission d\'approuver des demandes d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1443,7 +1684,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
         advance.status = 'approved'
-        advance.approved_by = user if getattr(user, 'user_type', None) == 'employee' else None
+        advance.approved_by = user
         advance.approved_date = timezone.now()
         advance.payment_date = data.get('payment_date')
         advance.deduction_month = data.get('deduction_month')
@@ -1458,13 +1699,23 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['post'], permission_classes=[IsAdminUserOrEmployee])
     def reject(self, request, pk=None):
-        """Rejeter une demande d'avance"""
+        """Rejeter une demande d'avance
+        
+        Règles:
+        - Requiert la permission hr.approve_payroll ou être admin
+        - Un utilisateur NE PEUT PAS rejeter sa propre demande
+        """
         advance = self.get_object()
         user = request.user
 
-        # Vérifier que l'utilisateur a la permission de rejeter
+        # Vérifier que l'utilisateur ne tente pas de rejeter sa propre demande
         if getattr(user, 'user_type', None) == 'employee':
-            if not (user.has_permission("can_manage_payroll") or user.is_hr_admin()):
+            if advance.employee == user:
+                return Response(
+                    {'error': 'Vous ne pouvez pas rejeter votre propre demande d\'avance'},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+            if not (user.has_permission("hr.approve_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de rejeter des demandes d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1482,7 +1733,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
 
         data = serializer.validated_data
         advance.status = 'rejected'
-        advance.approved_by = user if getattr(user, 'user_type', None) == 'employee' else None
+        advance.approved_by = user
         advance.approved_date = timezone.now()
         advance.rejection_reason = data.get('rejection_reason', '')
         advance.save()
@@ -1647,8 +1898,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     """ViewSet for managing attendance records"""
     permission_classes = [IsAdminUserOrEmployee]
     serializer_class = AttendanceSerializer
-    filterset_fields = ['employee', 'date', 'status', 'is_approved']
-    search_fields = ['employee__first_name', 'employee__last_name', 'employee__employee_id']
+    filterset_fields = ['user', 'date', 'status', 'is_approved']
+    search_fields = ['user__first_name', 'user__last_name', 'user__email']
     ordering_fields = ['date', 'check_in', 'check_out', 'total_hours']
     ordering = ['-date']
 
@@ -1673,16 +1924,14 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission('can_view_all_attendance'):
                 pass
-            elif user.has_permission('can_view_attendance'):
-                queryset = queryset.filter(user_email=user.email)
             else:
-                queryset = Attendance.objects.none()
+                queryset = queryset.filter(user_email=user.email)
         else:
             queryset = Attendance.objects.none()
 
         employee_id = self.request.query_params.get('employee_id', None)
         if employee_id:
-            queryset = queryset.filter(employee_id=employee_id)
+            queryset = queryset.filter(user_id=employee_id)
         start_date = self.request.query_params.get('start_date', None)
         if start_date:
             queryset = queryset.filter(date__gte=start_date)
@@ -2170,7 +2419,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         start_date = request.query_params.get('start_date', None)
         end_date = request.query_params.get('end_date', None)
 
-        queryset = Attendance.objects.filter(employee=employee)
+        queryset = Attendance.objects.filter(user=employee)
         if start_date:
             queryset = queryset.filter(date__gte=start_date)
         if end_date:
@@ -2327,7 +2576,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 'action': getattr(attendance, '_qr_action', 'check_in'),
                 'message': getattr(attendance, '_qr_message', 'Pointage enregistré avec succès'),
                 'attendance': attendance_data,
-                'employee_name': attendance.user_full_name or (attendance.employee.get_full_name() if attendance.employee else ''),
+                'employee_name': attendance.user_full_name or (attendance.user.get_full_name() if attendance.user else ''),
             }
             
             return Response(response_data, status=status.HTTP_200_OK)
