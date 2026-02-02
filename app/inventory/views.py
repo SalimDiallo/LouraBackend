@@ -36,11 +36,11 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 # Models
+from .permissions import CategoryPermission, OrderPermission, SupplierPermission
 from core.models import Organization
 from .models import (
-    # Inventory models
     Category, Warehouse, Supplier, Product, Stock,
-    Movement, Order, OrderItem, StockCount, StockCountItem, Alert,
+    Movement, Order, StockCount, StockCountItem, Alert,
     # Sales models
     Customer, Sale, SaleItem, Payment,
     ExpenseCategory, Expense,
@@ -91,13 +91,14 @@ from .factories import DocumentNumberFactory
 # CATEGORY VIEWSET
 # ===============================
 
+
 class CategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing product categories
     """
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CategoryPermission]
 
     def get_queryset(self):
         """
@@ -141,13 +142,15 @@ class CategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # WAREHOUSE VIEWSET
 # ===============================
 
+from .permissions import WarehousePermission
+
 class WarehouseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing warehouses
     """
     queryset = Warehouse.objects.all()
     serializer_class = WarehouseSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, WarehousePermission]
 
     def get_queryset(self):
         """
@@ -162,7 +165,7 @@ class WarehouseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
         return WarehouseRepository.get_filtered(organization, filters)
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def inventory(self, request, organization_slug=None, pk=None):
         """Get current inventory for a warehouse"""
         warehouse = self.get_object()
@@ -174,7 +177,7 @@ class WarehouseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         serializer = StockSerializer(stocks, many=True)
         return Response(serializer.data)
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def stats(self, request, organization_slug=None, pk=None):
         """Get statistics for a warehouse"""
         warehouse = self.get_object()
@@ -204,7 +207,7 @@ class SupplierViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,SupplierPermission]
 
     def get_queryset(self):
         """
@@ -219,7 +222,7 @@ class SupplierViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
         return SupplierRepository.get_filtered(organization, filters)
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def orders(self, request, organization_slug=None, pk=None):
         """Get all orders for a supplier"""
         supplier = self.get_object()
@@ -496,7 +499,7 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     ViewSet for managing purchase orders
     """
     queryset = Order.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,OrderPermission]
 
     def get_serializer_class(self):
         if self.action == 'list':
