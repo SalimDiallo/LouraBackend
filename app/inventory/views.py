@@ -574,6 +574,22 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         order.status = 'confirmed'
         order.save()
 
+        # --- Notification : commande confirmée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=order.organization,
+                recipient=request.user,
+                title="Commande confirmée",
+                message=f"La commande {order.order_number} a été confirmée.",
+                notification_type='system',
+                priority='medium',
+                entity_type='order',
+                entity_id=str(order.id),
+            )
+        except Exception:
+            pass
+
         serializer = self.get_serializer(order)
         return Response(serializer.data)
 
@@ -618,6 +634,22 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             item.received_quantity = item.quantity
             item.save()
 
+        # --- Notification : commande reçue ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=order.organization,
+                recipient=request.user,
+                title="Commande reçue",
+                message=f"La commande {order.order_number} a été reçue et le stock mis à jour.",
+                notification_type='system',
+                priority='medium',
+                entity_type='order',
+                entity_id=str(order.id),
+            )
+        except Exception:
+            pass
+
         serializer = self.get_serializer(order)
         return Response(serializer.data)
 
@@ -634,6 +666,22 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
         order.status = 'cancelled'
         order.save()
+
+        # --- Notification : commande annulée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=order.organization,
+                recipient=request.user,
+                title="Commande annulée",
+                message=f"La commande {order.order_number} a été annulée.",
+                notification_type='alert',
+                priority='high',
+                entity_type='order',
+                entity_id=str(order.id),
+            )
+        except Exception:
+            pass
 
         serializer = self.get_serializer(order)
         return Response(serializer.data)
@@ -1982,6 +2030,23 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                     notes=f"Paiement initial - Vente {sale.sale_number}"
                 )
 
+            # --- Notification : nouvelle vente enregistrée ---
+            try:
+                from notifications.notification_helpers import send_notification
+                customer_label = sale.customer.name if sale.customer else "Anonyme"
+                send_notification(
+                    organization=organization,
+                    recipient=self.request.user,
+                    title="Nouvelle vente",
+                    message=f"Vente {sale.sale_number} enregistrée pour {customer_label} — {sale.total_amount} FCFA.",
+                    notification_type='system',
+                    priority='low',
+                    entity_type='sale',
+                    entity_id=str(sale.id),
+                )
+            except Exception:
+                pass
+
     @action(detail=True, methods=['post'])
     def add_payment(self, request, organization_slug=None, pk=None):
         """Add a payment to a sale"""
@@ -2090,7 +2155,23 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         if hasattr(sale, 'credit_info'):
             sale.credit_info.status = 'cancelled'
             sale.credit_info.save()
-        
+
+        # --- Notification : vente annulée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=sale.organization,
+                recipient=request.user,
+                title="Vente annulée",
+                message=f"La vente {sale.sale_number} a été annulée. Le stock a été restauré.",
+                notification_type='alert',
+                priority='high',
+                entity_type='sale',
+                entity_id=str(sale.id),
+            )
+        except Exception:
+            pass
+
         return Response(SaleSerializer(sale).data)
 
 
@@ -2443,7 +2524,23 @@ class PurchaseOrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         
         order.status = 'approved'
         order.save()
-        
+
+        # --- Notification : bon de commande approuvé ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=order.organization,
+                recipient=request.user,
+                title="Bon de commande approuvé",
+                message=f"Le bon {order.order_number} a été approuvé.",
+                notification_type='system',
+                priority='medium',
+                entity_type='purchase_order',
+                entity_id=str(order.id),
+            )
+        except Exception:
+            pass
+
         return Response(PurchaseOrderSerializer(order).data)
 
     @action(detail=True, methods=['post'])
@@ -2459,7 +2556,24 @@ class PurchaseOrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         
         order.status = 'sent'
         order.save()
-        
+
+        # --- Notification : bon envoyé au fournisseur ---
+        try:
+            from notifications.notification_helpers import send_notification
+            supplier_label = order.supplier.name if order.supplier else "Fournisseur"
+            send_notification(
+                organization=order.organization,
+                recipient=request.user,
+                title="Bon envoyé",
+                message=f"Le bon {order.order_number} a été envoyé à {supplier_label}.",
+                notification_type='system',
+                priority='low',
+                entity_type='purchase_order',
+                entity_id=str(order.id),
+            )
+        except Exception:
+            pass
+
         return Response(PurchaseOrderSerializer(order).data)
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
@@ -2539,7 +2653,23 @@ class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             item.save()
         
         note.save()
-        
+
+        # --- Notification : livraison effectuée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=note.organization,
+                recipient=request.user,
+                title="Livraison effectuée",
+                message=f"Le bon de livraison {note.delivery_number} est marqué comme livré.",
+                notification_type='system',
+                priority='medium',
+                entity_type='delivery_note',
+                entity_id=str(note.id),
+            )
+        except Exception:
+            pass
+
         return Response(DeliveryNoteSerializer(note).data)
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
@@ -2710,6 +2840,24 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             credit_sale.sync_from_sale()
             credit_sale.update_status()
             credit_sale.save()
+
+        # --- Notification : paiement créance reçu ---
+        try:
+            from notifications.notification_helpers import send_notification
+            customer_label = credit_sale.customer.name if credit_sale.customer else "Client"
+            status_label = "soldée" if credit_sale.status == 'paid' else f"solde restant {credit_sale.remaining_amount} FCFA"
+            send_notification(
+                organization=credit_sale.organization,
+                recipient=request.user,
+                title="Paiement créance reçu",
+                message=f"Paiement de {amount} FCFA reçu de {customer_label} — {status_label}.",
+                notification_type='system',
+                priority='medium',
+                entity_type='credit_sale',
+                entity_id=str(credit_sale.id),
+            )
+        except Exception:
+            pass
 
         return Response({
             'credit_sale': CreditSaleSerializer(credit_sale).data

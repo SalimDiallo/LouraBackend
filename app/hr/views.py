@@ -368,7 +368,27 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         
         # La méthode activate() du modèle gère la désactivation des autres contrats
         contract.activate()
-        
+
+        # --- Notification vers l'employé : nouveau contrat actif ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=contract.employee.organization,
+                recipient=contract.employee,
+                sender=request.user,
+                title="Nouveau contrat actif",
+                message=(
+                    f"Votre contrat a été activé. "
+                    f"Les autres contrats précédents ont été désactivés automatiquement."
+                ),
+                notification_type='user',
+                priority='medium',
+                entity_type='contract',
+                entity_id=str(contract.id),
+            )
+        except Exception:
+            pass
+
         serializer = self.get_serializer(contract)
         return Response({
             'message': f'Contrat activé avec succès. Les autres contrats de {contract.employee.get_full_name()} ont été désactivés.',
@@ -654,6 +674,26 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             balance.pending_days -= leave_request.total_days
             balance.save()
 
+            # --- Notification vers l'employé : congé approuvé ---
+            try:
+                from notifications.notification_helpers import send_notification
+                send_notification(
+                    organization=leave_request.employee.organization,
+                    recipient=leave_request.employee,
+                    sender=request.user,
+                    title="Congé approuvé",
+                    message=(
+                        f"Votre demande de congé du {leave_request.start_date} "
+                        f"au {leave_request.end_date} a été approuvée."
+                    ),
+                    notification_type='user',
+                    priority='medium',
+                    entity_type='leave_request',
+                    entity_id=str(leave_request.id),
+                )
+            except Exception:
+                pass
+
             return Response({'message': 'Demande approuvée'}, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
@@ -679,6 +719,27 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
             if balance:
                 balance.pending_days -= leave_request.total_days
                 balance.save()
+
+            # --- Notification vers l'employé : congé rejeté ---
+            try:
+                from notifications.notification_helpers import send_notification
+                notes = leave_request.approval_notes or "Aucun commentaire."
+                send_notification(
+                    organization=leave_request.employee.organization,
+                    recipient=leave_request.employee,
+                    sender=request.user,
+                    title="Congé rejeté",
+                    message=(
+                        f"Votre demande de congé du {leave_request.start_date} "
+                        f"au {leave_request.end_date} a été rejetée. Motif : {notes}"
+                    ),
+                    notification_type='user',
+                    priority='high',
+                    entity_type='leave_request',
+                    entity_id=str(leave_request.id),
+                )
+            except Exception:
+                pass
 
             return Response({'message': 'Demande rejetée'}, status=status.HTTP_200_OK)
 
@@ -940,6 +1001,26 @@ class PayslipViewSet(viewsets.ModelViewSet):
         payslip.payment_date = timezone.now().date()
         payslip.payment_reference = request.data.get('payment_reference', '')
         payslip.save()
+
+        # --- Notification vers l'employé : paie payée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=payslip.employee.organization,
+                recipient=payslip.employee,
+                sender=request.user,
+                title="Fiche de paie payée",
+                message=(
+                    f"Votre fiche de paie pour la période "
+                    f"{payslip.payroll_period.name} a été marquée comme payée."
+                ),
+                notification_type='user',
+                priority='medium',
+                entity_type='payslip',
+                entity_id=str(payslip.id),
+            )
+        except Exception:
+            pass
 
         return Response({'message': 'Fiche marquée comme payée'}, status=status.HTTP_200_OK)
 
@@ -1692,6 +1773,23 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
             advance.notes = data['notes']
         advance.save()
 
+        # --- Notification vers l'employé : avance approuvée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            send_notification(
+                organization=advance.employee.organization,
+                recipient=advance.employee,
+                sender=user,
+                title="Avance sur paie approuvée",
+                message=f"Votre demande d'avance de {advance.amount} FCFA a été approuvée.",
+                notification_type='user',
+                priority='medium',
+                entity_type='payroll_advance',
+                entity_id=str(advance.id),
+            )
+        except Exception:
+            pass
+
         return Response(
             PayrollAdvanceSerializer(advance).data,
             status=status.HTTP_200_OK
@@ -1737,6 +1835,24 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         advance.approved_date = timezone.now()
         advance.rejection_reason = data.get('rejection_reason', '')
         advance.save()
+
+        # --- Notification vers l'employé : avance rejetée ---
+        try:
+            from notifications.notification_helpers import send_notification
+            reason = advance.rejection_reason or "Aucun motif précisé."
+            send_notification(
+                organization=advance.employee.organization,
+                recipient=advance.employee,
+                sender=user,
+                title="Avance sur paie rejetée",
+                message=f"Votre demande d'avance de {advance.amount} FCFA a été rejetée. Motif : {reason}",
+                notification_type='user',
+                priority='high',
+                entity_type='payroll_advance',
+                entity_id=str(advance.id),
+            )
+        except Exception:
+            pass
 
         return Response(
             PayrollAdvanceSerializer(advance).data,

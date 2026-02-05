@@ -25,6 +25,7 @@ urlpatterns = [
     path('api/hr/', include('hr.urls')),
     path('api/inventory/', include('inventory.urls')),
     path('api/ai/', include('ai.urls')),  # AI Assistant
+    path('api/notifications/', include('notifications.urls')),  # Notifications
     path('admin/', admin.site.urls),
 ]
 

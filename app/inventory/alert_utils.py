@@ -65,6 +65,21 @@ def check_and_update_stock_alert(product, warehouse=None):
             severity=severity,
             message=message
         )
+
+        # --- Notification interne vers les admins de l'organisation ----
+        try:
+            from notifications.notification_helpers import send_alert_notification
+            send_alert_notification(
+                organization=product.organization,
+                product=product,
+                alert_type=alert_type,
+                severity=severity,
+                message=message,
+                warehouse=warehouse,
+            )
+        except Exception:
+            pass  # La notification ne doit jamais bloquer la logique métier
+
         return {'action': 'created', 'alert': alert}
     
     # Cas 3: Mise à jour du type d'alerte si le stock a encore baissé

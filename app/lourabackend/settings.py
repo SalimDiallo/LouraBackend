@@ -58,6 +58,7 @@ INSTALLED_APPS = [
     'inventory',  # Inventory management
     'authentication',  # Centralized authentication
     'ai',  # AI Assistant module
+    'notifications',  # Notifications interne
 ]
 
 MIDDLEWARE = [
