@@ -28,7 +28,6 @@ class PermissionSerializer(serializers.ModelSerializer):
         """Convert UUID to string"""
         return str(obj.id) if obj.id else None
 
-
 class RoleSerializer(serializers.ModelSerializer):
     """Serializer for Role model"""
 
@@ -64,12 +63,22 @@ class RoleSerializer(serializers.ModelSerializer):
     def get_permission_count(self, obj):
         return obj.permissions.count()
 
+    def _resolve_permission_dependencies(self, permission_codes):
+        """
+        Résout les dépendances de permissions en ajoutant automatiquement
+        les permissions requises.
+        """
+        from core.permission_dependencies import get_all_required_permissions
+        return get_all_required_permissions(permission_codes)
+
     def create(self, validated_data):
         permission_codes = validated_data.pop('permission_codes', [])
         role = Role.objects.create(**validated_data)
 
         if permission_codes:
-            permissions = Permission.objects.filter(code__in=permission_codes)
+            # Auto-ajouter les dépendances manquantes
+            complete_codes = self._resolve_permission_dependencies(permission_codes)
+            permissions = Permission.objects.filter(code__in=complete_codes)
             role.permissions.set(permissions)
 
         return role
@@ -84,7 +93,9 @@ class RoleSerializer(serializers.ModelSerializer):
 
         # Update permissions if provided
         if permission_codes is not None:
-            permissions = Permission.objects.filter(code__in=permission_codes)
+            # Auto-ajouter les dépendances manquantes
+            complete_codes = self._resolve_permission_dependencies(permission_codes)
+            permissions = Permission.objects.filter(code__in=complete_codes)
             instance.permissions.set(permissions)
 
         return instance
@@ -253,6 +264,14 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
             })
         return attrs
 
+    def _resolve_permission_dependencies(self, permission_codes):
+        """
+        Résout les dépendances de permissions en ajoutant automatiquement
+        les permissions requises.
+        """
+        from core.permission_dependencies import get_all_required_permissions
+        return get_all_required_permissions(permission_codes)
+
     def create(self, validated_data):
         validated_data.pop('password_confirm')
         password = validated_data.pop('password')
@@ -264,9 +283,10 @@ class EmployeeCreateSerializer(serializers.ModelSerializer):
             **validated_data
         )
 
-        # Add custom permissions if provided
+        # Add custom permissions if provided (with dependencies resolved)
         if custom_permission_codes:
-            permissions = Permission.objects.filter(code__in=custom_permission_codes)
+            complete_codes = self._resolve_permission_dependencies(custom_permission_codes)
+            permissions = Permission.objects.filter(code__in=complete_codes)
             employee.custom_permissions.set(permissions)
 
         return employee
@@ -363,6 +383,14 @@ class EmployeeUpdateSerializer(serializers.ModelSerializer):
             'language', 'timezone', 'is_active', 'custom_permission_codes'
         ]
 
+    def _resolve_permission_dependencies(self, permission_codes):
+        """
+        Résout les dépendances de permissions en ajoutant automatiquement
+        les permissions requises.
+        """
+        from core.permission_dependencies import get_all_required_permissions
+        return get_all_required_permissions(permission_codes)
+
     def update(self, instance, validated_data):
         custom_permission_codes = validated_data.pop('custom_permission_codes', None)
 
@@ -371,9 +399,10 @@ class EmployeeUpdateSerializer(serializers.ModelSerializer):
             setattr(instance, attr, value)
         instance.save()
 
-        # Update custom permissions if provided
+        # Update custom permissions if provided (with dependencies resolved)
         if custom_permission_codes is not None:
-            permissions = Permission.objects.filter(code__in=custom_permission_codes)
+            complete_codes = self._resolve_permission_dependencies(custom_permission_codes)
+            permissions = Permission.objects.filter(code__in=complete_codes)
             instance.custom_permissions.set(permissions)
 
         return instance

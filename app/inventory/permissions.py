@@ -52,16 +52,16 @@ PERMISSIONS = [
     {'code': 'inventory.update_products', 'name': 'Modifier des produits', 'category': 'Produits', 'description': 'Peut modifier des produits'},
     {'code': 'inventory.delete_products', 'name': 'Supprimer des produits', 'category': 'Produits', 'description': 'Peut supprimer des produits'},
 
-    # === STOCK ===
+    # === MOVEMENTS & STOCK ===
     {'code': 'inventory.view_stock', 'name': 'Voir les stocks', 'category': 'Stocks', 'description': 'Peut consulter les niveaux de stock'},
     {'code': 'inventory.manage_stock', 'name': 'Gérer les stocks', 'category': 'Stocks', 'description': 'Peut gérer les entrées/sorties de stock'},
-    {'code': 'inventory.adjust_stock', 'name': 'Ajuster les stocks', 'category': 'Stocks', 'description': 'Peut ajuster les quantités de stock'},
+    # {'code': 'inventory.delete_stocks', 'name': 'Supprimer Stocks', 'category': 'Stocks', 'description': 'Peut supprimer les quantités'},
 
-    # === MOVEMENTS ===
-    {'code': 'inventory.view_movements', 'name': 'Voir les mouvements', 'category': 'Mouvements', 'description': 'Peut consulter les mouvements de stock'},
-    {'code': 'inventory.create_movements', 'name': 'Créer des mouvements', 'category': 'Mouvements', 'description': 'Peut créer des mouvements'},
-    {'code': 'inventory.update_movements', 'name': 'Modifier des mouvements', 'category': 'Mouvements', 'description': 'Peut modifier des mouvements'},
-    {'code': 'inventory.delete_movements', 'name': 'Annuler des mouvements', 'category': 'Mouvements', 'description': 'Peut annuler des mouvements'},
+    # === MOVEMENTS STOCKS===
+    # {'code': 'inventory.view_movements', 'name': 'Voir les mouvements', 'category': 'Mouvements', 'description': 'Peut consulter les mouvements de stock'},
+    # {'code': 'inventory.create_movements', 'name': 'Créer des mouvements', 'category': 'Mouvements', 'description': 'Peut créer des mouvements'},
+    # {'code': 'inventory.update_movements', 'name': 'Modifier des mouvements', 'category': 'Mouvements', 'description': 'Peut modifier des mouvements'},
+    # {'code': 'inventory.delete_movements', 'name': 'Annuler des mouvements', 'category': 'Mouvements', 'description': 'Peut annuler des mouvements'},
 
     # === ORDERS ===
     {'code': 'inventory.view_orders', 'name': 'Voir les commandes', 'category': 'Commandes', 'description': 'Peut consulter les commandes fournisseurs'},
@@ -70,7 +70,7 @@ PERMISSIONS = [
     {'code': 'inventory.delete_orders', 'name': 'Annuler des commandes', 'category': 'Commandes', 'description': 'Peut annuler des commandes'},
     {'code': 'inventory.receive_orders', 'name': 'Réceptionner des commandes', 'category': 'Commandes', 'description': 'Peut réceptionner des commandes'},
 
-    # === STOCK COUNTS ===
+    # === STOCK COUNTS (INVENTAIRE) ===
     {'code': 'inventory.view_stock_counts', 'name': 'Voir les inventaires', 'category': 'Inventaires', 'description': 'Peut consulter les inventaires physiques'},
     {'code': 'inventory.create_stock_counts', 'name': 'Créer des inventaires', 'category': 'Inventaires', 'description': 'Peut créer des sessions d\'inventaire'},
     {'code': 'inventory.validate_stock_counts', 'name': 'Valider des inventaires', 'category': 'Inventaires', 'description': 'Peut valider et appliquer les écarts d\'inventaire'},

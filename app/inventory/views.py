@@ -36,7 +36,7 @@ from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
 # Models
-from .permissions import CategoryPermission, OrderPermission, SupplierPermission
+from .permissions import CategoryPermission, OrderPermission, ProductPermission, SupplierPermission
 from core.models import Organization
 from .models import (
     Category, Warehouse, Supplier, Product, Stock,
@@ -44,9 +44,9 @@ from .models import (
     # Sales models
     Customer, Sale, SaleItem, Payment,
     ExpenseCategory, Expense,
-    ProformaInvoice, ProformaItem,
-    PurchaseOrder, PurchaseOrderItem,
-    DeliveryNote, DeliveryNoteItem,
+    ProformaInvoice,
+    PurchaseOrder,
+    DeliveryNote,
     CreditSale
 )
 
@@ -240,7 +240,7 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     ViewSet for managing products
     """
     queryset = Product.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, ProductPermission]
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -267,10 +267,10 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             return queryset.annotate(
                 total_stock=Sum('stocks__quantity')
             ).filter(total_stock__lte=F('min_stock_level'))
-
+        
         return ProductRepository.get_filtered(organization, filters)
 
-    @action(detail=True, methods=['get'])
+    @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def stock_by_warehouse(self, request, organization_slug=None, pk=None):
         """Get stock levels by warehouse for a product"""
         product = self.get_object()
@@ -381,9 +381,11 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     queryset = Movement.objects.all()
     permission_classes = [IsAuthenticated]
-
+    
+    
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
+            # self.check_employee_permission(self.request, perm_view=False)
             return MovementCreateUpdateSerializer
         return MovementSerializer
 
@@ -392,6 +394,9 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         import logging
         from decimal import Decimal
         logger = logging.getLogger(__name__)
+
+        # --- Vérif droits employé (manage_stocks nécessaire) ---
+        # self.check_employee_permission(self.request, perm_view=False)
 
         # Récupérer l'organisation
         organization = self.get_organization_from_request()
@@ -419,7 +424,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 from rest_framework.exceptions import ValidationError
                 raise ValidationError({
                     'quantity': f"Stock insuffisant. Stock actuel: {float(current_quantity)}, quantité demandée: {float(quantity)}. "
-                               f"Le stock ne peut pas devenir négatif."
+                        f"Le stock ne peut pas devenir négatif."
                 })
 
         # Sauvegarder le mouvement avec l'organisation
@@ -472,13 +477,31 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         
         logger.info(f"Movement {movement.id} created, stock updated")
 
+    def perform_update(self, serializer):
+        # Pour l'update on veut la même logique de permission manage_stocks
+        # self.check_employee_permission(self.request, perm_view=False)
+        return super().perform_update(serializer)
+    
+    def perform_partial_update(self, serializer):
+        # Par sécurité (si ce hook existe), vérifier la permission manage_stocks
+        # self.check_employee_permission(self.request, perm_view=False)
+        return super().perform_partial_update(serializer)
+
+    def perform_destroy(self, instance):
+        # Pour la suppression, besoin de manage_stocks
+        self.check_employee_permission(self.request, perm_view=False)
+        return super().perform_destroy(instance)
+
     def get_queryset(self):
         """
         Get filtered queryset using MovementRepository.
 
         REFACTORED: Now uses QueryFilterExtractor and MovementRepository
         to eliminate duplicate filtering logic.
+        On vérifie view_stocks pour les employés.
         """
+        # Permission de visualisation uniquement : view_stocks
+        # self.check_employee_permission(self.request, perm_view=True)
         organization = self.get_organization_from_request()
         extractor = QueryFilterExtractor(self.request.query_params)
         filters = extractor.extract_movement_filters()
