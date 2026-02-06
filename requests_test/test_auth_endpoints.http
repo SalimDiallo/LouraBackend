@@ -3,8 +3,8 @@
 ### Variables
 @baseUrl = http://localhost:8000/api
 @contentType = application/json
-@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzY2NDAxMTMwLCJpYXQiOjE3NjY0MDAyMzAsImp0aSI6IjExNTVhOTFiMzMwNTQ2YzhhOGRjYmYwNjM2OGNkZmM4IiwidXNlcl9pZCI6IjVlOWJhYjNkLTVmNzQtNDZiOS04YzgwLWJhOTk5NGJkMDhiZCIsImVtYWlsIjoidEBnbWFpbC5jb20iLCJ1c2VyX3R5cGUiOiJlbXBsb3llZSJ9.2fR5sl99hrSMIj8a-Afl2xUmMd-Fjwh3Mt8QJWti3fk
-@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc2NzAwNTAzMCwiaWF0IjoxNzY2NDAwMjMwLCJqdGkiOiJkOTdhYzI3NWFjNTg0NWVhYWRlNDc3MmE4NTRlMmFiMyIsInVzZXJfaWQiOiI1ZTliYWIzZC01Zjc0LTQ2YjktOGM4MC1iYTk5OTRiZDA4YmQiLCJlbWFpbCI6InRAZ21haWwuY29tIiwidXNlcl90eXBlIjoiZW1wbG95ZWUifQ.V1qOBd1PDLh_C0xgknun7qB48qhBr_0LuZAmDzny8qw
+@accessToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoiYWNjZXNzIiwiZXhwIjoxNzcwMzg2MjU2LCJpYXQiOjE3NzAzODUzNTYsImp0aSI6IjRmY2ZmYzJlYmQ1YTRlNjZhYjdiODQ1YmM0MDkxNWMyIiwidXNlcl9pZCI6Ijg3ZmMyY2ZjLTczNzktNDNlZi1hMzhkLTQ1ZDUzNzMxMTk3OCIsImVtYWlsIjoiYkBnbWFpbC5jb20iLCJ1c2VyX3R5cGUiOiJlbXBsb3llZSJ9.HXYCSHfGjbhTqMH8K6eUZtl_6Tf3rgmt2eF5RSxucHs
+@refreshToken = eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9.eyJ0b2tlbl90eXBlIjoicmVmcmVzaCIsImV4cCI6MTc3MDk5MDE1NiwiaWF0IjoxNzcwMzg1MzU2LCJqdGkiOiJjZDEzNDFiMTE4ZmY0YjUwYTIxZjM5Yzg3NmE1NmFhYSIsInVzZXJfaWQiOiI4N2ZjMmNmYy03Mzc5LTQzZWYtYTM4ZC00NWQ1MzczMTE5NzgiLCJlbWFpbCI6ImJAZ21haWwuY29tIiwidXNlcl90eXBlIjoiZW1wbG95ZWUifQ.10duy_JAlva6NnIDLeuubP_NxaFahUr5YzfEl_oOIyE
 
 ### Register new user
 POST {{baseUrl}}/auth/register/
@@ -19,12 +19,12 @@ Content-Type: {{contentType}}
 }
 
 ### Login admin
-POST {{baseUrl}}/auth/admin/login/
+POST {{baseUrl}}/auth/login/
 Content-Type: {{contentType}}
 
 {
-  "email": "admin@gmail.com",
-  "password": "Admin123!"
+  "email": "b@gmail.com",
+  "password": "Brahim2025@"
 }
 
 ### Login employee

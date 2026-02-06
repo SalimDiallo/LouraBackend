@@ -83,25 +83,54 @@ def send_notification(
         )
         return None
 
-    # --- Création -------------------------------------------------------------
-    notification = Notification.objects.create(
-        organization=organization,
-        recipient=recipient,
-        sender=sender,
-        notification_type=notification_type,
-        priority=priority,
-        title=title,
-        message=message,
-        entity_type=entity_type,
-        entity_id=str(entity_id) if entity_id else '',
-        action_url=action_url,
-    )
+    # --- Dispatch via Celery (ou sync si ALWAYS_EAGER) ------------------------
+    from .tasks import create_notification_task
 
-    logger.info(
-        "Notification créée : id=%s, recipient=%s, type=%s, priority=%s",
-        notification.id, recipient.id, notification_type, priority
-    )
-    return notification
+    try:
+        create_notification_task.delay(
+            organization_id=str(organization.id),
+            recipient_id=str(recipient.id),
+            title=title,
+            message=message,
+            notification_type=notification_type,
+            priority=priority,
+            sender_id=str(sender.id) if sender else None,
+            entity_type=entity_type,
+            entity_id=str(entity_id) if entity_id else '',
+            action_url=action_url,
+        )
+        logger.info(
+            "Notification dispatchée (Celery) : recipient=%s, type=%s, priority=%s",
+            recipient.id, notification_type, priority
+        )
+    except Exception as exc:
+        # Fallback synchrone : on ne bloque jamais la logique métier
+        logger.warning("Celery dispatch échoué, création synchrone : %s", exc)
+        notification = Notification.objects.create(
+            organization=organization,
+            recipient=recipient,
+            sender=sender,
+            notification_type=notification_type,
+            priority=priority,
+            title=title,
+            message=message,
+            entity_type=entity_type,
+            entity_id=str(entity_id) if entity_id else '',
+            action_url=action_url,
+        )
+        return notification
+
+    # En mode eager la tâche s'exécute sync → on retourne l'instance créée
+    # En mode async on ne peut pas retourner l'objet, on retourne None
+    try:
+        return Notification.objects.filter(
+            organization=organization,
+            recipient=recipient,
+            title=title,
+            message=message,
+        ).order_by('-created_at').first()
+    except Exception:
+        return None
 
 
 # ---------------------------------------------------------------------------

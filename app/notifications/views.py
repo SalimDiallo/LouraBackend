@@ -19,6 +19,15 @@ Endpoints générés par le router :
     PATCH  /api/notifications/preferences/            → mettre à jour les préférences
 """
 
+import json
+import time
+import logging
+
+from django.http import StreamingHttpResponse
+from django.views.decorators.http import require_GET
+from django.views.decorators.csrf import csrf_exempt
+from django.contrib.auth.decorators import login_required
+
 from rest_framework import status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
@@ -33,6 +42,8 @@ from .serializers import (
     NotificationPreferenceUpdateSerializer,
 )
 from .notification_helpers import mark_all_as_read, get_unread_count
+
+logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
@@ -190,3 +201,181 @@ class NotificationPreferenceViewSet(OrganizationResolverMixin, viewsets.GenericV
             NotificationPreferenceSerializer(pref).data,
             status=status.HTTP_200_OK,
         )
+
+
+# ---------------------------------------------------------------------------
+# SSE — Server-Sent Events : flux de notifications en temps réel
+# ---------------------------------------------------------------------------
+
+def _authenticate_sse(request):
+    """
+    Authentifie la requête SSE via le Bearer token JWT.
+    Retourne l'utilisateur ou None.
+    """
+    from rest_framework_simplejwt.tokens import AccessToken
+    from rest_framework_simplejwt.exceptions import TokenError
+    from core.models import BaseUser
+
+    auth_header = request.META.get('HTTP_AUTHORIZATION', '')
+    if not auth_header.startswith('Bearer '):
+        # Fallback : token dans query param (utile pour EventSource qui ne supporte pas les headers)
+        token_qs = request.GET.get('token', '')
+        if not token_qs:
+            return None
+        raw_token = token_qs
+    else:
+        raw_token = auth_header.split(' ', 1)[1]
+
+    try:
+        token = AccessToken(raw_token)
+        user_id = token.get('user_id')
+        user = BaseUser.objects.get(pk=user_id)
+        return user
+    except (TokenError, BaseUser.DoesNotExist, Exception):
+        return None
+
+
+def _resolve_organization_for_sse(request, user):
+    """
+    Résout l'organisation depuis le query param `org` (subdomain ou UUID)
+    ou depuis l'utilisateur employee.
+    """
+    from core.models import Organization
+
+    user_type = getattr(user, 'user_type', None)
+
+    # Employee → organisation assignée
+    if user_type == 'employee':
+        try:
+            return user.employee.organization
+        except Exception:
+            return None
+
+    # Admin → param `org` obligatoire
+    org_param = request.GET.get('org', '')
+    if not org_param:
+        return None
+    try:
+        # Essayer comme subdomain d'abord, puis comme UUID
+        try:
+            return Organization.objects.get(subdomain=org_param)
+        except Organization.DoesNotExist:
+            return Organization.objects.get(id=org_param)
+    except Exception:
+        return None
+
+
+def _sse_event_generator(user, organization, poll_interval=3):
+    """
+    Générateur SSE.
+    - Envoie un `ping` toutes les `poll_interval` secondes pour garder la connexion.
+    - Détecte les nouvelles notifications (créées après le dernier `seen_id`) et les envoie.
+    """
+    # Dernier ID vu à l'instant de la connexion
+    last_seen = (
+        Notification.objects.filter(organization=organization, recipient=user)
+        .order_by('-created_at')
+        .values_list('id', flat=True)
+        .first()
+    )
+
+    # Envoyer l'état initial : nombre de non lues
+    unread = Notification.objects.filter(
+        organization=organization, recipient=user, is_read=False
+    ).count()
+    yield f"event: unread_count\ndata: {json.dumps({{'count': {unread}}})}  \n\n"
+
+    while True:
+        time.sleep(poll_interval)
+
+        # Ping pour garder la connexion vivante
+        yield ": ping\n\n"
+
+        # Chercher les nouvelles notifications depuis le dernier check
+        qs = Notification.objects.filter(
+            organization=organization,
+            recipient=user,
+        )
+
+        if last_seen:
+            # Récupérer les notifs créées après le dernier seen
+            # On compare via created_at du dernier seen
+            try:
+                last_notif = Notification.objects.get(id=last_seen)
+                qs = qs.filter(created_at__gt=last_notif.created_at)
+            except Notification.DoesNotExist:
+                pass
+
+        new_notifs = qs.order_by('created_at').select_related('sender')
+
+        for notif in new_notifs:
+            payload = {
+                'id': str(notif.id),
+                'title': notif.title,
+                'message': notif.message,
+                'notification_type': notif.notification_type,
+                'priority': notif.priority,
+                'is_read': notif.is_read,
+                'entity_type': notif.entity_type,
+                'entity_id': notif.entity_id,
+                'action_url': notif.action_url,
+                'created_at': notif.created_at.isoformat() if notif.created_at else None,
+                'sender': {
+                    'id': str(notif.sender.id),
+                    'email': notif.sender.email,
+                } if notif.sender else None,
+            }
+            yield f"event: notification\ndata: {json.dumps(payload)}\n\n"
+            last_seen = notif.id
+
+        # Envoyer le compteur mis à jour si des nouvelles notifs ont été trouvées
+        if new_notifs.exists():
+            unread = Notification.objects.filter(
+                organization=organization, recipient=user, is_read=False
+            ).count()
+            yield f"event: unread_count\ndata: {json.dumps({{'count': {unread}}})}  \n\n"
+
+
+@csrf_exempt
+@require_GET
+def notification_stream(request):
+    """
+    GET /api/notifications/stream/
+    Endpoint SSE pour les notifications en temps réel.
+
+    Query params :
+        - token  : JWT Bearer token (obligatoire si pas de header Authorization)
+        - org    : subdomain ou UUID de l'organisation (obligatoire pour les admins)
+
+    Protocole SSE :
+        - event: notification  → nouvelle notification (data: JSON)
+        - event: unread_count  → mise à jour du compteur (data: {"count": N})
+        - : ping               → keepalive
+    """
+    user = _authenticate_sse(request)
+    if user is None:
+        return StreamingHttpResponse(
+            iter([f"event: error\ndata: {json.dumps({{'message': 'Authentification requise'}})}\n\n"]),
+            content_type='text/event-stream',
+            status=401,
+        )
+
+    organization = _resolve_organization_for_sse(request, user)
+    if organization is None:
+        return StreamingHttpResponse(
+            iter([f"event: error\ndata: {json.dumps({{'message': 'Organisation non trouvée'}})}\n\n"]),
+            content_type='text/event-stream',
+            status=400,
+        )
+
+    logger.info("SSE stream ouvert : user=%s, org=%s", user.id, organization.id)
+
+    response = StreamingHttpResponse(
+        _sse_event_generator(user, organization),
+        content_type='text/event-stream',
+    )
+    # Headers SSE standard
+    response['Cache-Control'] = 'no-cache'
+    response['X-Accel-Buffering'] = 'no'  # Nginx
+    response['Access-Control-Allow-Origin'] = '*'
+    return response

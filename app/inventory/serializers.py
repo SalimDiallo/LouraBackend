@@ -786,7 +786,7 @@ class PaymentSerializer(InventoryBaseSerializer):
         fields = [
             'id', 'organization', 'sale', 'sale_number', 'receipt_number',
             'payment_date', 'amount', 'payment_method', 'payment_method_display',
-            'reference', 'customer_name', 'customer_phone', 'notes','is_credit_payment'
+            'reference', 'customer_name', 'customer_phone', 'notes', 'is_credit_payment',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
@@ -1111,6 +1111,44 @@ class DeliveryNoteSerializer(InventoryBaseSerializer):
 
     def get_item_count(self, obj):
         return obj.items.count()
+
+
+class DeliveryNoteItemCreateSerializer(serializers.Serializer):
+    """Serializer for creating delivery note items"""
+    product = serializers.UUIDField()
+    quantity = serializers.DecimalField(max_digits=10, decimal_places=2)
+    notes = serializers.CharField(required=False, allow_blank=True, default='')
+
+
+class DeliveryNoteCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating delivery notes with nested items"""
+
+    items = DeliveryNoteItemCreateSerializer(many=True, required=False)
+    sale = serializers.PrimaryKeyRelatedField(queryset=Sale.objects.all())
+    delivery_number = serializers.CharField(required=False, allow_blank=True)
+
+    class Meta:
+        model = DeliveryNote
+        fields = [
+            'sale', 'delivery_number', 'delivery_date',
+            'recipient_name', 'recipient_phone', 'delivery_address',
+            'carrier_name', 'driver_name', 'vehicle_info',
+            'status', 'notes', 'items'
+        ]
+
+    def create(self, validated_data):
+        items_data = validated_data.pop('items', [])
+        delivery_note = DeliveryNote.objects.create(**validated_data)
+
+        for item_data in items_data:
+            product_id = item_data.pop('product')
+            DeliveryNoteItem.objects.create(
+                delivery_note=delivery_note,
+                product_id=product_id,
+                **item_data
+            )
+
+        return delivery_note
 
 
 # ===============================

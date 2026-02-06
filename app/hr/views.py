@@ -571,14 +571,21 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
         Ce comportement arrive car DRF fait un filter(pk=...) sur le queryset retourné ici.
         """
         user = self.request.user
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
-            return LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
+            queryset = LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
+            
+            # Filter by specific organization if subdomain provided
+            if org_subdomain:
+                queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
+            
+            return queryset
         elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("hr.view_leave_requests"):
                 # INSERT_YOUR_CODE
                 exclude = self.request.query_params.get('exclude')
-                print(exclude)
                 queryset = LeaveRequest.objects.filter(employee__organization=user.organization)
                 if exclude:
                     queryset = queryset.exclude(employee=user)
@@ -1436,6 +1443,48 @@ class HROverviewStatsView(APIView):
         ).order_by('start_date')[:10]
         upcoming_leaves_data = LeaveRequestSerializer(upcoming_leaves, many=True).data
 
+        # Contract stats
+        contracts = Contract.objects.filter(employee__organization=organization)
+        total_contracts = contracts.count()
+        active_contracts = contracts.filter(is_active=True).count()
+        # Contracts expiring within 30 days
+        thirty_days_from_now = now + timedelta(days=30)
+        expiring_contracts = contracts.filter(
+            is_active=True,
+            end_date__isnull=False,
+            end_date__lte=thirty_days_from_now.date(),
+            end_date__gte=now.date()
+        ).count()
+
+        # Payroll trend (last 6 months)
+        payroll_trend = []
+        for i in range(5, -1, -1):
+            # Calculate the month
+            month_date = now - timedelta(days=i * 30)  # Approximate
+            target_year = month_date.year
+            target_month = month_date.month
+            
+            # Get payrolls for this month
+            month_payrolls = Payslip.objects.filter(
+                employee__organization=organization,
+                payroll_period__start_date__year=target_year,
+                payroll_period__start_date__month=target_month
+            )
+            
+            month_aggregates = month_payrolls.aggregate(
+                total=models.Sum('net_salary'),
+                count=models.Count('id')
+            )
+            
+            payroll_trend.append({
+                'month': month_date.strftime('%b'),
+                'full_month': month_date.strftime('%B %Y'),
+                'year': target_year,
+                'month_number': target_month,
+                'montant': float(month_aggregates['total'] or 0),
+                'employes': month_aggregates['count'] or 0,
+            })
+
         stats = {
             'total_employees': total_employees,
             'active_employees': active_employees,
@@ -1449,6 +1498,12 @@ class HROverviewStatsView(APIView):
             'average_salary': average_salary,
             'recent_hires': recent_hires_data,
             'upcoming_leaves': upcoming_leaves_data,
+            # Contract stats
+            'total_contracts': total_contracts,
+            'active_contracts': active_contracts,
+            'expiring_contracts': expiring_contracts,
+            # Payroll trend
+            'payroll_trend': payroll_trend,
         }
         return Response(stats, status=status.HTTP_200_OK)
 

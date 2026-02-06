@@ -315,7 +315,7 @@ class EmployeeListSerializer(serializers.ModelSerializer):
         fields = [
             'id', 'email', 'full_name', 'employee_id',
             'department', 'department_name', 'position_title', 'role_name', 'gender',
-            'employment_status', 'is_active',
+            'employment_status', 'is_active', 'hire_date',
             # Salary fields
             'base_salary', 'currency', 'salary_period', 'salary_period_display',
             'contract_type', 'contract_type_display'

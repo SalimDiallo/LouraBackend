@@ -59,7 +59,23 @@ INSTALLED_APPS = [
     'authentication',  # Centralized authentication
     'ai',  # AI Assistant module
     'notifications',  # Notifications interne
+    'django_celery_beat',
+    'django_celery_results',
 ]
+
+# ---------------------------------------------------------------------------
+# Celery — backend database (SQLite, pas besoin de Redis en dev)
+# ---------------------------------------------------------------------------
+CELERY_BROKER_URL = 'memory://'                          # In-memory pour dev (pas de Redis nécessaire)
+CELERY_RESULT_BACKEND = 'django-db'                     # Résultats dans la DB Django
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+# CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers.DatabaseScheduler'
+CELERY_TASK_ALWAYS_EAGER = True                         # Exécution synchrone en dev (pas besoin de worker séparé)
+CELERY_TASK_EAGER_PROPAGATES = True
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',

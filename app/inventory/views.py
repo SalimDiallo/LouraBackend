@@ -2599,8 +2599,13 @@ class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     ViewSet for managing delivery notes
     """
     queryset = DeliveryNote.objects.all()
-    serializer_class = DeliveryNoteSerializer
     permission_classes = [IsAuthenticated]
+
+    def get_serializer_class(self):
+        if self.action in ['create', 'update', 'partial_update']:
+            from .serializers import DeliveryNoteCreateSerializer
+            return DeliveryNoteCreateSerializer
+        return DeliveryNoteSerializer
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -2719,7 +2724,7 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 status__in=['pending', 'partial']
             )
 
-        return queryset.select_related('sale', 'customer', 'organization').prefetch_related('sale__payments', 'sale__items')
+        return queryset.select_related('sale', 'customer', 'organization').prefetch_related('sale__payments', 'sale__items').order_by('-created_at')
 
     def retrieve(self, request, *args, **kwargs):
         """Override retrieve to sync amounts from actual payments before returning"""

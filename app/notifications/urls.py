@@ -28,4 +28,6 @@ router.register(r'preferences', views.NotificationPreferenceViewSet, basename='n
 
 urlpatterns = [
     path('', include(router.urls)),
+    # SSE — flux de notifications en temps réel
+    path('stream/', views.notification_stream, name='notification-stream'),
 ]
