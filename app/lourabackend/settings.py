@@ -42,6 +42,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # IMPORTANT: Must be FIRST for WebSocket support
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -53,6 +54,7 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',  # JWT authentication
     'rest_framework_simplejwt.token_blacklist',  # JWT token blacklist
+    'channels',  # WebSocket support
     'core',
     'hr',
     'inventory',  # Inventory management
@@ -249,3 +251,21 @@ SIMPLE_JWT = {
     'JWK_URL': None,
     'LEEWAY': 0,
 }
+# ==============================================================================
+# ASGI & WebSocket Configuration (Django Channels)
+# ==============================================================================
+ASGI_APPLICATION = "lourabackend.asgi.application"
+
+CHANNEL_LAYERS = {
+    "default": {
+        # Development: In-memory channel layer (no Redis required)
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+        
+        # Production: Use Redis for channel layer
+        # "BACKEND": "channels_redis.core.RedisChannelLayer",
+        # "CONFIG": {
+        #     "hosts": [("127.0.0.1", 6379)],
+        # },
+    },
+}
+

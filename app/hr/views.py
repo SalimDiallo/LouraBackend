@@ -25,6 +25,9 @@ from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
 from rest_framework.views import APIView
 
+# PDF Generation
+from inventory.pdf_base import PDFGeneratorMixin
+
 # Models
 from core.models import Organization, AdminUser
 from .models import (
@@ -269,7 +272,7 @@ class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
 
 
-class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet pour la gestion des contrats.
     
@@ -324,6 +327,12 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         employee_id = self.request.query_params.get('employee')
+        
+        # Filtrer par subdomain d'organisation si fourni en paramètre de requête
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        if org_subdomain:
+            queryset = Contract.objects.filter(employee__organization__subdomain=org_subdomain)
+            return queryset.select_related('employee')
 
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
@@ -342,6 +351,8 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         # Filtrer par employé si spécifié
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
+        
+
         
         # Filtrer par statut actif si spécifié
         is_active = self.request.query_params.get('is_active')
@@ -462,19 +473,21 @@ class ContractViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, pk=None):
-        """Export a contract as PDF"""
+        """Export a contract as PDF - supports preview mode"""
         from .pdf_generator import generate_contract_pdf
-        
+
         contract = self.get_object()
-        pdf_buffer = generate_contract_pdf(contract)
-        
+
         employee_name = contract.employee.get_full_name().replace(' ', '_')
         contract_type = contract.contract_type.upper()
         filename = f"Contrat_{contract_type}_{employee_name}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_contract_pdf,
+            generator_args=(contract,),
+            filename=filename,
+            request=request
+        )
 
 
 # -------------------------------
@@ -489,14 +502,26 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-
+        
+        # Accès selon le type d'utilisateur
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
-            return LeaveType.objects.filter(organization_id__in=org_ids)
+            queryset = LeaveType.objects.filter(organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            # No permission required to list leave types
-            return LeaveType.objects.filter(organization=user.organization)
-        return LeaveType.objects.none()
+            queryset = LeaveType.objects.filter(organization=user.organization)
+        else:
+            queryset = LeaveType.objects.none()
+        
+        org_subdomain = self.request.query_params.get('organization_subdomain') or self.request.data.get('organization_subdomain')
+
+        # Si le subdomain d'organisation est fourni en paramètre de requête
+        if org_subdomain:
+            queryset = LeaveType.objects.filter(organization__subdomain=org_subdomain)
+        else:
+            raise serializers.ValidationError({'organization_subdomain': "Subdomain d'organisation requis"})
+
+
+        return queryset
 
     def perform_create(self, serializer):
         user = self.request.user
@@ -550,7 +575,7 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
 #         return LeaveBalance.objects.none()
 
 
-class LeaveRequestViewSet(viewsets.ModelViewSet):
+class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing leave requests.
     Tous les employés peuvent créer une demande de congé.
@@ -754,18 +779,20 @@ class LeaveRequestViewSet(viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, pk=None):
-        """Export a leave request as PDF"""
+        """Export a leave request as PDF - supports preview mode"""
         from .pdf_generator import generate_leave_request_pdf
 
         leave_request = self.get_object()
-        pdf_buffer = generate_leave_request_pdf(leave_request)
 
         employee_name = leave_request.employee.get_full_name().replace(' ', '_')
         filename = f"Conge_{employee_name}_{leave_request.start_date.strftime('%Y%m%d')}.pdf"
 
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+        return self.generate_and_respond(
+            generator_func=generate_leave_request_pdf,
+            generator_args=(leave_request,),
+            filename=filename,
+            request=request
+        )
 
     @action(detail=False, methods=['get'], url_path='history')
     def history(self, request):
@@ -831,20 +858,34 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
+        org_subdomain = self.request.query_params.get('organization_subdomain') or self.request.data.get('organization_subdomain')
 
         if getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
-            return PayrollPeriod.objects.filter(organization_id__in=org_ids)
+            # L'admin peut accéder aux périodes de paie de ses organisations
+            if org_subdomain:
+                # Filtrer par l'organisation spécifiée ET vérifier que l'admin y a accès
+                try:
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                    return PayrollPeriod.objects.filter(organization=organization)
+                except Organization.DoesNotExist:
+                    return PayrollPeriod.objects.none()
+            else:
+                # Sans subdomain, retourner toutes les périodes de toutes ses organisations
+                org_ids = user.organizations.values_list('id', flat=True)
+                return PayrollPeriod.objects.filter(organization_id__in=org_ids)
+
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_view_payroll"):
-                return PayrollPeriod.objects.filter(organization=user.organization)
+            # L'employé doit avoir la permission et ne peut voir que son organisation
+            if not user.has_permission("can_view_payroll"):
+                return PayrollPeriod.objects.none()
+            return PayrollPeriod.objects.filter(organization=user.organization)
+
         return PayrollPeriod.objects.none()
 
     def perform_create(self, serializer):
         user = self.request.user
 
         if getattr(user, 'user_type', None) == 'admin':
-            # Essayer d'abord avec organization_subdomain (depuis query params)
             org_subdomain = self.request.query_params.get('organization_subdomain')
 
             if org_subdomain:
@@ -889,7 +930,7 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
         serializer.save(organization=organization)
 
 
-class PayslipViewSet(viewsets.ModelViewSet):
+class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     """ViewSet for managing payslips
     
     Règles métier:
@@ -911,10 +952,19 @@ class PayslipViewSet(viewsets.ModelViewSet):
         exclude_own = self.request.query_params.get('exclude_own')  # Nouveau: exclure ses propres
 
         # Base queryset selon le type d'utilisateur
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        if org_subdomain:
+            queryset = Payslip.objects.filter(employee__organization__subdomain=org_subdomain)
+        else:
+            raise serializers.ValidationError({'permission': "Subdomain d'organisation requis"})
+        
         if getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             queryset = Payslip.objects.filter(employee__organization_id__in=org_ids)
-        elif getattr(user, 'user_type', None) == 'employee':
+            queryset = Payslip.objects.filter(employee__organization__subdomain=org_subdomain)
+            return queryset
+
+        if getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("hr.view_payroll") or user.is_hr_admin():
                 queryset = Payslip.objects.filter(employee__organization=user.organization)
                 # Optionnel: exclure ses propres fiches de la liste globale
@@ -1031,15 +1081,24 @@ class PayslipViewSet(viewsets.ModelViewSet):
 
         return Response({'message': 'Fiche marquée comme payée'}, status=status.HTTP_200_OK)
 
-    @action(detail=True, methods=['get'], permission_classes=[IsAdminUserOrEmployee])
+    @action(detail=True, methods=['get'], permission_classes=[IsAdminUserOrEmployee], url_path='export-pdf')
     def export_pdf(self, request, pk=None):
+        """Export payslip as PDF - supports preview mode"""
         from .pdf_generator import generate_payslip_pdf
+
+
         payslip = self.get_object()
-        pdf_buffer = generate_payslip_pdf(payslip)
-        filename = f"Fiche_Paie_{payslip.employee.get_full_name().replace(' ', '_')}_{payslip.payroll_period.name.replace(' ', '_')}.pdf"
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        # Handle both period-based and ad-hoc payslips
+        period_part = payslip.payroll_period.name if payslip.payroll_period else payslip.description or 'AdHoc'
+        filename = f"Fiche_Paie_{payslip.employee.get_full_name().replace(' ', '_')}_{period_part.replace(' ', '_')}.pdf"
+
+        return self.generate_and_respond(
+            generator_func=generate_payslip_pdf,
+            generator_args=(payslip,),
+            filename=filename,
+            request=request
+        )
 
     @action(detail=False, methods=['post'], permission_classes=[IsHRAdmin])
     def generate_for_period(self, request):
@@ -1836,7 +1895,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                 recipient=advance.employee,
                 sender=user,
                 title="Avance sur paie approuvée",
-                message=f"Votre demande d'avance de {advance.amount} FCFA a été approuvée.",
+                message=f"Votre demande d'avance de {advance.amount} {advance.employee.organization.currency} a été approuvée.",
                 notification_type='user',
                 priority='medium',
                 entity_type='payroll_advance',
@@ -1900,7 +1959,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                 recipient=advance.employee,
                 sender=user,
                 title="Avance sur paie rejetée",
-                message=f"Votre demande d'avance de {advance.amount} FCFA a été rejetée. Motif : {reason}",
+                message=f"Votre demande d'avance de {advance.amount} {advance.employee.organization.currency} a été rejetée. Motif : {reason}",
                 notification_type='user',
                 priority='high',
                 entity_type='payroll_advance',

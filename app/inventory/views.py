@@ -35,6 +35,9 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+# PDF Generation
+from .pdf_base import PDFGeneratorMixin
+
 # Models
 from .permissions import CategoryPermission, OrderPermission, ProductPermission, SupplierPermission
 from core.models import Organization
@@ -517,7 +520,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # ORDER VIEWSET
 # ===============================
 
-class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing purchase orders
     """
@@ -688,25 +691,24 @@ class OrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export order as PDF"""
-        from django.http import HttpResponse
+        """Export order as PDF - supports preview mode"""
         from .pdf_generator import generate_order_pdf
-        
+
         order = self.get_object()
-        pdf_buffer = generate_order_pdf(order)
-        
-        filename = f"Commande_{order.order_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_order_pdf,
+            generator_args=(order,),
+            filename=f"Commande_{order.order_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
 # STOCK COUNT VIEWSET
 # ===============================
 
-class StockCountViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class StockCountViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing stock counts (physical inventory)
     """
@@ -1026,18 +1028,17 @@ class StockCountViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export stock count as PDF"""
-        from django.http import HttpResponse
+        """Export stock count as PDF - supports preview mode"""
         from .pdf_generator import generate_stock_count_pdf
-        
+
         stock_count = self.get_object()
-        pdf_buffer = generate_stock_count_pdf(stock_count)
-        
-        filename = f"Inventaire_{stock_count.count_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_stock_count_pdf,
+            generator_args=(stock_count,),
+            filename=f"Inventaire_{stock_count.count_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
@@ -1171,7 +1172,7 @@ class AlertViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # DASHBOARD / STATS VIEWSET
 # ===============================
 
-class InventoryStatsViewSet(OrganizationResolverMixin, viewsets.ViewSet):
+class InventoryStatsViewSet(PDFGeneratorMixin, OrganizationResolverMixin, viewsets.ViewSet):
     """
     ViewSet for inventory statistics and reports
     """
@@ -1647,59 +1648,57 @@ class InventoryStatsViewSet(OrganizationResolverMixin, viewsets.ViewSet):
 
     @action(detail=False, methods=['get'])
     def export_products_pdf(self, request, organization_slug=None):
-        """Export product catalog as PDF"""
-        from django.http import HttpResponse
+        """Export product catalog as PDF - supports preview mode"""
         from .pdf_generator import generate_product_catalog_pdf
-        
+
         organization = self.get_organization_from_request()
-        
+
         products = Product.objects.filter(
             organization=organization,
             is_active=True
         ).select_related('category').order_by('name')
-        
-        pdf_buffer = generate_product_catalog_pdf(products, organization)
-        
-        filename = f"Catalogue_Produits_{organization.subdomain}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_product_catalog_pdf,
+            generator_args=(products, organization),
+            filename=f"Catalogue_Produits_{organization.subdomain}.pdf",
+            request=request
+        )
 
     @action(detail=False, methods=['get'])
     def export_stock_pdf(self, request, organization_slug=None):
-        """Export stock report as PDF"""
-        from django.http import HttpResponse
+        """Export stock report as PDF - supports preview mode"""
         from .pdf_generator import generate_stock_report_pdf
-        
+
         organization = self.get_organization_from_request()
         warehouse_id = request.query_params.get('warehouse')
-        
+
         warehouse = None
         if warehouse_id:
             warehouse = Warehouse.objects.filter(
                 id=warehouse_id,
                 organization=organization
             ).first()
-        
+
         stocks = Stock.objects.filter(
             product__organization=organization,
             product__is_active=True
         ).select_related('product', 'product__category', 'warehouse')
-        
+
         if warehouse:
             stocks = stocks.filter(warehouse=warehouse)
-        
+
         stocks = stocks.order_by('warehouse__name', 'product__name')
-        
-        pdf_buffer = generate_stock_report_pdf(list(stocks), organization, warehouse)
-        
+
         warehouse_suffix = f"_{warehouse.code}" if warehouse else ""
         filename = f"Rapport_Stock{warehouse_suffix}_{organization.subdomain}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_stock_report_pdf,
+            generator_args=(list(stocks), organization, warehouse),
+            filename=filename,
+            request=request
+        )
 
     @action(detail=False, methods=['post'])
     def generate_quote_pdf(self, request, organization_slug=None):
@@ -1741,15 +1740,16 @@ class InventoryStatsViewSet(OrganizationResolverMixin, viewsets.ViewSet):
             quote_data['date'] = datetime.strptime(quote_data['date'], '%Y-%m-%d').date()
         if isinstance(quote_data.get('valid_until'), str):
             quote_data['valid_until'] = datetime.strptime(quote_data['valid_until'], '%Y-%m-%d').date()
-        
-        pdf_buffer = generate_quote_pdf(quote_data, organization)
-        
+
         quote_number = quote_data.get('quote_number', 'DEVIS')
         filename = f"Devis_{quote_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_quote_pdf,
+            generator_args=(quote_data, organization),
+            filename=filename,
+            request=request
+        )
 
     @action(detail=False, methods=['post'])
     def generate_invoice_pdf(self, request, organization_slug=None):
@@ -1793,15 +1793,19 @@ class InventoryStatsViewSet(OrganizationResolverMixin, viewsets.ViewSet):
             invoice_data['date'] = datetime.strptime(invoice_data['date'], '%Y-%m-%d').date()
         if isinstance(invoice_data.get('due_date'), str):
             invoice_data['due_date'] = datetime.strptime(invoice_data['due_date'], '%Y-%m-%d').date()
-        
-        pdf_buffer = generate_invoice_pdf(invoice_data, organization)
-        
+
         invoice_number = invoice_data.get('invoice_number', 'FACTURE')
         filename = f"Facture_{invoice_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_invoice_pdf,
+            generator_args=(invoice_data, organization),
+            filename=filename,
+            request=request
+        )
+
+
+
 class CustomerViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing customers
@@ -1851,9 +1855,11 @@ class CustomerViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # SALE VIEWSET
 # ===============================
 
-class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing sales with discounts
+
+    Includes unified PDF generation with preview support via PDFGeneratorMixin
     """
     queryset = Sale.objects.all()
     permission_classes = [IsAuthenticated]
@@ -2038,7 +2044,7 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                     organization=organization,
                     recipient=self.request.user,
                     title="Nouvelle vente",
-                    message=f"Vente {sale.sale_number} enregistrée pour {customer_label} — {sale.total_amount} FCFA.",
+                    message=f"Vente {sale.sale_number} enregistrée pour {customer_label} — {sale.total_amount} {organization.currency}.",
                     notification_type='system',
                     priority='low',
                     entity_type='sale',
@@ -2102,29 +2108,29 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='receipt')
     def generate_receipt(self, request, organization_slug=None, pk=None):
-        """Generate receipt PDF for a sale"""
+        """Generate receipt PDF for a sale - supports preview mode"""
         sale = self.get_object()
         from .pdf_sales import generate_sale_receipt_pdf
-        
-        pdf_buffer = generate_sale_receipt_pdf(sale)
-        filename = f"Recu_{sale.sale_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_sale_receipt_pdf,
+            generator_args=(sale,),
+            filename=f"Recu_{sale.sale_number}.pdf",
+            request=request
+        )
 
     @action(detail=True, methods=['get'], url_path='invoice')
     def generate_invoice(self, request, organization_slug=None, pk=None):
-        """Generate invoice PDF for a sale"""
+        """Generate invoice PDF for a sale - supports preview mode"""
         sale = self.get_object()
         from .pdf_sales import generate_invoice_pdf
-        
-        pdf_buffer = generate_invoice_pdf(sale)
-        filename = f"Facture_{sale.sale_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_invoice_pdf,
+            generator_args=(sale,),
+            filename=f"Facture_{sale.sale_number}.pdf",
+            request=request
+        )
 
 
     @action(detail=True, methods=['post'])
@@ -2179,7 +2185,7 @@ class SaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # PAYMENT VIEWSET
 # ===============================
 
-class PaymentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class PaymentViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing payments
     """
@@ -2207,16 +2213,17 @@ class PaymentViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export payment receipt as PDF"""
-        payment = self.get_object()
+        """Export payment receipt as PDF - supports preview mode"""
         from .pdf_sales import generate_payment_receipt_pdf
-        
-        pdf_buffer = generate_payment_receipt_pdf(payment)
-        filename = f"Recu_{payment.receipt_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        payment = self.get_object()
+
+        return self.generate_and_respond(
+            generator_func=generate_payment_receipt_pdf,
+            generator_args=(payment,),
+            filename=f"Recu_{payment.receipt_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
@@ -2245,7 +2252,7 @@ class ExpenseCategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet
 # EXPENSE VIEWSET
 # ===============================
 
-class ExpenseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class ExpenseViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing expenses
     """
@@ -2278,18 +2285,15 @@ class ExpenseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         organization = self.get_organization_from_request()
-        
+
         # Generate expense number if not provided
-        # REFACTORED: Now uses DocumentNumberFactory
+        # Use timestamp + UUID to guarantee uniqueness and avoid race conditions
         expense_data = serializer.validated_data
         if not expense_data.get('expense_number'):
-            expense_data['expense_number'] = DocumentNumberFactory.generate(
-                model_class=Expense,
-                organization=organization,
-                doc_type='expense',  # Uses default prefix 'DEP'
-                field_name='expense_number'
-            )
-        
+            import uuid
+            unique = uuid.uuid4().hex[:6].upper()
+            expense_data['expense_number'] = f'DEP-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+
         serializer.save(organization=organization)
 
     @action(detail=False, methods=['get'])
@@ -2355,7 +2359,7 @@ class ExpenseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # PROFORMA INVOICE VIEWSET
 # ===============================
 
-class ProformaInvoiceViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class ProformaInvoiceViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing proforma invoices
     """
@@ -2384,18 +2388,15 @@ class ProformaInvoiceViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet
 
     def perform_create(self, serializer):
         organization = self.get_organization_from_request()
-        
+
         # Generate proforma number
-        # REFACTORED: Now uses DocumentNumberFactory
+        # Use timestamp + UUID to guarantee uniqueness and avoid race conditions
         proforma_data = serializer.validated_data
         if not proforma_data.get('proforma_number'):
-            proforma_data['proforma_number'] = DocumentNumberFactory.generate(
-                model_class=ProformaInvoice,
-                organization=organization,
-                doc_type='proforma',  # Uses default prefix 'PF'
-                field_name='proforma_number'
-            )
-        
+            import uuid
+            unique = uuid.uuid4().hex[:6].upper()
+            proforma_data['proforma_number'] = f'PF-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+
         serializer.save(organization=organization)
 
     @action(detail=True, methods=['post'])
@@ -2426,14 +2427,11 @@ class ProformaInvoiceViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet
             )
         
         # Generate sale number
-        # REFACTORED: Now uses DocumentNumberFactory
+        # Use timestamp + UUID to guarantee uniqueness and avoid race conditions
         organization = proforma.organization
-        sale_number = DocumentNumberFactory.generate(
-            model_class=Sale,
-            organization=organization,
-            doc_type='sale',  # Uses default prefix 'VTE'
-            field_name='sale_number'
-        )
+        import uuid
+        unique = uuid.uuid4().hex[:6].upper()
+        sale_number = f'VTE-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
         
         # Create sale
         sale = Sale.objects.create(
@@ -2472,23 +2470,24 @@ class ProformaInvoiceViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export proforma as PDF"""
-        proforma = self.get_object()
+        """Export proforma as PDF - supports preview mode"""
         from .pdf_sales import generate_proforma_pdf
-        
-        pdf_buffer = generate_proforma_pdf(proforma)
-        filename = f"Proforma_{proforma.proforma_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        proforma = self.get_object()
+
+        return self.generate_and_respond(
+            generator_func=generate_proforma_pdf,
+            generator_args=(proforma,),
+            filename=f"Proforma_{proforma.proforma_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
 # PURCHASE ORDER VIEWSET
 # ===============================
 
-class PurchaseOrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class PurchaseOrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing purchase orders
     """
@@ -2578,23 +2577,24 @@ class PurchaseOrderViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export purchase order as PDF"""
-        order = self.get_object()
+        """Export purchase order as PDF - supports preview mode"""
         from .pdf_sales import generate_purchase_order_pdf
-        
-        pdf_buffer = generate_purchase_order_pdf(order)
-        filename = f"BC_{order.order_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        order = self.get_object()
+
+        return self.generate_and_respond(
+            generator_func=generate_purchase_order_pdf,
+            generator_args=(order,),
+            filename=f"BC_{order.order_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
 # DELIVERY NOTE VIEWSET
 # ===============================
 
-class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class DeliveryNoteViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing delivery notes
     """
@@ -2624,18 +2624,15 @@ class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     def perform_create(self, serializer):
         organization = self.get_organization_from_request()
-        
+
         # Generate delivery number
-        # REFACTORED: Now uses DocumentNumberFactory
+        # Use timestamp + UUID to guarantee uniqueness and avoid race conditions
         delivery_data = serializer.validated_data
         if not delivery_data.get('delivery_number'):
-            delivery_data['delivery_number'] = DocumentNumberFactory.generate(
-                model_class=DeliveryNote,
-                organization=organization,
-                doc_type='delivery',  # Uses default prefix 'BL'
-                field_name='delivery_number'
-            )
-        
+            import uuid
+            unique = uuid.uuid4().hex[:6].upper()
+            delivery_data['delivery_number'] = f'BL-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+
         serializer.save(organization=organization)
 
     @action(detail=True, methods=['post'])
@@ -2679,23 +2676,24 @@ class DeliveryNoteViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export delivery note as PDF"""
-        note = self.get_object()
+        """Export delivery note as PDF - supports preview mode"""
         from .pdf_sales import generate_delivery_note_pdf
-        
-        pdf_buffer = generate_delivery_note_pdf(note)
-        filename = f"BL_{note.delivery_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        note = self.get_object()
+
+        return self.generate_and_respond(
+            generator_func=generate_delivery_note_pdf,
+            generator_args=(note,),
+            filename=f"BL_{note.delivery_number}.pdf",
+            request=request
+        )
 
 
 # ===============================
 # CREDIT SALE VIEWSET
 # ===============================
 
-class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+class CreditSaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing credit sales
     """
@@ -2813,14 +2811,13 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             )
 
         with transaction.atomic():
-          
+
             # Create a Payment on the sale so it appears in payment history
-            receipt_number = DocumentNumberFactory.generate(
-                model_class=Payment,
-                organization=credit_sale.organization,
-                doc_type='receipt',
-                field_name='receipt_number'
-            )
+            # Use timestamp + UUID to guarantee uniqueness and avoid race conditions
+            import uuid
+            unique = uuid.uuid4().hex[:6].upper()
+            receipt_number = f'REC-{timezone.now().strftime("%Y%m%d%H%M%S%f")}{unique}'
+
             Payment.objects.create(
                 organization=credit_sale.organization,
                 sale=credit_sale.sale,
@@ -2850,12 +2847,12 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         try:
             from notifications.notification_helpers import send_notification
             customer_label = credit_sale.customer.name if credit_sale.customer else "Client"
-            status_label = "soldée" if credit_sale.status == 'paid' else f"solde restant {credit_sale.remaining_amount} FCFA"
+            status_label = "soldée" if credit_sale.status == 'paid' else f"solde restant {credit_sale.remaining_amount} {organization.currency}"
             send_notification(
                 organization=credit_sale.organization,
                 recipient=request.user,
                 title="Paiement créance reçu",
-                message=f"Paiement de {amount} FCFA reçu de {customer_label} — {status_label}.",
+                message=f"Paiement de {amount} {organization.currency} reçu de {customer_label} — {status_label}.",
                 notification_type='system',
                 priority='medium',
                 entity_type='credit_sale',
@@ -2884,33 +2881,34 @@ class CreditSaleViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
     @action(detail=True, methods=['get'], url_path='export-pdf')
     def export_pdf(self, request, organization_slug=None, pk=None):
-        """Export credit sale statement as PDF"""
+        """Export credit sale statement as PDF - supports preview mode"""
+        from .pdf_sales import generate_credit_sale_statement_pdf
+
         credit_sale = self.get_object()
         # Sync before exporting to get accurate values
         credit_sale.sync_from_sale()
         credit_sale.update_status()
-        
-        from .pdf_sales import generate_credit_sale_statement_pdf
-        
-        pdf_buffer = generate_credit_sale_statement_pdf(credit_sale)
-        filename = f"Releve_Creance_{credit_sale.sale.sale_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        return self.generate_and_respond(
+            generator_func=generate_credit_sale_statement_pdf,
+            generator_args=(credit_sale,),
+            filename=f"Releve_Creance_{credit_sale.sale.sale_number}.pdf",
+            request=request
+        )
 
     @action(detail=True, methods=['get'], url_path='invoice')
     def invoice(self, request, organization_slug=None, pk=None):
-        """Export invoice for the credit sale"""
-        credit_sale = self.get_object()
+        """Export invoice for the credit sale - supports preview mode"""
         from .pdf_sales import generate_invoice_pdf
-        
-        pdf_buffer = generate_invoice_pdf(credit_sale.sale)
-        filename = f"Facture_{credit_sale.sale.sale_number}.pdf"
-        
-        response = HttpResponse(pdf_buffer.getvalue(), content_type='application/pdf')
-        response['Content-Disposition'] = f'attachment; filename="{filename}"'
-        return response
+
+        credit_sale = self.get_object()
+
+        return self.generate_and_respond(
+            generator_func=generate_invoice_pdf,
+            generator_args=(credit_sale.sale,),
+            filename=f"Facture_{credit_sale.sale.sale_number}.pdf",
+            request=request
+        )
 
 
     @action(detail=False, methods=['get'])

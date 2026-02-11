@@ -42,6 +42,7 @@ from .serializers import (
     NotificationPreferenceUpdateSerializer,
 )
 from .notification_helpers import mark_all_as_read, get_unread_count
+from .websocket_helpers import send_notification_to_user, send_unread_count_to_user
 
 logger = logging.getLogger(__name__)
 
@@ -83,10 +84,16 @@ class NotificationViewSet(OrganizationResolverMixin, viewsets.ModelViewSet):
     def perform_create(self, serializer):
         """Injecte organisation + destinataire (user courant) à la création."""
         organization = self.get_organization_from_request()
-        serializer.save(
+        notification = serializer.save(
             organization=organization,
             recipient=self.request.user,
         )
+
+        # Envoyer la notification en temps réel via WebSocket
+        try:
+            send_notification_to_user(notification)
+        except Exception as e:
+            logger.error(f"Erreur lors de l'envoi WebSocket: {e}")
 
     # -----------------------------------------------------------------------
     # Actions personnalisées

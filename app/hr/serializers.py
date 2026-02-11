@@ -137,9 +137,9 @@ class EmployeeSerializer(serializers.ModelSerializer):
     organization_name = serializers.CharField(source='organization.name', read_only=True)
     organization_subdomain = serializers.CharField(source='organization.subdomain', read_only=True)
     department = serializers.SerializerMethodField()
-    department_name = serializers.CharField(source='department.name', read_only=True)
+    department_name = serializers.SerializerMethodField()
     position = serializers.SerializerMethodField()
-    position_title = serializers.CharField(source='position.title', read_only=True)
+    position_title = serializers.SerializerMethodField()
     contract = serializers.SerializerMethodField()
     manager = serializers.SerializerMethodField()
     manager_name = serializers.SerializerMethodField()
@@ -197,9 +197,17 @@ class EmployeeSerializer(serializers.ModelSerializer):
         """Convert UUID to string"""
         return str(obj.department.id) if obj.department else None
 
+    def get_department_name(self, obj):
+        """Get department name safely"""
+        return obj.department.name if obj.department else None
+
     def get_position(self, obj):
         """Convert UUID to string"""
         return str(obj.position.id) if obj.position else None
+
+    def get_position_title(self, obj):
+        """Get position title safely"""
+        return obj.position.title if obj.position else None
 
     def get_contract(self, obj):
         """Convert UUID to string"""
@@ -297,9 +305,9 @@ class EmployeeListSerializer(serializers.ModelSerializer):
 
     full_name = serializers.SerializerMethodField()
     department = serializers.SerializerMethodField()
-    department_name = serializers.CharField(source='department.name', read_only=True)
-    position_title = serializers.CharField(source='position.title', read_only=True)
-    role_name = serializers.CharField(source='assigned_role.name', read_only=True)
+    department_name = serializers.SerializerMethodField()
+    position_title = serializers.SerializerMethodField()
+    role_name = serializers.SerializerMethodField()
     
     # Salary information from active contract
     base_salary = serializers.SerializerMethodField()
@@ -327,6 +335,18 @@ class EmployeeListSerializer(serializers.ModelSerializer):
     def get_department(self, obj):
         """Convert department UUID to string"""
         return str(obj.department.id) if obj.department else None
+
+    def get_department_name(self, obj):
+        """Get department name safely"""
+        return obj.department.name if obj.department else None
+
+    def get_position_title(self, obj):
+        """Get position title safely"""
+        return obj.position.title if obj.position else None
+
+    def get_role_name(self, obj):
+        """Get role name safely"""
+        return obj.assigned_role.name if obj.assigned_role else None
 
     def _get_active_contract(self, obj):
         """Récupère le contrat actif de l'employé"""
