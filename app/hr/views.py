@@ -142,6 +142,9 @@ class EmployeeViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     filterset_fields = ['department', 'position', 'employment_status', 'is_active']
     search_fields = ['first_name', 'last_name', 'email', 'employee_id']
 
+    allow_list_without_permission = True  # Permet de lister pour les dropdowns
+
+
     def get_queryset(self):
         """
         Retourne le queryset avec filtrage par organisation et filtres supplémentaires.
@@ -361,19 +364,27 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
     @action(detail=True, methods=['post'], url_path='activate')
     def activate(self, request, pk=None):
         """
-        Active ce contrat.
-        
+        Active ce contrat si l'utilisateur a la permission de créer un contrat.
+
         Règle métier : L'activation d'un contrat désactive automatiquement
         tous les autres contrats actifs de l'employé.
         """
         contract = self.get_object()
-        
+        user = request.user
+
+        # Vérification de permission : doit pouvoir CRÉER un contrat
+        if not user.has_permission('hr.update_contracts'):
+            return Response(
+                {'error': "Vous n'avez pas la permission d'activer ce contrat."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if contract.is_active:
             return Response(
                 {'message': 'Ce contrat est déjà actif'},
                 status=status.HTTP_200_OK
             )
-        
+
         # La méthode activate() du modèle gère la désactivation des autres contrats
         contract.activate()
 
@@ -406,20 +417,28 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
     @action(detail=True, methods=['post'], url_path='deactivate')
     def deactivate(self, request, pk=None):
         """
-        Désactive ce contrat.
-        
+        Désactive ce contrat si l'utilisateur a la permission de créer un contrat.
+
         Note : Si c'était le seul contrat actif, l'employé n'aura plus de contrat actif.
         """
         contract = self.get_object()
-        
+        user = request.user
+
+        # Vérification de permission : doit pouvoir CRÉER un contrat
+        if not user.has_permission('hr.update_contracts'):
+            return Response(
+                {'error': "Vous n'avez pas la permission de désactiver ce contrat."},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
         if not contract.is_active:
             return Response(
                 {'message': 'Ce contrat est déjà inactif'},
                 status=status.HTTP_200_OK
             )
-        
+
         contract.deactivate()
-        
+
         serializer = self.get_serializer(contract)
         return Response({
             'message': 'Contrat désactivé avec succès',

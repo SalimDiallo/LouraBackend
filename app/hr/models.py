@@ -366,7 +366,7 @@ class Contract(TimeStampedModel):
         max_digits=12, decimal_places=2,
         validators=[MinValueValidator(Decimal('0.00'))]
     )
-    currency = models.CharField(max_length=3, default='GNF')
+    currency = models.CharField(max_length=3, default='', blank=True)
 
     SALARY_PERIOD_CHOICES = [
         ('hourly', 'Horaire'),
