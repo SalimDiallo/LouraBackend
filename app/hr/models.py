@@ -278,6 +278,16 @@ class Department(TimeStampedModel):
         blank=True,
         related_name='headed_departments'
     )
+    
+    # Département parent (hiérarchie)
+    parent_department = models.ForeignKey(
+        'self',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='sub_departments'
+    )
+    
     is_active = models.BooleanField(default=True)
 
     class Meta:

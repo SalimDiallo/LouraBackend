@@ -59,7 +59,8 @@ from .permissions import (
     RequiresEmployeePermission, RequiresDepartmentPermission,
     RequiresContractPermission,
     RequiresLeavePermission, RequiresPayrollPermission,
-    RequiresAttendancePermission, RequiresRolePermission
+    RequiresAttendancePermission,
+    RequiresPositionPermission, RequiresRolePermission
 )
 
 # Mixins - Design Patterns pour réduire la duplication
@@ -262,7 +263,7 @@ class PositionViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     queryset = Position.objects.all()
     serializer_class = PositionSerializer
-    permission_classes = [IsAdminUserOrEmployee]
+    permission_classes = [IsAdminUserOrEmployee, RequiresPositionPermission]
     
     # Configuration du mixin
     organization_field = 'organization'
@@ -332,9 +333,7 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
         org_subdomain = self.request.query_params.get('organization_subdomain')
         if org_subdomain:
             queryset = Contract.objects.filter(employee__organization__subdomain=org_subdomain)
-            return queryset.select_related('employee')
-
-        if getattr(user, 'user_type', None) == 'admin':
+        elif getattr(user, 'user_type', None) == 'admin':
             org_ids = user.organizations.values_list('id', flat=True)
             queryset = Contract.objects.filter(employee__organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
@@ -351,8 +350,6 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
         # Filtrer par employé si spécifié
         if employee_id:
             queryset = queryset.filter(employee_id=employee_id)
-        
-
         
         # Filtrer par statut actif si spécifié
         is_active = self.request.query_params.get('is_active')
@@ -953,18 +950,12 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
 
         # Base queryset selon le type d'utilisateur
         org_subdomain = self.request.query_params.get('organization_subdomain')
-        if org_subdomain:
-            queryset = Payslip.objects.filter(employee__organization__subdomain=org_subdomain)
-        else:
+        if not org_subdomain:
             raise serializers.ValidationError({'permission': "Subdomain d'organisation requis"})
         
         if getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
-            queryset = Payslip.objects.filter(employee__organization_id__in=org_ids)
             queryset = Payslip.objects.filter(employee__organization__subdomain=org_subdomain)
-            return queryset
-
-        if getattr(user, 'user_type', None) == 'employee':
+        elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("hr.view_payroll") or user.is_hr_admin():
                 queryset = Payslip.objects.filter(employee__organization=user.organization)
                 # Optionnel: exclure ses propres fiches de la liste globale

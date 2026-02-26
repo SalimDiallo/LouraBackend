@@ -438,14 +438,20 @@ class DepartmentSerializer(serializers.ModelSerializer):
     head_name = serializers.SerializerMethodField()
     employee_count = serializers.SerializerMethodField()
     head_type = serializers.SerializerMethodField()
-    # Alias pour rétrocompatibilité avec le frontend
-    manager = serializers.UUIDField(write_only=True, required=False, allow_null=True)
+    # Champ "manager" en lecture (alias de head pour le frontend)
+    manager = serializers.SerializerMethodField()
+    # Champ "manager" en écriture (alias de head pour rétrocompatibilité)
+    manager_write = serializers.UUIDField(write_only=True, required=False, allow_null=True, source='manager_input')
+    # parent_department name pour affichage
+    parent_department_name = serializers.SerializerMethodField()
 
     class Meta:
         model = Department
         fields = [
             'id', 'organization', 'name', 'code', 'description',
-            'head', 'manager', 'head_name', 'head_type', 'employee_count', 'is_active',
+            'head', 'manager', 'manager_write', 'head_name', 'head_type',
+            'parent_department', 'parent_department_name',
+            'employee_count', 'is_active',
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
@@ -459,25 +465,28 @@ class DepartmentSerializer(serializers.ModelSerializer):
             return obj.head.user_type
         return None
 
+    def get_manager(self, obj):
+        """Retourne l'ID du head comme string (alias manager pour le frontend)"""
+        return str(obj.head_id) if obj.head_id else None
+
+    def get_parent_department_name(self, obj):
+        """Retourne le nom du département parent"""
+        return obj.parent_department.name if obj.parent_department else None
+
     def get_employee_count(self, obj):
         return obj.employees.filter(employment_status='active').count()
 
     def create(self, validated_data):
         """Gère la création avec le head (accepte head ou manager)"""
-        
-        # Accepte manager comme alias de head (rétrocompatibilité)
-        manager_id = validated_data.pop('manager', None)
+        # Accepte manager_input comme alias de head (rétrocompatibilité)
+        manager_id = validated_data.pop('manager_input', None)
         if manager_id and 'head' not in validated_data:
             validated_data['head'] = BaseUser.objects.get(id=manager_id)
-            print(validated_data)
         
         return super().create(validated_data)
 
     def update(self, instance, validated_data):
-        """Gère la mise à jour avec le head"""
-        
-        # Accepte manager comme alias de head (rétrocompatibilité)
-        manager_id = validated_data.pop('manager', None)
+        manager_id = validated_data.pop('manager_input', None)
         if manager_id is not None:
             if manager_id:
                 instance.head = BaseUser.objects.get(id=manager_id)

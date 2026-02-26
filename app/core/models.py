@@ -223,7 +223,7 @@ class Category(models.Model):
         return self.name
 
 
-class AdminUserManager(models.Manager):
+class AdminUserManager(BaseUserManager):
     """Manager pour AdminUser"""
 
     def get_queryset(self):
@@ -231,22 +231,11 @@ class AdminUserManager(models.Manager):
 
     def create_user(self, email, password=None, **extra_fields):
         extra_fields['user_type'] = 'admin'
-        if not email:
-            raise ValueError("L'adresse email est obligatoire")
-        email = BaseUser.objects.normalize_email(email)
-        user = self.model(email=email, **extra_fields)
-        user.set_password(password)
-        user.save(using=self._db)
-        return user
+        return super().create_user(email, password, **extra_fields)
 
     def create_superuser(self, email, password=None, **extra_fields):
-        extra_fields.setdefault('is_staff', True)
-        extra_fields.setdefault('is_superuser', True)
-        if extra_fields.get('is_staff') is not True:
-            raise ValueError('Le superuser doit avoir is_staff=True')
-        if extra_fields.get('is_superuser') is not True:
-            raise ValueError('Le superuser doit avoir is_superuser=True')
-        return self.create_user(email, password, **extra_fields)
+        extra_fields.setdefault('user_type', 'admin')
+        return super().create_superuser(email, password, **extra_fields)
 
 
 class AdminUser(BaseUser):

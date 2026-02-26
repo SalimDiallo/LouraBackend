@@ -195,12 +195,6 @@ class CanAccessOwnOrManage(BaseHasPermission):
         return CanAccessOwnOrManage
 
 
-# ===============================
-# ALIAS POUR RÉTROCOMPATIBILITÉ
-# ===============================
-# Ces alias permettent de ne pas casser le code existant
-# TODO: Migrer progressivement vers les nouvelles classes
-
 RequiresEmployeePermission = EmployeePermission
 RequiresDepartmentPermission = DepartmentPermission
 RequiresPositionPermission = PositionPermission
