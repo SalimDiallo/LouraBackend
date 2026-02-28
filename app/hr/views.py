@@ -15,7 +15,7 @@ from decimal import Decimal
 from datetime import timedelta
 
 from django.conf import settings
-from django.db import models
+from django.db import models, transaction
 from django.http import HttpResponse
 from django.utils import timezone
 
@@ -33,7 +33,7 @@ from core.models import Organization, AdminUser
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayrollAdvance, Permission, Role, Attendance
+    PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role, Attendance
 )
 
 # Serializers
@@ -295,6 +295,8 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
     organization_field = 'employee__organization'
     view_permission = 'hr.view_contracts'
     create_permission = 'hr.create_contracts'
+    allow_list_without_permission = True  # Permet de lister pour les dropdowns
+
 
     def perform_create(self, serializer):
         """
@@ -956,10 +958,10 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     - Un utilisateur NE PEUT PAS marquer ses propres paies comme payées
     - L'endpoint 'history' retourne uniquement les fiches de l'utilisateur connecté
     """
-    permission_classes = [IsAdminUserOrEmployee, CanAccessOwnOrManage.for_resource('payroll', 'can_view_payroll')]
+    permission_classes = [IsAdminUserOrEmployee, RequiresPayrollPermission]
 
     def get_serializer_class(self):
-        if self.action == 'create':
+        if self.action in ('create', 'update', 'partial_update'):
             return PayslipCreateSerializer
         return PayslipSerializer
 
@@ -1058,7 +1060,7 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                     {'error': 'Vous ne pouvez pas marquer votre propre paie comme payée'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            if not (user.has_permission("hr.process_payroll") or user.is_hr_admin()):
+            if not (user.has_permission("hr.update_payroll") or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de traiter les paies'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1110,7 +1112,7 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             request=request
         )
 
-    @action(detail=False, methods=['post'], permission_classes=[IsHRAdmin])
+    @action(detail=False, methods=['post'])
     def generate_for_period(self, request):
         """Génération intelligente de fiches de paie avec déduction automatique des avances
         
@@ -1118,7 +1120,24 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         - Période optionnelle (mode ad-hoc)
         - Données personnalisées par employé (salaire de base, notes, primes, déductions, avances)
         """
+        # Vérifier la permission "hr.create_payroll" (ou équivalente)
+        user = request.user
+        if getattr(user, "user_type", None) == "admin":
+            permission_codename = "hr.create_payroll"
+        elif getattr(user, "user_type", None) == "employee":
+            permission_codename = "hr.create_payroll"
+        else:
+            return Response(
+                {"error": "Type d'utilisateur non autorisé"},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
+        # Ici, on suppose que has_permission vérifie les permissions personnalisées du système
+        if not user.has_permission(permission_codename):
+            return Response(
+                {"error": "Permission refusée : vous n'avez pas le droit de générer des fiches de paie"},
+                status=status.HTTP_403_FORBIDDEN
+            )
         payroll_period_id = request.data.get('payroll_period')
         employee_filters = request.data.get('employee_filters', {})
         auto_deduct_advances = request.data.get('auto_deduct_advances', True)
@@ -1135,7 +1154,8 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         # Récupérer la période (optionnelle maintenant)
         payroll_period = None
         organization = None
-        
+
+        # if user.has_permission("hr.view_payroll")
         if payroll_period_id:
             try:
                 payroll_period = PayrollPeriod.objects.get(id=payroll_period_id)
@@ -1198,140 +1218,154 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         advances_deducted = 0
         errors = []
 
-        for employee in employees:
-            # Vérifier si fiche existe déjà (seulement si période spécifiée)
-            if payroll_period and Payslip.objects.filter(employee=employee, payroll_period=payroll_period).exists():
-                skipped_count += 1
-                logger.info(f"Payslip already exists for {employee.get_full_name()}")
-                continue
+        # Utiliser transaction.atomic() pour garantir l'intégrité des données
+        # Si une erreur critique survient, toutes les créations sont annulées
+        try:
+            with transaction.atomic():
+                for employee in employees:
+                    # Vérifier si fiche existe déjà (seulement si période spécifiée)
+                    if payroll_period and Payslip.objects.filter(employee=employee, payroll_period=payroll_period).exists():
+                        skipped_count += 1
+                        logger.info(f"Payslip already exists for {employee.get_full_name()}")
+                        continue
 
-            try:
-                # Récupérer le contrat actif
-                contract = employee.contracts.filter(is_active=True).first()
-                if not contract:
-                    errors.append(f"{employee.get_full_name()}: Pas de contrat actif")
-                    continue
+                    try:
+                        # Récupérer le contrat actif
+                        contract = employee.contracts.filter(is_active=True).first()
+                        if not contract:
+                            errors.append(f"{employee.get_full_name()}: Pas de contrat actif")
+                            continue
 
-                # ✨ Données personnalisées pour cet employé
-                custom_data = employee_custom_data.get(str(employee.id), {})
-                
-                # Salaire de base (personnalisé ou du contrat)
-                base_salary = Decimal(str(custom_data.get('base_salary'))) if custom_data.get('base_salary') is not None else contract.base_salary
-                currency = contract.currency
-                
-                # Notes/description
-                description = custom_data.get('notes', '')
+                        # Données personnalisées pour cet employé
+                        custom_data = employee_custom_data.get(str(employee.id), {})
+                        
+                        # Salaire de base (personnalisé ou du contrat)
+                        base_salary = Decimal(str(custom_data.get('base_salary'))) if custom_data.get('base_salary') is not None else contract.base_salary
+                        currency = contract.currency
+                        
+                        # Notes/description
+                        description = custom_data.get('notes', '')
 
-                # ✨ Primes personnalisées
-                custom_allowances = custom_data.get('allowances', [])
-                total_allowances = Decimal('0')
-                allowance_items = []
-                for allowance in custom_allowances:
-                    amount = Decimal(str(allowance.get('amount', 0)))
-                    total_allowances += amount
-                    allowance_items.append({
-                        'name': allowance.get('name', 'Prime'),
-                        'amount': amount,
-                        'is_deduction': False,
-                    })
+                        # Primes personnalisées
+                        custom_allowances = custom_data.get('allowances', [])
+                        total_allowances = Decimal('0')
+                        allowance_items = []
+                        for allowance in custom_allowances:
+                            amount = Decimal(str(allowance.get('amount', 0)))
+                            if amount <= 0:
+                                continue
+                            total_allowances += amount
+                            allowance_items.append({
+                                'name': allowance.get('name', 'Prime'),
+                                'amount': amount,
+                                'is_deduction': False,
+                            })
 
-                # ✨ Déductions personnalisées
-                custom_deductions = custom_data.get('deductions', [])
-                total_custom_deductions = Decimal('0')
-                deduction_items = []
-                for deduction in custom_deductions:
-                    amount = Decimal(str(deduction.get('amount', 0)))
-                    total_custom_deductions += amount
-                    deduction_items.append({
-                        'name': deduction.get('name', 'Déduction'),
-                        'amount': amount,
-                        'is_deduction': True,
-                    })
+                        # Déductions personnalisées
+                        custom_deductions = custom_data.get('deductions', [])
+                        total_custom_deductions = Decimal('0')
+                        deduction_items = []
+                        for deduction in custom_deductions:
+                            amount = Decimal(str(deduction.get('amount', 0)))
+                            if amount <= 0:
+                                continue
+                            total_custom_deductions += amount
+                            deduction_items.append({
+                                'name': deduction.get('name', 'Déduction'),
+                                'amount': amount,
+                                'is_deduction': True,
+                            })
 
-                # ✨ Avances sélectionnées manuellement ou auto-déduction
-                selected_advance_ids = custom_data.get('advance_ids', [])
-                paid_advances = []
-                advance_deduction_items = []
-                total_advance_amount = Decimal('0')
+                        # Avances sélectionnées manuellement ou auto-déduction
+                        selected_advance_ids = custom_data.get('advance_ids', [])
+                        advance_list = []  # Matérialiser le queryset en liste
+                        advance_deduction_items = []
+                        total_advance_amount = Decimal('0')
 
-                if selected_advance_ids:
-                    # Utiliser les avances sélectionnées manuellement
-                    paid_advances = PayrollAdvance.objects.filter(
-                        id__in=selected_advance_ids,
-                        employee=employee,
-                        status=PayrollAdvance.AdvanceStatus.APPROVED,
-                        payslip__isnull=True
-                    )
-                elif auto_deduct_advances:
-                    # Auto-déduire toutes les avances approuvées non déduites
-                    paid_advances = PayrollAdvance.objects.filter(
-                        employee=employee,
-                        status=PayrollAdvance.AdvanceStatus.APPROVED,
-                        payslip__isnull=True
-                    )
+                        if selected_advance_ids:
+                            # Utiliser les avances sélectionnées manuellement
+                            advance_list = list(PayrollAdvance.objects.filter(
+                                id__in=selected_advance_ids,
+                                employee=employee,
+                                status=PayrollAdvance.AdvanceStatus.APPROVED,
+                                payslip__isnull=True
+                            ))
+                        elif auto_deduct_advances:
+                            # Auto-déduire toutes les avances approuvées non déduites
+                            advance_list = list(PayrollAdvance.objects.filter(
+                                employee=employee,
+                                status=PayrollAdvance.AdvanceStatus.APPROVED,
+                                payslip__isnull=True
+                            ))
 
-                for advance in paid_advances:
-                    advance_deduction_items.append({
-                        'name': f'Remboursement avance - {advance.reason[:30] if advance.reason else "Avance"}',
-                        'amount': advance.amount,
-                        'is_deduction': True,
-                    })
-                    total_advance_amount += advance.amount
-                    logger.info(f"Deducting advance {advance.id} ({advance.amount}) for {employee.get_full_name()}")
+                        for advance in advance_list:
+                            advance_deduction_items.append({
+                                'name': f'Remboursement avance - {advance.reason[:30] if advance.reason else "Avance"}',
+                                'amount': advance.amount,
+                                'is_deduction': True,
+                            })
+                            total_advance_amount += advance.amount
+                            logger.info(f"Deducting advance {advance.id} ({advance.amount}) for {employee.get_full_name()}")
 
-                # Calculer totaux
-                gross_salary = base_salary + total_allowances
-                total_deductions = total_custom_deductions + total_advance_amount
-                net_salary = gross_salary - total_deductions
-                
-                # Vérifier que le net n'est pas négatif
-                if net_salary < 0:
-                    errors.append(f"{employee.get_full_name()}: Le salaire net serait négatif ({net_salary})")
-                    continue
+                        # Calculer totaux
+                        gross_salary = base_salary + total_allowances
+                        total_deductions = total_custom_deductions + total_advance_amount
+                        net_salary = gross_salary - total_deductions
+                        
+                        # Vérifier que le net n'est pas négatif
+                        if net_salary < 0:
+                            errors.append(f"{employee.get_full_name()}: Le salaire net serait négatif ({net_salary})")
+                            continue
 
-                # Déterminer le statut initial
-                initial_status = 'approved' if auto_approve else 'draft'
+                        # Déterminer le statut initial
+                        initial_status = 'approved' if auto_approve else 'draft'
 
-                # Créer la fiche de paie
-                payslip = Payslip.objects.create(
-                    employee=employee,
-                    payroll_period=payroll_period,  # Peut être None en mode ad-hoc
-                    base_salary=base_salary,
-                    description=description,
-                    currency=currency,
-                    gross_salary=gross_salary,
-                    total_deductions=total_deductions,
-                    net_salary=net_salary,
-                    status=initial_status
-                )
+                        # Créer la fiche de paie
+                        payslip = Payslip.objects.create(
+                            employee=employee,
+                            payroll_period=payroll_period,  # Peut être None en mode ad-hoc
+                            base_salary=base_salary,
+                            description=description,
+                            currency=currency,
+                            gross_salary=gross_salary,
+                            total_deductions=total_deductions,
+                            net_salary=net_salary,
+                            status=initial_status
+                        )
 
-                # Créer les items (primes)
-                for item in allowance_items:
-                    PayslipItem.objects.create(payslip=payslip, **item)
+                        # Créer les items (primes)
+                        for item in allowance_items:
+                            PayslipItem.objects.create(payslip=payslip, **item)
 
-                # Créer les items (déductions)
-                for item in deduction_items:
-                    PayslipItem.objects.create(payslip=payslip, **item)
+                        # Créer les items (déductions)
+                        for item in deduction_items:
+                            PayslipItem.objects.create(payslip=payslip, **item)
 
-                # Créer les items (avances)
-                for item in advance_deduction_items:
-                    PayslipItem.objects.create(payslip=payslip, **item)
+                        # Créer les items (avances)
+                        for item in advance_deduction_items:
+                            PayslipItem.objects.create(payslip=payslip, **item)
 
-                # Lier les avances à la fiche et marquer comme déduites
-                if paid_advances:
-                    for advance in paid_advances:
-                        advance.status = PayrollAdvance.AdvanceStatus.DEDUCTED
-                        advance.payslip = payslip
-                        advance.deduction_month = payroll_period.end_date if payroll_period else timezone.now().date()
-                        advance.save()
-                        advances_deducted += 1
+                        # Lier les avances à la fiche et marquer comme déduites
+                        for advance in advance_list:
+                            advance.status = PayrollAdvance.AdvanceStatus.DEDUCTED
+                            advance.payslip = payslip
+                            advance.deduction_month = payroll_period.end_date if payroll_period else timezone.now().date()
+                            advance.save()
+                            advances_deducted += 1
 
-                created_count += 1
-                logger.info(f"Created payslip for {employee.get_full_name()} with {len(list(paid_advances))} advances deducted (status: {initial_status})")
+                        created_count += 1
+                        logger.info(f"Created payslip for {employee.get_full_name()} with {len(advance_list)} advances deducted (status: {initial_status})")
 
-            except Exception as e:
-                logger.exception(f"Error creating payslip for {employee.get_full_name()}")
-                errors.append(f"{employee.get_full_name()}: {str(e)}")
+                    except Exception as e:
+                        logger.exception(f"Error creating payslip for {employee.get_full_name()}")
+                        errors.append(f"{employee.get_full_name()}: {str(e)}")
+
+        except Exception as e:
+            logger.exception("Critical error during bulk payslip generation - all changes rolled back")
+            return Response({
+                'error': f'Erreur critique lors de la génération. Aucune fiche n\'a été créée. Détails: {str(e)}',
+                'errors': errors,
+            }, status=status.HTTP_500_INTERNAL_SERVER_ERROR)
 
         return Response({
             'message': f'{created_count} fiches de paie créées avec {advances_deducted} avance(s) déduite(s) automatiquement',
@@ -1646,6 +1680,7 @@ class DepartmentStatsView(APIView):
 
         return Response(stats, status=status.HTTP_200_OK)
 
+
 class PayrollAdvanceViewSet(viewsets.ModelViewSet):
     """ViewSet for managing payroll advance requests
     
@@ -1776,10 +1811,10 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                     raise serializers.ValidationError({
                         'detail': 'Vous ne pouvez modifier que vos demandes en attente'
                     })
-            elif not (user.has_permission("hr.update_payroll") or user.is_hr_admin()):
-                raise serializers.ValidationError({
-                    'detail': 'Vous n\'avez pas la permission de modifier cette demande'
-                })
+            # elif not (user.has_permission("hr.update_payroll") or user.is_hr_admin()):
+            #     raise serializers.ValidationError({
+            #         'detail': 'Vous n\'avez pas la permission de modifier cette demande'
+            #     })
         
         serializer.save()
 
@@ -1803,7 +1838,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                 raise serializers.ValidationError({
                     'detail': 'Vous n\'avez pas la permission de supprimer cette demande'
                 })
-            elif instance.status in ['approved', 'deducted']:
+            elif instance.status in ['approved', 'deducted','paid']:
                 raise serializers.ValidationError({
                     'detail': 'Impossible de supprimer une avance approuvée ou déduite'
                 })
@@ -1987,8 +2022,6 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
     # Les avances approuvées sont maintenant automatiquement déduites lors de la génération
     # des fiches de paie via l'action generate_for_period du PayslipViewSet.
 
-
-
 # -------------------------------
 # PERMISSION & ROLE VIEWSETS
 # -------------------------------
@@ -2133,7 +2166,6 @@ class RoleViewSet(viewsets.ModelViewSet):
 # -------------------------------
 # ATTENDANCE VIEWS
 # -------------------------------
-
 class AttendanceViewSet(viewsets.ModelViewSet):
     """ViewSet for managing attendance records"""
     permission_classes = [IsAdminUserOrEmployee]

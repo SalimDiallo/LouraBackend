@@ -824,9 +824,9 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 
     def validate(self, attrs):
         """Validate payroll data"""
-        employee = attrs.get('employee')
-        payroll_period = attrs.get('payroll_period')
-        description = attrs.get('description', '')
+        employee = attrs.get('employee') or (self.instance.employee if self.instance else None)
+        payroll_period = attrs.get('payroll_period', self.instance.payroll_period if self.instance else None)
+        description = attrs.get('description', self.instance.description if self.instance else '')
 
         # Si pas de période et pas de description, encourager une description
         if not payroll_period and not description:
@@ -845,15 +845,15 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
 
         # Validate advance_ids if provided
         advance_ids = attrs.get('advance_ids', [])
-        if advance_ids:
+        if advance_ids and employee:
             advances = PayrollAdvance.objects.filter(
                 id__in=advance_ids,
                 employee=employee,
-                status=PayrollAdvance.AdvanceStatus.DEDUCTED
+                status=PayrollAdvance.AdvanceStatus.APPROVED
             )
             if advances.count() != len(advance_ids):
                 raise serializers.ValidationError({
-                    'advance_ids': "Certaines avances sont invalides ou ne sont pas dans le statut 'payée'."
+                    'advance_ids': "Certaines avances sont invalides ou ne sont pas dans le statut 'approuvé'."
                 })
 
         return attrs
@@ -892,7 +892,7 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
             PayrollAdvance.objects.filter(
                 id__in=advance_ids,
                 employee=payslip.employee,
-                status=PayrollAdvance.AdvanceStatus.PAID
+                status=PayrollAdvance.AdvanceStatus.APPROVED
             ).update(
                 payslip=payslip,
                 status=PayrollAdvance.AdvanceStatus.DEDUCTED
@@ -907,6 +907,7 @@ class PayslipCreateSerializer(serializers.ModelSerializer):
         # Extraire les items
         allowances_data = validated_data.pop('allowances', None)
         deductions_data = validated_data.pop('deductions', None)
+        advance_ids = validated_data.pop('advance_ids', [])
 
         # Mettre à jour les champs de base
         for attr, value in validated_data.items():
@@ -1566,6 +1567,6 @@ class PayrollAdvanceListSerializer(serializers.ModelSerializer):
         model = PayrollAdvance
         fields = [
             'id', 'employee', 'employee_name', 'employee_id_number',
-            'amount', 'reason', 'request_date', 'status', 'status_display',
+            'amount', 'reason', 'request_date', 'status', 'status_display','rejection_reason',
             'approved_by_name', 'approved_date', 'payment_date', 'payslip', 'created_at'
         ]

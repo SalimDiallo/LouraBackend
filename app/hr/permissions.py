@@ -77,8 +77,8 @@ PERMISSIONS = [
     {'code': 'hr.update_payroll', 'name': 'Modifier la paie', 'category': 'Paie', 'description': 'Peut modifier les informations de paie'},
     {'code': 'hr.delete_payroll', 'name': 'Supprimer des bulletins', 'category': 'Paie', 'description': 'Peut supprimer des bulletins de paie'},
     {'code': 'hr.approve_payroll', 'name': 'Approuver les avances de paies', 'category': 'Paie', 'description': 'Peut approuver les avances sur salaire et valider les paies'},
-    {'code': 'hr.process_payroll', 'name': 'Traiter la paie', 'category': 'Paie', 'description': 'Peut marquer les bulletins comme payés'},
-    {'code': 'hr.export_payroll', 'name': 'Exporter la paie', 'category': 'Paie', 'description': 'Peut exporter les bulletins en PDF'},
+    # {'code': 'hr.process_payroll', 'name': 'Traiter la paie', 'category': 'Paie', 'description': 'Peut marquer les bulletins comme payés'},
+    # {'code': 'hr.export_payroll', 'name': 'Exporter la paie', 'category': 'Paie', 'description': 'Peut exporter les bulletins en PDF'},
 
     # === ATTENDANCE (Pointages) ===
     # {'code': 'hr.view_attendance', 'name': 'Voir les pointages', 'category': 'Pointages', 'description': 'Peut consulter ses pointages'},

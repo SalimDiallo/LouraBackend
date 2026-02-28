@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Employee, Department, Position, Contract,
+    Employee, Department, PayrollAdvance, Position, Contract,
     LeaveType, LeaveBalance, LeaveRequest,
     PayrollPeriod, Payslip, PayslipItem,
     Permission, Role
@@ -122,3 +122,23 @@ class PayslipItemAdmin(admin.ModelAdmin):
     list_display = ['payslip', 'name', 'amount', 'is_deduction']
     list_filter = ['is_deduction']
     search_fields = ['name']
+
+
+
+@admin.register(PayrollAdvance)
+class PayrollAdvanceAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee',
+        'amount',
+        'status',
+        'request_date',
+        'approved_by',
+        'approved_date',
+        'payment_date',
+        'deduction_month',
+        'payslip',
+    ]
+    list_filter = ['status', 'employee', 'request_date', 'payment_date', 'deduction_month']
+    search_fields = ['employee__email', 'employee__first_name', 'employee__last_name', 'reason', 'rejection_reason', 'notes']
+    readonly_fields = ['request_date', 'approved_date', 'payment_date']
+

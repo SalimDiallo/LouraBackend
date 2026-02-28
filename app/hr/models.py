@@ -714,6 +714,7 @@ class PayrollAdvance(TimeStampedModel):
         PENDING = 'pending', 'En attente'
         APPROVED = 'approved', 'Approuvée'
         REJECTED = 'rejected', 'Rejetée'
+        # PAID = 'paid', 'payé'
         DEDUCTED = 'deducted', 'Déduite'  # Simplifié: plus de statut PAID intermédiaire
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='payroll_advances')
