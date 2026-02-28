@@ -1230,8 +1230,8 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                         continue
 
                     try:
-                        # Récupérer le contrat actif
-                        contract = employee.contracts.filter(is_active=True).first()
+                        # Récupérer le contrat actif depuis le cache prefetch (pas de requête SQL)
+                        contract = next((c for c in employee.contracts.all() if c.is_active), None)
                         if not contract:
                             errors.append(f"{employee.get_full_name()}: Pas de contrat actif")
                             continue
