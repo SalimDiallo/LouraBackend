@@ -1,7 +1,7 @@
 from django.contrib import admin
 from .models import (
     Employee, Department, PayrollAdvance, Position, Contract,
-    LeaveType, LeaveBalance, LeaveRequest,
+    LeaveType, LeaveRequest,
     PayrollPeriod, Payslip, PayslipItem,
     Permission, Role
 )
@@ -83,13 +83,6 @@ class LeaveTypeAdmin(admin.ModelAdmin):
     list_display = ['name', 'code', 'organization', 'default_days_per_year', 'is_paid', 'requires_approval', 'is_active']
     list_filter = ['organization', 'is_paid', 'requires_approval', 'is_active']
     search_fields = ['name', 'code']
-
-
-@admin.register(LeaveBalance)
-class LeaveBalanceAdmin(admin.ModelAdmin):
-    list_display = ['employee', 'leave_type', 'year', 'total_days', 'used_days', 'pending_days', 'available_days']
-    list_filter = ['year', 'leave_type']
-    search_fields = ['employee__email', 'employee__first_name', 'employee__last_name']
 
 
 @admin.register(LeaveRequest)

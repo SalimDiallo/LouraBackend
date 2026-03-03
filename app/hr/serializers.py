@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from core.models import Permission, Role
 from .models import (
     Employee, Department, Position, Contract,
-    LeaveType, LeaveBalance, LeaveRequest,
+    LeaveType, LeaveRequest,
     PayrollPeriod, Payslip, PayslipItem, PayrollAdvance,
     Attendance, QRCodeSession
 )
@@ -600,29 +600,12 @@ class LeaveTypeSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
 
 
-# class LeaveBalanceSerializer(serializers.ModelSerializer):
-#     """Serializer for LeaveBalance model"""
-
-#     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
-#     leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
-#     available_days = serializers.ReadOnlyField()
-
-#     class Meta:
-#         model = LeaveBalance
-#         fields = [
-#             'id', 'employee', 'employee_name', 'leave_type', 'leave_type_name',
-#             'year', 'total_days', 'used_days', 'pending_days', 'available_days',
-#             'created_at', 'updated_at'
-#         ]
-#         read_only_fields = ['id', 'created_at', 'updated_at', 'available_days']
-
-
 class LeaveRequestSerializer(serializers.ModelSerializer):
     """Serializer for LeaveRequest model"""
 
     employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
-    leave_type_name = serializers.CharField(source='leave_type.name', read_only=True)
-    leave_type_color = serializers.CharField(source='leave_type.color', read_only=True)
+    leave_type_name = serializers.SerializerMethodField()
+    leave_type_color = serializers.SerializerMethodField()
     status_display = serializers.CharField(source='get_status_display', read_only=True)
     approver_name = serializers.SerializerMethodField()
 
@@ -630,7 +613,7 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         model = LeaveRequest
         fields = [
             'id', 'employee', 'employee_name', 'leave_type', 'leave_type_name',
-            'leave_type_color', 'start_date', 'end_date', 'start_half_day',
+            'leave_type_color', 'title', 'start_date', 'end_date', 'start_half_day',
             'end_half_day', 'total_days', 'reason', 'attachment_url',
             'status', 'status_display', 'approver_name',
             'approval_date', 'approval_notes', 'created_at', 'updated_at'
@@ -639,6 +622,15 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'id', 'employee', 'status', 'approval_date',
             'approval_notes', 'created_at', 'updated_at'
         ]
+        extra_kwargs = {
+            'leave_type': {'required': False, 'allow_null': True},
+        }
+
+    def get_leave_type_name(self, obj):
+        return obj.leave_type.name if obj.leave_type else None
+
+    def get_leave_type_color(self, obj):
+        return obj.leave_type.color if obj.leave_type else None
 
     def get_approver_name(self, obj):
         """Retourne le nom de l'approbateur (Employee ou AdminUser)"""
@@ -652,6 +644,14 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
         if start_date and end_date and start_date > end_date:
             raise serializers.ValidationError({
                 'end_date': 'La date de fin doit être après la date de début.'
+            })
+
+        # Si pas de leave_type, le titre est obligatoire
+        leave_type = attrs.get('leave_type')
+        title = attrs.get('title', '').strip()
+        if not leave_type and not title:
+            raise serializers.ValidationError({
+                'title': 'Le titre est obligatoire si aucun type de congé n\'est sélectionné.'
             })
 
         return attrs

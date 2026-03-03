@@ -491,37 +491,12 @@ class LeaveType(TimeStampedModel):
         return f"{self.name} ({self.organization.name})"
 
 
-class LeaveBalance(TimeStampedModel):
-    """Solde de congés"""
-
-    employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_balances')
-    leave_type = models.ForeignKey(LeaveType, on_delete=models.CASCADE, related_name='balances')
-    year = models.PositiveIntegerField()
-    total_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
-    used_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
-    pending_days = models.DecimalField(max_digits=6, decimal_places=2, default=0)
-
-    class Meta:
-        db_table = 'leave_balances'
-        verbose_name = "Solde de congés"
-        verbose_name_plural = "Soldes de congés"
-        unique_together = [['employee', 'leave_type', 'year']]
-        ordering = ['-year', 'leave_type']
-        indexes = [models.Index(fields=['employee', 'year'])]
-
-    def __str__(self):
-        return f"{self.employee.get_full_name()} - {self.leave_type.name} ({self.year})"
-
-    @property
-    def available_days(self):
-        return self.total_days - self.used_days - self.pending_days
-
-
 class LeaveRequest(TimeStampedModel):
     """Demande de congé"""
 
     employee = models.ForeignKey(Employee, on_delete=models.CASCADE, related_name='leave_requests')
-    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name='requests')
+    leave_type = models.ForeignKey(LeaveType, on_delete=models.PROTECT, related_name='requests', null=True, blank=True)
+    title = models.CharField(max_length=200, blank=True, help_text="Titre descriptif de la demande")
     start_date = models.DateField()
     end_date = models.DateField()
     start_half_day = models.BooleanField(default=False)

@@ -20,7 +20,6 @@ class LeaveService:
     Responsabilités:
     - Création de demandes de congé
     - Approbation/Rejet
-    - Gestion des soldes
     - Calculs statistiques
     """
     
@@ -74,14 +73,10 @@ class LeaveService:
         """
         Crée une nouvelle demande de congé.
         
-        Cette méthode:
-        1. Crée la demande
-        2. Met à jour les jours en attente dans le solde
-        
         Returns:
             LeaveRequest créée
         """
-        from hr.models import LeaveRequest, LeaveBalance
+        from hr.models import LeaveRequest
         
         leave_request = LeaveRequest.objects.create(
             employee=employee,
@@ -93,21 +88,6 @@ class LeaveService:
             **kwargs
         )
         
-        # Mettre à jour le solde (pending_days)
-        year = start_date.year
-        balance, created = LeaveBalance.objects.get_or_create(
-            employee=employee,
-            leave_type=leave_type,
-            year=year,
-            defaults={
-                'total_days': leave_type.default_days_per_year,
-                'used_days': 0,
-                'pending_days': 0
-            }
-        )
-        balance.pending_days += leave_request.total_days
-        balance.save(update_fields=['pending_days'])
-        
         logger.info(f"Leave request created for {employee.email}: {leave_request.total_days} days")
         return leave_request
     
@@ -115,10 +95,6 @@ class LeaveService:
     def approve_leave_request(leave_request, approver, notes: str = '') -> bool:
         """
         Approuve une demande de congé.
-        
-        Cette méthode:
-        1. Met à jour le statut
-        2. Transfert les jours de pending vers used
         
         Args:
             leave_request: La demande à approuver
@@ -128,9 +104,6 @@ class LeaveService:
         Returns:
             bool: True si succès
         """
-        from hr.models import LeaveBalance, Employee
-        from core.models import AdminUser
-        
         if leave_request.status != 'pending':
             logger.warning(f"Cannot approve leave request {leave_request.id}: status is {leave_request.status}")
             return False
@@ -147,19 +120,6 @@ class LeaveService:
         
         leave_request.save()
         
-        # Mettre à jour le solde
-        year = leave_request.start_date.year
-        balance = LeaveBalance.objects.filter(
-            employee=leave_request.employee,
-            leave_type=leave_request.leave_type,
-            year=year
-        ).first()
-        
-        if balance:
-            balance.used_days += leave_request.total_days
-            balance.pending_days = max(0, balance.pending_days - leave_request.total_days)
-            balance.save(update_fields=['used_days', 'pending_days'])
-        
         logger.info(f"Leave request {leave_request.id} approved by {approver}")
         return True
     
@@ -167,14 +127,7 @@ class LeaveService:
     def reject_leave_request(leave_request, rejector, notes: str = '') -> bool:
         """
         Rejette une demande de congé.
-        
-        Cette méthode:
-        1. Met à jour le statut
-        2. Retire les jours du pending
         """
-        from hr.models import LeaveBalance, Employee
-        from core.models import AdminUser
-        
         if leave_request.status != 'pending':
             logger.warning(f"Cannot reject leave request {leave_request.id}: status is {leave_request.status}")
             return False
@@ -190,106 +143,18 @@ class LeaveService:
         
         leave_request.save()
         
-        # Retirer du pending
-        year = leave_request.start_date.year
-        balance = LeaveBalance.objects.filter(
-            employee=leave_request.employee,
-            leave_type=leave_request.leave_type,
-            year=year
-        ).first()
-        
-        if balance:
-            balance.pending_days = max(0, balance.pending_days - leave_request.total_days)
-            balance.save(update_fields=['pending_days'])
-        
         logger.info(f"Leave request {leave_request.id} rejected by {rejector}")
         return True
     
     @staticmethod
     def cancel_leave_request(leave_request) -> bool:
         """Annule une demande de congé en attente."""
-        from hr.models import LeaveBalance
-        
         if leave_request.status != 'pending':
             return False
-        
-        # Retirer du pending
-        year = leave_request.start_date.year
-        balance = LeaveBalance.objects.filter(
-            employee=leave_request.employee,
-            leave_type=leave_request.leave_type,
-            year=year
-        ).first()
-        
-        if balance:
-            balance.pending_days = max(0, balance.pending_days - leave_request.total_days)
-            balance.save(update_fields=['pending_days'])
         
         leave_request.delete()
         logger.info(f"Leave request {leave_request.id} cancelled")
         return True
-    
-    @staticmethod
-    def get_employee_balance(employee, year: int = None) -> Dict[str, Any]:
-        """
-        Retourne le solde de congés d'un employé.
-        
-        Returns:
-            Dict avec les soldes par type de congé
-        """
-        from hr.models import LeaveBalance, LeaveType
-        
-        year = year or date.today().year
-        
-        balances = LeaveBalance.objects.filter(
-            employee=employee,
-            year=year
-        ).select_related('leave_type')
-        
-        return {
-            balance.leave_type.code: {
-                'name': balance.leave_type.name,
-                'total': balance.total_days,
-                'used': balance.used_days,
-                'pending': balance.pending_days,
-                'available': balance.available_days,
-            }
-            for balance in balances
-        }
-    
-    @staticmethod
-    def initialize_employee_balances(employee, year: int = None) -> int:
-        """
-        Initialise les soldes de congés pour un employé.
-        
-        Returns:
-            Nombre de balances créées
-        """
-        from hr.models import LeaveBalance, LeaveType
-        
-        year = year or date.today().year
-        leave_types = LeaveType.objects.filter(
-            organization=employee.organization,
-            is_active=True
-        )
-        
-        created = 0
-        for leave_type in leave_types:
-            _, was_created = LeaveBalance.objects.get_or_create(
-                employee=employee,
-                leave_type=leave_type,
-                year=year,
-                defaults={
-                    'total_days': leave_type.default_days_per_year,
-                    'used_days': 0,
-                    'pending_days': 0
-                }
-            )
-            if was_created:
-                created += 1
-        
-        logger.info(f"Initialized {created} leave balances for {employee.email}")
-        return created
     
     @staticmethod
     def get_organization_leave_stats(organization, year: int = None) -> Dict[str, Any]:

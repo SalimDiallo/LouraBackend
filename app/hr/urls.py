@@ -9,7 +9,6 @@ from .views import (
     PositionViewSet,
     ContractViewSet,
     LeaveTypeViewSet,
-    # LeaveBalanceViewSet,
     LeaveRequestViewSet,
     PayrollPeriodViewSet,
     PayslipViewSet,
@@ -30,7 +29,6 @@ router.register(r'departments', DepartmentViewSet, basename='department')
 router.register(r'positions', PositionViewSet, basename='position')
 router.register(r'contracts', ContractViewSet, basename='contract')
 router.register(r'leave-types', LeaveTypeViewSet, basename='leavetype')
-# router.register(r'leave-balances', LeaveBalanceViewSet,basename='leavebalance')
 router.register(r'leave-requests', LeaveRequestViewSet, basename='leaverequest')
 router.register(r'payroll-periods', PayrollPeriodViewSet, basename='payrollperiod')
 router.register(r'payslips', PayslipViewSet, basename='payslip')

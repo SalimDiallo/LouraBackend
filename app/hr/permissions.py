@@ -63,11 +63,8 @@ PERMISSIONS = [
     {'code': 'hr.assign_roles', 'name': 'Attribuer des rôles', 'category': 'Rôles', 'description': 'Peut attribuer des rôles aux employés'},
 
     # === LEAVE (Congés) ===
-    {'code': 'hr.view_leave', 'name': 'Voir les congés', 'category': 'Congés', 'description': 'Peut consulter les demandes de congé'},
-    {'code': 'hr.create_leave', 'name': 'Créer des demandes', 'category': 'Congés', 'description': 'Peut créer des demandes de congé'},
-    {'code': 'hr.update_leave', 'name': 'Modifier des congés', 'category': 'Congés', 'description': 'Peut modifier des demandes de congé'},
-    {'code': 'hr.delete_leave', 'name': 'Supprimer des congés', 'category': 'Congés', 'description': 'Peut supprimer des demandes de congé'},
-    {'code': 'hr.approve_leave', 'name': 'Approuver des congés', 'category': 'Congés', 'description': 'Peut approuver ou rejeter des demandes de congé'},
+    {'code': 'hr.view_leave_requests', 'name': 'Voir les congés', 'category': 'Congés', 'description': 'Peut consulter les demandes de congé'},
+   {'code': 'hr.approve_leave_requests', 'name': 'Approuver des congés', 'category': 'Congés', 'description': 'Peut approuver ou rejeter des demandes de congé'},
     # {'code': 'hr.manage_leave_types', 'name': 'Gérer les types', 'category': 'Congés', 'description': 'Peut créer et modifier les types de congé'},
     # {'code': 'hr.manage_leave_balances', 'name': 'Gérer les soldes', 'category': 'Congés', 'description': 'Peut modifier les soldes de congé'},
 
@@ -186,7 +183,7 @@ class IsManagerOrAdmin(BaseHasPermission):
 class CanAccessOwnOrManage(BaseHasPermission):
     """
     Permet l'accès aux propres données ou gestion si permission.
-    Utilisée pour LeaveBalance et Payslip.
+    Utilisée pour Payslip.
     """
     
     @staticmethod

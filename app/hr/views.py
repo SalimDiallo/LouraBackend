@@ -19,7 +19,7 @@ from django.db import models, transaction
 from django.http import HttpResponse
 from django.utils import timezone
 
-from rest_framework import status, viewsets
+from rest_framework import serializers, status, viewsets
 from rest_framework.decorators import action
 from rest_framework.permissions import AllowAny, IsAuthenticated
 from rest_framework.response import Response
@@ -32,7 +32,7 @@ from inventory.pdf_base import PDFGeneratorMixin
 from core.models import Organization, AdminUser
 from .models import (
     Employee, Department, Position, Contract,
-    LeaveType, LeaveBalance, LeaveRequest,
+    LeaveType, LeaveRequest,
     PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role, Attendance
 )
 
@@ -575,24 +575,6 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         serializer.save(organization=organization)
 
 
-# class LeaveBalanceViewSet(viewsets.ModelViewSet):
-#     """ViewSet for managing leave balances"""
-#     serializer_class = LeaveBalanceSerializer
-#     permission_classes = [IsAdminUserOrEmployee, CanAccessOwnOrManage.for_resource('leave', 'can_manage_leave_balances')]
-
-#     def get_queryset(self):
-#         user = self.request.user
-
-#         if getattr(user, 'user_type', None) == 'admin':
-#             org_ids = user.organizations.values_list('id', flat=True)
-#             return LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
-#         elif getattr(user, 'user_type', None) == 'employee':
-#             if user.has_permission("hr.manage_leave_balances") or user.is_hr_admin():
-#                 return LeaveBalance.objects.filter(employee__organization=user.organization)
-#             return LeaveBalance.objects.filter(employee=user)
-#         return LeaveBalance.objects.none()
-
-
 class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing leave requests.
@@ -601,7 +583,6 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     La liste de toutes les demandes n'est visible que si on a la permission hr.view_leave.
     """
     serializer_class = LeaveRequestSerializer
-    permission_classes = [IsAdminUserOrEmployee]
 
     def get_queryset(self):
         """
@@ -669,16 +650,6 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                 'user': 'Seuls les employés et administrateurs peuvent créer des demandes'
             })
 
-        # Mettre à jour le solde de congé (pending_days)
-        year = leave_request.start_date.year
-        balance, _ = LeaveBalance.objects.get_or_create(
-            employee=leave_request.employee,
-            leave_type=leave_request.leave_type,
-            year=year
-        )
-        balance.pending_days += leave_request.total_days
-        balance.save()
-    
     def perform_destroy(self, instance):
         user = self.request.user
         # Si employé: peut supprimer sa propre demande uniquement si non approuvée
@@ -689,21 +660,14 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                 raise serializers.ValidationError({'detail': "Impossible de supprimer une demande déjà approuvée."})
         # Si admin, il peut supprimer toute demande
 
-        # Mise à jour LeaveBalance que si la demande est encore pending ou rejetée mais pas approuvée
-        if instance.status == 'pending' or instance.status == 'rejected':
-            year = instance.start_date.year
-            balance = LeaveBalance.objects.filter(
-                employee=instance.employee,
-                leave_type=instance.leave_type,
-                year=year
-            ).first()
-            if balance:
-                balance.pending_days -= instance.total_days
-                balance.save()
         instance.delete()
 
-    @action(detail=True, methods=['post'], permission_classes=[IsManagerOrHRAdmin])
+    @action(detail=True, methods=['post'])
     def approve(self, request, pk=None):
+        user = request.user
+        if getattr(user, 'user_type', None) == 'employee':
+            if not user.has_permission("hr.approve_leave_requests"):
+                raise serializers.ValidationError({'permission': 'Permission refusée'})
         leave_request = self.get_object()
         serializer = LeaveRequestApprovalSerializer(data=request.data)
 
@@ -713,16 +677,6 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             leave_request.approval_date = timezone.now()
             leave_request.approval_notes = serializer.validated_data.get('approval_notes', '')
             leave_request.save()
-
-            year = leave_request.start_date.year
-            balance, _ = LeaveBalance.objects.get_or_create(
-                employee=leave_request.employee,
-                leave_type=leave_request.leave_type,
-                year=year
-            )
-            balance.used_days += leave_request.total_days
-            balance.pending_days -= leave_request.total_days
-            balance.save()
 
             # --- Notification vers l'employé : congé approuvé ---
             try:
@@ -748,8 +702,12 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
 
-    @action(detail=True, methods=['post'], permission_classes=[IsManagerOrHRAdmin])
+    @action(detail=True, methods=['post'])
     def reject(self, request, pk=None):
+        user = request.user
+        if getattr(user, 'user_type', None) == 'employee':
+            if not user.has_permission("hr.approve_leave_requests"):
+                raise serializers.ValidationError({'permission': 'Permission refusée'})
         leave_request = self.get_object()
         serializer = LeaveRequestApprovalSerializer(data=request.data)
 
@@ -759,16 +717,6 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             leave_request.approval_date = timezone.now()
             leave_request.approval_notes = serializer.validated_data.get('approval_notes', '')
             leave_request.save()
-
-            year = leave_request.start_date.year
-            balance = LeaveBalance.objects.filter(
-                employee=leave_request.employee,
-                leave_type=leave_request.leave_type,
-                year=year
-            ).first()
-            if balance:
-                balance.pending_days -= leave_request.total_days
-                balance.save()
 
             # --- Notification vers l'employé : congé rejeté ---
             try:

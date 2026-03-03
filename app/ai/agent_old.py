@@ -156,11 +156,6 @@ RAPPEL FINAL: Tu es UN RAPPORTEUR DE DONNÉES, pas un créateur. Zéro invention
                 "description": "Historique des congés sur une période",
                 "params": ["limit"]
             },
-            "soldes_conges": {
-                "function": self._get_leave_balances,
-                "description": "Soldes de congés des employés pour l'année en cours",
-                "params": []
-            },
 
             # === PAIE ===
             "fiches_paie_recentes": {
@@ -754,38 +749,6 @@ RAPPEL FINAL: Tu es UN RAPPORTEUR DE DONNÉES, pas un créateur. Zéro invention
                     "statut": r.get_status_display()
                 }
                 for r in requests
-            ]
-
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-
-    def _get_leave_balances(self) -> ToolResult:
-        """Soldes de congés des employés"""
-        start = time.time()
-        try:
-            from hr.models import LeaveBalance
-            from datetime import datetime
-
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-
-            current_year = datetime.now().year
-            balances = LeaveBalance.objects.filter(
-                employee__organization=self.organization,
-                year=current_year
-            )[:20]
-
-            results = [
-                {
-                    "employe": b.employee.get_full_name(),
-                    "type_conge": b.leave_type.name,
-                    "total": float(b.total_days),
-                    "utilises": float(b.used_days),
-                    "en_attente": float(b.pending_days),
-                    "disponibles": float(b.available_days)
-                }
-                for b in balances
             ]
 
             return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
