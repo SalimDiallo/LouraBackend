@@ -4,7 +4,7 @@ from django.contrib.auth.password_validation import validate_password
 from core.models import Permission, Role
 from .models import (
     Employee, Department, Position, Contract,
-    LeaveType, LeaveRequest,
+    LeaveType, LeaveRequest, LeaveBalance,
     PayrollPeriod, Payslip, PayslipItem, PayrollAdvance,
     Attendance, QRCodeSession
 )
@@ -654,6 +654,21 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
                 'title': 'Le titre est obligatoire si aucun type de congé n\'est sélectionné.'
             })
 
+        # Vérifier le solde de congés disponible
+        # Note: employee sera ajouté dans perform_create, donc on doit vérifier dans le viewset
+        # OU on peut vérifier ici si on a l'instance (update) ou le context (create)
+        employee = self.context.get('employee') if hasattr(self, 'context') else None
+        total_days = attrs.get('total_days')
+
+        if employee and leave_type and total_days and start_date:
+            from hr.models import LeaveBalance
+            year = start_date.year
+            can_take, message = LeaveBalance.check_balance(employee, leave_type, total_days, year)
+            if not can_take:
+                raise serializers.ValidationError({
+                    'total_days': message
+                })
+
         return attrs
 
 
@@ -661,6 +676,24 @@ class LeaveRequestApprovalSerializer(serializers.Serializer):
     """Serializer for approving/rejecting leave requests"""
 
     approval_notes = serializers.CharField(required=False, allow_blank=True)
+
+
+class LeaveBalanceSerializer(serializers.ModelSerializer):
+    """Serializer for LeaveBalance model - Global balance only"""
+
+    employee_name = serializers.CharField(source='employee.get_full_name', read_only=True)
+    used_days = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
+    pending_days = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
+    remaining_days = serializers.DecimalField(max_digits=6, decimal_places=2, read_only=True)
+
+    class Meta:
+        model = LeaveBalance
+        fields = [
+            'id', 'employee', 'employee_name', 'year', 'allocated_days',
+            'used_days', 'pending_days', 'remaining_days',
+            'created_at', 'updated_at'
+        ]
+        read_only_fields = ['id', 'created_at', 'updated_at']
 
 
 # ===============================

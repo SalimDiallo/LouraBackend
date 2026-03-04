@@ -32,7 +32,7 @@ from inventory.pdf_base import PDFGeneratorMixin
 from core.models import Organization, AdminUser
 from .models import (
     Employee, Department, Position, Contract,
-    LeaveType, LeaveRequest,
+    LeaveType, LeaveRequest, LeaveBalance,
     PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role, Attendance
 )
 
@@ -41,7 +41,7 @@ from .serializers import (
     EmployeeSerializer, EmployeeCreateSerializer, EmployeeListSerializer,
     EmployeeUpdateSerializer, EmployeeChangePasswordSerializer,
     DepartmentSerializer, PositionSerializer, ContractSerializer,
-    LeaveTypeSerializer, LeaveRequestSerializer,
+    LeaveTypeSerializer, LeaveRequestSerializer, LeaveBalanceSerializer,
     LeaveRequestApprovalSerializer,
     PayrollPeriodSerializer, PayslipSerializer, PayslipCreateSerializer,
     PayrollAdvanceSerializer, PayrollAdvanceCreateSerializer, PayrollAdvanceListSerializer,
@@ -583,6 +583,10 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     La liste de toutes les demandes n'est visible que si on a la permission hr.view_leave.
     """
     serializer_class = LeaveRequestSerializer
+    filterset_fields = ['employee', 'status', 'leave_type', 'start_date', 'end_date']
+    search_fields = ['employee__first_name', 'employee__last_name', 'title', 'reason']
+    ordering_fields = ['start_date', 'end_date', 'created_at']
+    ordering = ['-start_date']
 
     def get_queryset(self):
         """
@@ -608,25 +612,26 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             return queryset
         elif getattr(user, 'user_type', None) == 'employee':
             if user.has_permission("hr.view_leave_requests"):
-                # INSERT_YOUR_CODE
+                # L'employé a la permission de voir toutes les demandes de l'organisation
                 exclude = self.request.query_params.get('exclude')
                 queryset = LeaveRequest.objects.filter(employee__organization=user.organization)
                 if exclude:
                     queryset = queryset.exclude(employee=user)
                 return queryset
-            
-            # On veut permettre à l'employé de voir ses propres demandes dans retrieve OU destroy
-            # Récriture ici: pour retrieve et destroy, inclure LeaveRequest de l'utilisateur
-            if self.action in ["retrieve", "destroy"]:
-                return LeaveRequest.objects.filter(employee=user)
-            return LeaveRequest.objects.none()
+
+            # L'employé n'a pas la permission spéciale, mais peut toujours voir SES PROPRES demandes
+            # Ceci permet à l'employé de lister, voir, créer et supprimer ses propres demandes
+            return LeaveRequest.objects.filter(employee=user)
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
+        from hr.models import LeaveBalance
+
         user = self.request.user
+        employee = None
+
         if getattr(user, 'user_type', None) == 'employee':
-            # Toute employé peut créer une demande, sans permission spécifique
-            leave_request = serializer.save(employee=user)
+            employee = user
         elif getattr(user, 'user_type', None) == 'admin':
             # AdminUser créant une demande pour un employé spécifique
             employee_id = self.request.data.get('employee')
@@ -640,7 +645,6 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                     raise serializers.ValidationError({
                         'employee': 'Vous n\'avez pas accès à cet employé'
                     })
-                leave_request = serializer.save(employee=employee)
             except Employee.DoesNotExist:
                 raise serializers.ValidationError({
                     'employee': 'Employé introuvable'
@@ -649,6 +653,23 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             raise serializers.ValidationError({
                 'user': 'Seuls les employés et administrateurs peuvent créer des demandes'
             })
+
+        # Vérifier le solde de congés disponible
+        leave_type = serializer.validated_data.get('leave_type')
+        total_days = serializer.validated_data.get('total_days')
+        start_date = serializer.validated_data.get('start_date')
+
+        # Vérifier le solde si on a un employee, des jours demandés et une date de début
+        if employee and total_days and start_date:
+            year = start_date.year
+            can_take, message = LeaveBalance.check_balance(employee, leave_type, total_days, year)
+            if not can_take:
+                raise serializers.ValidationError({
+                    'total_days': message
+                })
+
+        # Sauvegarder la demande
+        leave_request = serializer.save(employee=employee)
 
     def perform_destroy(self, instance):
         user = self.request.user
@@ -672,6 +693,20 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         serializer = LeaveRequestApprovalSerializer(data=request.data)
 
         if serializer.is_valid():
+            # Vérifier le solde avant d'approuver
+            year = leave_request.start_date.year
+            can_take, message = LeaveBalance.check_balance(
+                leave_request.employee,
+                leave_request.leave_type,
+                leave_request.total_days,
+                year
+            )
+            if not can_take:
+                return Response(
+                    {'error': message},
+                    status=status.HTTP_400_BAD_REQUEST
+                )
+
             leave_request.status = 'approved'
             leave_request.approver = request.user
             leave_request.approval_date = timezone.now()
@@ -811,6 +846,170 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                 "previous": None,
                 "results": serializer.data,
             })
+
+    @action(detail=False, methods=['get'], url_path='my-balances')
+    def my_balances(self, request):
+        """
+        Retourne le solde de congés global de l'employé connecté pour l'année demandée.
+        - Seul un employé peut voir son solde.
+        - Un admin reçoit une réponse vide.
+        """
+        from hr.models import LeaveBalance
+        from hr.serializers import LeaveBalanceSerializer
+        from django.utils import timezone
+
+        user = request.user
+        if not hasattr(user, "user_type") or user.user_type not in ("employee", "admin"):
+            return Response({'detail': 'Utilisateur non autorisé'}, status=status.HTTP_403_FORBIDDEN)
+
+        # Seul l'employé peut voir son solde
+        if user.user_type == "employee":
+            year = request.query_params.get('year', timezone.now().year)
+            try:
+                year = int(year)
+            except (ValueError, TypeError):
+                year = timezone.now().year
+
+            balances = LeaveBalance.objects.filter(
+                employee=user,
+                year=year
+            ).select_related('employee').order_by('-year')
+
+            serializer = LeaveBalanceSerializer(balances, many=True)
+            return Response(serializer.data, status=status.HTTP_200_OK)
+        else:
+            # Admin: réponse vide
+            return Response([], status=status.HTTP_200_OK)
+
+
+class LeaveBalanceViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet pour gérer les soldes de congés (LeaveBalance).
+    Permet aux admins et RH de créer, modifier, consulter les soldes de congés des employés.
+    """
+    serializer_class = LeaveBalanceSerializer
+
+    def get_queryset(self):
+        user = self.request.user
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+
+        if getattr(user, 'user_type', None) == 'admin':
+            # Admin: accès à tous les soldes de ses organisations
+            org_ids = user.organizations.values_list('id', flat=True)
+            queryset = LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
+
+            if org_subdomain:
+                queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
+
+            # Filtrer par employé si spécifié
+            employee_id = self.request.query_params.get('employee')
+            if employee_id:
+                queryset = queryset.filter(employee_id=employee_id)
+
+            # Filtrer par année si spécifié
+            year = self.request.query_params.get('year')
+            if year:
+                queryset = queryset.filter(year=year)
+
+            return queryset.select_related('employee')
+
+        elif getattr(user, 'user_type', None) == 'employee':
+            # Si l'employé a la permission d'approuver les congés, il peut voir tous les soldes de congés de son organisation
+            if user.has_permission('hr.approve_leave_requests'):
+                # Accès à tous les employés de son organisation
+                org_ids = []
+                if hasattr(user, 'organizations'):
+                    org_ids = list(user.organizations.values_list('id', flat=True))
+                elif hasattr(user, 'organization_id') and user.organization_id is not None:
+                    org_ids = [user.organization_id]
+                queryset = LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
+
+                # Filtrer par employé si spécifié
+                employee_id = self.request.query_params.get('employee')
+                if employee_id:
+                    queryset = queryset.filter(employee_id=employee_id)
+
+                # Filtrer par année si spécifié
+                year = self.request.query_params.get('year')
+                if year:
+                    queryset = queryset.filter(year=year)
+
+                # Filtrer par sous-domaine si précisé
+                if org_subdomain:
+                    queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
+
+                return queryset.select_related('employee')
+            else:
+                # Sinon: accès seulement à ses propres soldes
+                queryset = LeaveBalance.objects.filter(employee=user)
+
+                # Filtrer par année si spécifié
+                year = self.request.query_params.get('year')
+                if year:
+                    queryset = queryset.filter(year=year)
+
+                return queryset.select_related('employee')
+
+        return LeaveBalance.objects.none()
+
+    def perform_create(self, serializer):
+        user = self.request.user
+        employee = serializer.validated_data.get('employee')
+
+        # Vérifier que l'admin a accès à cet employé
+        if getattr(user, 'user_type', None) == 'admin':
+            if not user.organizations.filter(id=employee.organization_id).exists():
+                raise serializers.ValidationError({
+                    'employee': "Vous n'avez pas accès à cet employé"
+                })
+
+        serializer.save()
+
+    @action(detail=False, methods=['post'], url_path='initialize')
+    def initialize_balances(self, request):
+        """
+        Initialise un solde global de congés pour un employé.
+        """
+        from hr.models import Employee, LeaveBalance
+
+        employee_id = request.data.get('employee')
+        year = request.data.get('year')
+        default_days = request.data.get('default_days', 0)
+
+        if not employee_id:
+            return Response(
+                {'error': 'employee est requis'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        try:
+            employee = Employee.objects.get(id=employee_id)
+        except Employee.DoesNotExist:
+            return Response(
+                {'error': 'Employé introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Vérifier les permissions
+        user = request.user
+        if getattr(user, 'user_type', None) == 'admin':
+            if not user.organizations.filter(id=employee.organization_id).exists():
+                return Response(
+                    {'error': "Vous n'avez pas accès à cet employé"},
+                    status=status.HTTP_403_FORBIDDEN
+                )
+
+        # Initialiser le solde global
+        balances = LeaveBalance.initialize_for_employee(employee, year, default_days)
+
+        serializer = LeaveBalanceSerializer(balances, many=True)
+        return Response(
+            {
+                'message': f'{len(balances)} solde(s) initialisé(s)',
+                'balances': serializer.data
+            },
+            status=status.HTTP_201_CREATED
+        )
 
 
 # -------------------------------

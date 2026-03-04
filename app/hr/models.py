@@ -541,6 +541,173 @@ class LeaveRequest(TimeStampedModel):
         return self.approver.get_full_name() if self.approver else None
 
 
+class LeaveBalance(TimeStampedModel):
+    """
+    Solde de congés par employé, par année.
+
+    Solde GLOBAL uniquement : tous types de congés confondus.
+    Chaque employé a un seul solde annuel qui couvre tous les types de congés.
+    """
+
+    employee = models.ForeignKey(
+        Employee,
+        on_delete=models.CASCADE,
+        related_name='leave_balances'
+    )
+    year = models.PositiveIntegerField(help_text="Année du solde de congés")
+    allocated_days = models.DecimalField(
+        max_digits=6,
+        decimal_places=2,
+        help_text="Nombre de jours alloués pour l'année"
+    )
+
+    class Meta:
+        db_table = 'leave_balances'
+        verbose_name = "Solde de congé"
+        verbose_name_plural = "Soldes de congés"
+        ordering = ['-year']
+        constraints = [
+            # Un seul solde par employé et par année
+            models.UniqueConstraint(
+                fields=['employee', 'year'],
+                name='unique_employee_year_balance',
+            ),
+        ]
+
+    def __str__(self):
+        return (
+            f"{self.employee.get_full_name()} - Solde global "
+            f"({self.year}): {self.allocated_days} alloués, "
+            f"{self.used_days} utilisés, {self.remaining_days} restants"
+        )
+
+    @property
+    def used_days(self):
+        """Calcule les jours utilisés à partir des demandes approuvées de l'année (tous types confondus)."""
+        from django.db.models import Sum
+        total = LeaveRequest.objects.filter(
+            employee=self.employee,
+            status='approved',
+            start_date__year=self.year,
+        ).aggregate(total=Sum('total_days'))['total']
+        return total or 0
+
+    @property
+    def pending_days(self):
+        """Calcule les jours en attente d'approbation pour l'année (tous types confondus)."""
+        from django.db.models import Sum
+        total = LeaveRequest.objects.filter(
+            employee=self.employee,
+            status='pending',
+            start_date__year=self.year,
+        ).aggregate(total=Sum('total_days'))['total']
+        return total or 0
+
+    @property
+    def remaining_days(self):
+        """Jours restants = alloués - utilisés - en attente."""
+        return float(self.allocated_days) - float(self.used_days) - float(self.pending_days)
+
+    @classmethod
+    def get_or_create_for_employee(cls, employee, year=None, default_days=0):
+        """
+        Récupère ou crée le solde global d'un employé pour une année.
+        """
+        if year is None:
+            from django.utils import timezone
+            year = timezone.now().year
+
+        balance, created = cls.objects.get_or_create(
+            employee=employee,
+            year=year,
+            defaults={'allocated_days': default_days}
+        )
+        return balance
+
+    @classmethod
+    def initialize_for_employee(cls, employee, year=None, default_days=0):
+        """
+        Initialise le solde global de congés pour un employé.
+        Vérifie que le nombre de jours alloués est suffisant par rapport aux jours déjà utilisés.
+        """
+        if year is None:
+            from django.utils import timezone
+            year = timezone.now().year
+
+        # Vérifier les jours déjà utilisés pour cette année
+        from django.db.models import Sum
+        used_days = LeaveRequest.objects.filter(
+            employee=employee,
+            status='approved',
+            start_date__year=year,
+        ).aggregate(total=Sum('total_days'))['total'] or 0
+
+        pending_days = LeaveRequest.objects.filter(
+            employee=employee,
+            status='pending',
+            start_date__year=year,
+        ).aggregate(total=Sum('total_days'))['total'] or 0
+
+        total_committed = float(used_days) + float(pending_days)
+
+        # Vérifier que le nombre de jours alloués est suffisant
+        if float(default_days) < total_committed:
+            from rest_framework import serializers
+            raise serializers.ValidationError({
+                'default_days': (
+                    f"Le nombre de jours alloués ({default_days}) est insuffisant. "
+                    f"L'employé a déjà {used_days} jour(s) utilisé(s) et {pending_days} jour(s) en attente "
+                    f"pour l'année {year}. Minimum requis: {total_committed} jours."
+                )
+            })
+
+        balance, created = cls.objects.get_or_create(
+            employee=employee,
+            year=year,
+            defaults={'allocated_days': default_days}
+        )
+
+        if not created:
+            # Si le solde existe déjà, on met à jour le nombre de jours alloués
+            balance.allocated_days = default_days
+            balance.save()
+
+        return [balance]
+
+    @classmethod
+    def check_balance(cls, employee, leave_type, total_days, year=None):
+        """
+        Vérifie si un employé peut prendre `total_days` jours.
+        Vérifie uniquement le solde global (leave_type ignoré).
+
+        Retourne (can_take: bool, message: str)
+        """
+        if year is None:
+            from django.utils import timezone
+            year = timezone.now().year
+
+        total_days = float(total_days)
+
+        # Vérifier le solde global
+        try:
+            balance = cls.objects.get(
+                employee=employee,
+                year=year,
+            )
+            if balance.remaining_days < total_days:
+                return (
+                    False,
+                    f"Solde insuffisant : "
+                    f"{balance.remaining_days:.1f} jour(s) restant(s), "
+                    f"{total_days:.1f} demandé(s)."
+                )
+        except cls.DoesNotExist:
+            # Pas de solde configuré → pas de limite
+            pass
+
+        return (True, "")
+
+
 # ===============================
 # PAYROLL MANAGEMENT
 # ===============================

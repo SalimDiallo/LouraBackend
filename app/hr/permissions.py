@@ -64,7 +64,7 @@ PERMISSIONS = [
 
     # === LEAVE (Congés) ===
     {'code': 'hr.view_leave_requests', 'name': 'Voir les congés', 'category': 'Congés', 'description': 'Peut consulter les demandes de congé'},
-   {'code': 'hr.approve_leave_requests', 'name': 'Approuver des congés', 'category': 'Congés', 'description': 'Peut approuver ou rejeter des demandes de congé'},
+   {'code': 'hr.approve_leave_requests', 'name': 'Gerer les soldes et approuver des congés des autres', 'category': 'Congés', 'description': 'Peut approuver ou rejeter des demandes de congé'},
     # {'code': 'hr.manage_leave_types', 'name': 'Gérer les types', 'category': 'Congés', 'description': 'Peut créer et modifier les types de congé'},
     # {'code': 'hr.manage_leave_balances', 'name': 'Gérer les soldes', 'category': 'Congés', 'description': 'Peut modifier les soldes de congé'},
 
