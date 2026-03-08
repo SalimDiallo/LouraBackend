@@ -39,7 +39,7 @@ from rest_framework.response import Response
 from .pdf_base import PDFGeneratorMixin
 
 # Models
-from .permissions import CategoryPermission, OrderPermission, ProductPermission, SupplierPermission
+from .permissions import CategoryPermission, CustomerPermission, OrderPermission, ProductPermission, SupplierPermission
 from core.models import Organization
 from .models import (
     Category, Warehouse, Supplier, Product, Stock,
@@ -246,6 +246,7 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     queryset = Product.objects.all()
     permission_classes = [IsAuthenticated, ProductPermission]
+    allow_list_without_permission = True
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -1814,7 +1815,8 @@ class CustomerViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     queryset = Customer.objects.all()
     serializer_class = CustomerSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, CustomerPermission]
+    allow_list_without_permission =True
 
     def get_queryset(self):
         queryset = super().get_queryset()
