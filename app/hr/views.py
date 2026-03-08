@@ -2336,7 +2336,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         queryset = Attendance.objects.filter(organization=organization).select_related(
             'user', 'organization', 'approved_by'
-        )
+        ).prefetch_related('breaks')
 
         if getattr(user, 'user_type', None) == 'admin':
             pass
@@ -2400,7 +2400,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('can_manual_checkin'):
+            if not user.has_permission('hr.manual_checkin'):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
@@ -2509,7 +2509,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('can_manual_checkin'):
+            if not user.has_permission('hr.manual_checkin'):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
@@ -2635,8 +2635,8 @@ class AttendanceViewSet(viewsets.ModelViewSet):
 
         if not attendance:
             return Response(
-                {'message': 'No attendance record for today'},
-                status=status.HTTP_404_NOT_FOUND
+                {'message': 'No attendance record for today', 'data': None},
+                status=status.HTTP_200_OK
             )
 
         return Response(AttendanceSerializer(attendance).data)
@@ -2646,7 +2646,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('can_approve_attendance')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('hr.approve_attendance')
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -2709,7 +2709,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             )
 
         today = timezone.now().date()
-        attendance = Attendance.objects.filter(
+        attendance = Attendance.objects.prefetch_related('breaks').filter(
             organization=organization,
             user_email=user_email,
             date=today
@@ -2733,15 +2733,22 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if attendance.break_start and not attendance.break_end:
+        # Check if there's already an active (unfinished) break
+        if attendance.has_active_break():
             return Response(
                 {'error': 'Break already in progress'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        attendance.break_start = timezone.now()
-        attendance.break_end = None
-        attendance.save()
+        # Create a new Break record
+        from hr.models import Break
+        Break.objects.create(
+            attendance=attendance,
+            start_time=timezone.now()
+        )
+
+        # Refresh to include the new break
+        attendance.refresh_from_db()
 
         return Response(
             AttendanceSerializer(attendance).data,
@@ -2776,7 +2783,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             )
 
         today = timezone.now().date()
-        attendance = Attendance.objects.filter(
+        attendance = Attendance.objects.prefetch_related('breaks').filter(
             organization=organization,
             user_email=user_email,
             date=today
@@ -2788,21 +2795,24 @@ class AttendanceViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_404_NOT_FOUND
             )
 
-        if not attendance.break_start:
+        # Find the active break
+        active_break = attendance.get_active_break()
+        if not active_break:
             return Response(
                 {'error': 'No break in progress'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        if attendance.break_end:
-            return Response(
-                {'error': 'Break already ended'},
-                status=status.HTTP_400_BAD_REQUEST
-            )
+        # End the active break
+        active_break.end_time = timezone.now()
+        active_break.save()
 
-        attendance.break_end = timezone.now()
+        # Recalculate hours
         attendance.calculate_hours()
         attendance.save()
+
+        # Refresh to include updated breaks
+        attendance.refresh_from_db()
 
         return Response(
             AttendanceSerializer(attendance).data,
@@ -2815,7 +2825,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         employee_id = request.query_params.get('employee_id', None)
 
         if employee_id:
-            if getattr(user, 'user_type', None) == 'employee' and not user.has_permission('can_view_all_attendance'):
+            if getattr(user, 'user_type', None) == 'employee' and not user.has_permission('hr.view_all_attendance'):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de voir les stats pointage de cet employé'},
                     status=status.HTTP_403_FORBIDDEN
@@ -2884,7 +2894,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def create_qr_session(self, request):
 
         if getattr(request.user, 'user_type', None) == 'employee':
-            if not request.user.has_permission('can_create_qr_session'):
+            if not request.user.has_permission('hr.create_qr_session'):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de créer des sessions QR'},
                     status=status.HTTP_403_FORBIDDEN

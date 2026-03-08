@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Employee, Department, PayrollAdvance, Position, Contract,
+    Attendance, Break, Employee, Department, PayrollAdvance, Position, Contract,
     LeaveType, LeaveRequest,
     PayrollPeriod, Payslip, PayslipItem,
     Permission, Role
@@ -135,3 +135,36 @@ class PayrollAdvanceAdmin(admin.ModelAdmin):
     search_fields = ['employee__email', 'employee__first_name', 'employee__last_name', 'reason', 'rejection_reason', 'notes']
     readonly_fields = ['request_date', 'approved_date', 'payment_date']
 
+
+class BreakInline(admin.TabularInline):
+    model = Break
+    extra = 0
+    readonly_fields = ['start_time', 'end_time', 'created_at']
+
+
+@admin.register(Attendance)
+class AttendanceAdmin(admin.ModelAdmin):
+    inlines = [BreakInline]
+    list_display = [
+        'user', 'organization', 'date', 'check_in', 'check_out',
+        'status', 'approval_status', 'is_approved', 'approved_by', 'approval_date',
+        'is_overtime', 'overtime_hours', 'total_hours'
+    ]
+    list_filter = [
+        'organization', 'status', 'approval_status', 'is_approved', 'is_overtime', 'date'
+    ]
+    search_fields = [
+        'user__email', 'user__first_name', 'user__last_name', 'user_full_name', 'user_email'
+    ]
+    readonly_fields = [
+        'user_email', 'user_full_name', 'total_hours', 'overtime_hours',
+        'break_duration', 'created_at', 'updated_at'
+    ]
+    date_hierarchy = 'date'
+
+
+@admin.register(Break)
+class BreakAdmin(admin.ModelAdmin):
+    list_display = ['attendance', 'start_time', 'end_time', 'duration_minutes']
+    list_filter = ['attendance__date']
+    search_fields = ['attendance__user_full_name']

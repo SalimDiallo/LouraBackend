@@ -22,15 +22,13 @@ class NotificationConsumer(AsyncWebsocketConsumer):
     async def connect(self):
         """Gérer la connexion WebSocket"""
         # Récupérer les paramètres de la query string
-        query_params = dict(self.scope['query_string'].decode().split('&'))
-        params = {}
-        for param in query_params:
-            if '=' in param:
-                key, value = param.split('=', 1)
-                params[key] = value
+        from urllib.parse import parse_qs
 
-        token = params.get('token')
-        org_slug = params.get('organization')
+        raw_qs = self.scope['query_string'].decode()
+        parsed = parse_qs(raw_qs)
+        # parse_qs returns lists, extract first value
+        token = parsed.get('token', [None])[0]
+        org_slug = parsed.get('organization', [None])[0]
 
         if not token or not org_slug:
             await self.close(code=4001)
@@ -161,7 +159,7 @@ class NotificationConsumer(AsyncWebsocketConsumer):
 
         # Vérifier si c'est un admin de cette organisation
         if hasattr(user, 'adminuser'):
-            return user.adminuser.admin_organizations.filter(id=organization.id).exists()
+            return user.adminuser.get_organizations_for_admin().filter(id=organization.id).exists()
 
         # Vérifier si c'est un employé de cette organisation
         if hasattr(user, 'employee'):

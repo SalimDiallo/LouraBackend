@@ -988,17 +988,25 @@ class Attendance(TimeStampedModel):
         return f"{self.user_full_name or self.user_email} - {self.date} ({self.status})"
 
     def calculate_hours(self):
-        """Calcule les heures travaillées"""
+        """Calcule les heures travaillées en tenant compte de toutes les pauses"""
         if self.check_in and self.check_out:
             total_time = self.check_out - self.check_in
             total_hours = total_time.total_seconds() / 3600
 
+            # Calculer la durée totale des pauses depuis le modèle Break
             break_hours = 0
-            if self.break_start and self.break_end:
+            if self.pk:  # Only if saved (has breaks relation)
+                for brk in self.breaks.all():
+                    if brk.start_time and brk.end_time:
+                        break_time = brk.end_time - brk.start_time
+                        break_hours += break_time.total_seconds() / 3600
+
+            # Fallback: utiliser les anciens champs si pas de breaks liés
+            if break_hours == 0 and self.break_start and self.break_end:
                 break_time = self.break_end - self.break_start
                 break_hours = break_time.total_seconds() / 3600
-                self.break_duration = Decimal(str(round(break_hours, 2)))
 
+            self.break_duration = Decimal(str(round(break_hours, 2)))
             self.total_hours = Decimal(str(round(total_hours - break_hours, 2)))
 
             if self.total_hours > 8:
@@ -1008,6 +1016,23 @@ class Attendance(TimeStampedModel):
                 self.is_overtime = False
                 self.overtime_hours = 0
 
+    def get_total_break_duration_minutes(self):
+        """Retourne la durée totale des pauses en minutes"""
+        total_minutes = 0
+        for brk in self.breaks.all():
+            if brk.start_time and brk.end_time:
+                delta = brk.end_time - brk.start_time
+                total_minutes += delta.total_seconds() / 60
+        return round(total_minutes)
+
+    def has_active_break(self):
+        """Vérifie s'il y a une pause en cours"""
+        return self.breaks.filter(end_time__isnull=True).exists()
+
+    def get_active_break(self):
+        """Retourne la pause en cours, ou None"""
+        return self.breaks.filter(end_time__isnull=True).first()
+
     def save(self, *args, **kwargs):
         self.calculate_hours()
         # Mettre à jour le cache
@@ -1015,6 +1040,42 @@ class Attendance(TimeStampedModel):
             self.user_email = self.user.email
             self.user_full_name = self.user.get_full_name()
         super().save(*args, **kwargs)
+
+
+
+class Break(TimeStampedModel):
+    """Pause individuelle liée à un pointage. Permet plusieurs pauses par jour."""
+
+    attendance = models.ForeignKey(
+        Attendance,
+        on_delete=models.CASCADE,
+        related_name='breaks'
+    )
+    start_time = models.DateTimeField()
+    end_time = models.DateTimeField(null=True, blank=True)
+    notes = models.TextField(blank=True)
+
+    class Meta:
+        db_table = 'attendance_breaks'
+        verbose_name = "Pause"
+        verbose_name_plural = "Pauses"
+        ordering = ['start_time']
+
+    def __str__(self):
+        end = self.end_time.strftime('%H:%M') if self.end_time else 'en cours'
+        return f"Pause {self.start_time.strftime('%H:%M')} → {end}"
+
+    @property
+    def duration_minutes(self):
+        """Durée de la pause en minutes"""
+        if self.start_time and self.end_time:
+            return round((self.end_time - self.start_time).total_seconds() / 60)
+        return 0
+
+    @property
+    def is_active(self):
+        """Vrai si la pause est en cours"""
+        return self.end_time is None
 
 
 # ===============================

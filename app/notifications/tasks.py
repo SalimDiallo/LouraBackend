@@ -29,44 +29,26 @@ def create_notification_task(
     action_url: str = '',
 ):
     """
-    Crée une notification de façon asynchrone.
+    Crée une notification de façon asynchrone et pousse en temps réel via SSE/WS.
 
     Utilisée par send_notification() pour ne jamais bloquer
     la vue qui déclenche l'action métier.
     """
-    from django.utils import timezone
     from core.models import BaseUser, Organization
-    from .models import Notification, NotificationPreference
+    from .models import Notification
+    from .notification_helpers import _should_deliver, _push_sse_notification
 
     try:
         organization = Organization.objects.get(id=organization_id)
         recipient = BaseUser.objects.get(id=recipient_id)
         sender = BaseUser.objects.get(id=sender_id) if sender_id else None
 
-        # --- Vérification préférences (même logique que _should_deliver) ---
-        try:
-            pref = NotificationPreference.objects.get(
-                organization=organization, user=recipient
-            )
-            # Filtrer par type
-            type_map = {
-                'alert': pref.receive_alerts,
-                'system': pref.receive_system,
-                'user': pref.receive_user,
-            }
-            if not type_map.get(notification_type, True):
-                logger.debug("Notif filtrée par préférences type=%s", notification_type)
-                return None
+        # Vérification préférences (réutiliser la logique centralisée)
+        if not _should_deliver(organization, recipient, notification_type, priority):
+            logger.debug("Notif filtrée par préférences type=%s priority=%s", notification_type, priority)
+            return None
 
-            # Filtrer par priorité min
-            PRIORITY_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
-            if PRIORITY_ORDER.get(priority, 0) < PRIORITY_ORDER.get(pref.min_priority, 0):
-                logger.debug("Notif filtrée par priorité min=%s", pref.min_priority)
-                return None
-        except NotificationPreference.DoesNotExist:
-            pass  # Pas de préfs → on livre
-
-        # --- Créer la notification ---
+        # Créer la notification
         notification = Notification.objects.create(
             organization=organization,
             recipient=recipient,
@@ -80,6 +62,9 @@ def create_notification_task(
             action_url=action_url,
         )
 
+        # Push en temps réel
+        _push_sse_notification(notification)
+
         logger.info(
             "Notification créée (task) id=%s recipient=%s type=%s",
             notification.id, recipient_id, notification_type
@@ -92,3 +77,29 @@ def create_notification_task(
     except Exception as exc:
         logger.error("Erreur create_notification_task : %s", exc)
         raise self.retry(exc=exc, countdown=10)
+
+
+@shared_task
+def purge_old_notifications_task(organization_id: str | None = None, days: int = 30):
+    """
+    Tâche périodique pour nettoyer les vieilles notifications.
+    Peut être appelée pour une org spécifique ou pour toutes.
+    """
+    from django.utils import timezone
+    from core.models import Organization
+    from .models import Notification
+
+    cutoff = timezone.now() - timezone.timedelta(days=days)
+    qs = Notification.objects.filter(is_read=True, read_at__lt=cutoff)
+
+    if organization_id:
+        try:
+            org = Organization.objects.get(id=organization_id)
+            qs = qs.filter(organization=org)
+        except Organization.DoesNotExist:
+            logger.warning("Organisation %s introuvable pour purge", organization_id)
+            return 0
+
+    count, _ = qs.delete()
+    logger.info("Purge notifications : %d supprimées (days=%d)", count, days)
+    return count

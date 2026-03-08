@@ -623,7 +623,6 @@ class LeaveRequestSerializer(serializers.ModelSerializer):
             'approval_notes', 'created_at', 'updated_at'
         ]
         extra_kwargs = {
-            'leave_type': {'required': False, 'allow_null': True},
         }
 
     def get_leave_type_name(self, obj):
@@ -1014,6 +1013,18 @@ class EmployeeChangePasswordSerializer(serializers.Serializer):
 # ATTENDANCE SERIALIZERS
 # ===============================
 
+class BreakSerializer(serializers.ModelSerializer):
+    """Serializer for individual Break entries"""
+    duration_minutes = serializers.IntegerField(read_only=True)
+    is_active = serializers.BooleanField(read_only=True)
+
+    class Meta:
+        from hr.models import Break
+        model = Break
+        fields = ['id', 'start_time', 'end_time', 'notes', 'duration_minutes', 'is_active', 'created_at']
+        read_only_fields = ['id', 'created_at']
+
+
 class AttendanceSerializer(serializers.ModelSerializer):
     """Serializer for Attendance model"""
 
@@ -1024,6 +1035,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
     department_name = serializers.SerializerMethodField()
     approved_by_name = serializers.ReadOnlyField(source='approved_by.get_full_name')
     is_on_break = serializers.SerializerMethodField()
+    breaks = BreakSerializer(many=True, read_only=True)
+    total_break_minutes = serializers.SerializerMethodField()
 
     class Meta:
         model = Attendance
@@ -1032,7 +1045,8 @@ class AttendanceSerializer(serializers.ModelSerializer):
             'user', 'user_email', 'user_full_name',
             'date', 'check_in', 'check_in_location', 'check_in_notes',
             'check_out', 'check_out_location', 'check_out_notes',
-            'break_start', 'break_end', 'is_on_break', 'total_hours', 'break_duration',
+            'break_start', 'break_end', 'is_on_break', 'breaks', 'total_break_minutes',
+            'total_hours', 'break_duration',
             'status', 'approval_status', 'is_approved',
             'approved_by', 'approved_by_name',
             'approval_date', 'rejection_reason', 'notes', 'is_overtime', 'overtime_hours',
@@ -1056,8 +1070,20 @@ class AttendanceSerializer(serializers.ModelSerializer):
         return None
 
     def get_is_on_break(self, obj):
-        """Check if currently on break"""
+        """Check if currently on break (using new Break model)"""
+        if obj.pk:
+            return obj.breaks.filter(end_time__isnull=True).exists()
         return bool(obj.break_start and not obj.break_end)
+
+    def get_total_break_minutes(self, obj):
+        """Total break duration across all breaks in minutes"""
+        if obj.pk:
+            total = 0
+            for brk in obj.breaks.all():
+                if brk.start_time and brk.end_time:
+                    total += round((brk.end_time - brk.start_time).total_seconds() / 60)
+            return total
+        return 0
 
 
 class AttendanceCreateSerializer(serializers.ModelSerializer):
@@ -1317,7 +1343,7 @@ class QRCodeSessionCreateSerializer(serializers.Serializer):
             session_token=session_token,
             expires_at=expires_at,
             mode=validated_data.get('mode', 'auto'),
-            created_by=self.context['request'].user if hasattr(self.context['request'].user, 'email') else None,
+            created_by=self.context['request'].user if getattr(self.context['request'].user, 'user_type', None) == 'admin' else None,
             is_active=True
         )
         

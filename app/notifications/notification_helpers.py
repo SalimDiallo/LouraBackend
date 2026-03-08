@@ -25,6 +25,7 @@ Usage typique :
     )
 """
 
+import json
 import logging
 from typing import Optional
 
@@ -38,9 +39,89 @@ logger = logging.getLogger(__name__)
 
 
 # ---------------------------------------------------------------------------
-# Mappage priorité → texte lisible
+# Mappage priorité → ordre numérique
 # ---------------------------------------------------------------------------
 PRIORITY_ORDER = {'low': 0, 'medium': 1, 'high': 2, 'critical': 3}
+
+
+# ---------------------------------------------------------------------------
+# Interne : vérification des préférences
+# ---------------------------------------------------------------------------
+
+def _should_deliver(
+    organization: Organization,
+    recipient: BaseUser,
+    notification_type: str,
+    priority: str,
+) -> bool:
+    """
+    Vérifie si la notification doit être livrée selon les préférences du destinataire.
+
+    Si aucune préférence n'existe → livraison par défaut (True).
+    """
+    try:
+        pref = NotificationPreference.objects.get(
+            organization=organization,
+            user=recipient,
+        )
+    except NotificationPreference.DoesNotExist:
+        return True
+
+    # Filtrer par type
+    type_map = {
+        'alert': pref.receive_alerts,
+        'system': pref.receive_system,
+        'user': pref.receive_user,
+    }
+    if not type_map.get(notification_type, True):
+        return False
+
+    # Filtrer par priorité minimale
+    if PRIORITY_ORDER.get(priority, 0) < PRIORITY_ORDER.get(pref.min_priority, 0):
+        return False
+
+    return True
+
+
+# ---------------------------------------------------------------------------
+# Push SSE en temps réel
+# ---------------------------------------------------------------------------
+
+def _push_sse_notification(notification: Notification):
+    """
+    Envoie un événement SSE en temps réel via le système de broadcast.
+    Publie sur Redis (ou in-memory) pour que le SSE generator le capte.
+    """
+    try:
+        from .websocket_helpers import send_notification_to_user, send_unread_count_to_user
+        send_notification_to_user(notification)
+
+        # Envoyer aussi le compteur mis à jour
+        unread = Notification.objects.filter(
+            organization=notification.organization,
+            recipient=notification.recipient,
+            is_read=False,
+        ).count()
+        send_unread_count_to_user(str(notification.recipient_id), unread)
+    except Exception as e:
+        logger.warning("Échec push SSE: %s", e)
+
+
+def _push_sse_unread_update(organization: Organization, user: BaseUser):
+    """
+    Envoie une mise à jour du compteur non lu via SSE/WebSocket.
+    """
+    try:
+        from .websocket_helpers import send_unread_count_to_user
+        unread = Notification.objects.filter(
+            organization=organization,
+            recipient=user,
+            is_read=False,
+        ).count()
+        send_unread_count_to_user(str(user.id), unread)
+    except Exception as e:
+        logger.warning("Échec push SSE unread: %s", e)
+
 
 # ---------------------------------------------------------------------------
 # Création de notification de base
@@ -62,20 +143,8 @@ def send_notification(
     Crée une notification en vérifiant les préférences du destinataire.
 
     Retourne l'instance Notification créée, ou None si filtrée par les préférences.
-
-    Args:
-        organization  : Organisation du contexte.
-        recipient     : Utilisateur destinataire (BaseUser).
-        title         : Titre court de la notification.
-        message       : Corps de la notification.
-        notification_type : 'alert' | 'system' | 'user'.
-        priority      : 'low' | 'medium' | 'high' | 'critical'.
-        sender        : Utilisateur expéditeur (None = système).
-        entity_type   : Type d'entité liée (ex : 'product', 'order').
-        entity_id     : ID de l'entité liée (UUID en string).
-        action_url    : URL de redirection après clic.
     """
-    # --- Vérification des préférences ----------------------------------------
+    # Vérification des préférences
     if not _should_deliver(organization, recipient, notification_type, priority):
         logger.debug(
             "Notification filtrée par préférences : recipient=%s, type=%s, priority=%s",
@@ -83,7 +152,7 @@ def send_notification(
         )
         return None
 
-    # --- Dispatch via Celery (ou sync si ALWAYS_EAGER) ------------------------
+    # Dispatch via Celery (ou sync si ALWAYS_EAGER)
     from .tasks import create_notification_task
 
     try:
@@ -104,7 +173,7 @@ def send_notification(
             recipient.id, notification_type, priority
         )
     except Exception as exc:
-        # Fallback synchrone : on ne bloque jamais la logique métier
+        # Fallback synchrone
         logger.warning("Celery dispatch échoué, création synchrone : %s", exc)
         notification = Notification.objects.create(
             organization=organization,
@@ -118,10 +187,11 @@ def send_notification(
             entity_id=str(entity_id) if entity_id else '',
             action_url=action_url,
         )
+        # Push en temps réel
+        _push_sse_notification(notification)
         return notification
 
-    # En mode eager la tâche s'exécute sync → on retourne l'instance créée
-    # En mode async on ne peut pas retourner l'objet, on retourne None
+    # En mode eager la tâche s'exécute sync
     try:
         return Notification.objects.filter(
             organization=organization,
@@ -147,21 +217,7 @@ def send_alert_notification(
 ) -> list:
     """
     Envoie une notification d'alerte à tous les administrateurs de l'organisation.
-
-    Utilisé typiquement depuis alert_utils.py après la création d'une alerte.
-
-    Args:
-        organization : Organisation concernée.
-        product      : Instance du produit concerné.
-        alert_type   : 'low_stock' | 'out_of_stock' | 'overstock' | 'expiring_soon'.
-        severity     : 'low' | 'medium' | 'high' | 'critical'.
-        message      : Message personnalisé (sinon, géné automatiquement).
-        warehouse    : Entrepôt concerné (optionnel).
-
-    Returns:
-        Liste des Notification créées (une par destinataire).
     """
-    # Titre selon le type d'alerte
     TITLE_MAP = {
         'low_stock': 'Stock bas',
         'out_of_stock': 'Rupture de stock',
@@ -170,13 +226,10 @@ def send_alert_notification(
     }
     title = TITLE_MAP.get(alert_type, 'Alerte stock')
 
-    # Message par défaut
     if not message:
         loc = f" à {warehouse.name}" if warehouse else ""
         message = f"{title} : {product.name}{loc} ({product.sku})"
 
-    # Récupérer les destinataires : admin de l'organisation
-    # On utilise BaseUser via l'organisation pour toucher les AdminUser associés
     admin_users = BaseUser.objects.filter(
         user_type='admin',
         adminuser__organizations=organization,
@@ -260,16 +313,18 @@ def send_user_notification(
 def mark_all_as_read(organization: Organization, user: BaseUser) -> int:
     """
     Marque toutes les notifications non lues d'un utilisateur comme lues.
-
-    Returns:
-        Nombre de notifications mises à jour.
+    Pousse la mise à jour du compteur en temps réel.
     """
     now = timezone.now()
-    count, _ = Notification.objects.filter(
+    count = Notification.objects.filter(
         organization=organization,
         recipient=user,
         is_read=False,
     ).update(is_read=True, read_at=now)
+
+    # Push mise à jour en temps réel
+    _push_sse_unread_update(organization, user)
+
     return count
 
 
@@ -293,9 +348,6 @@ def get_unread_count(organization: Organization, user: BaseUser) -> int:
 def purge_old_notifications(organization: Organization, days: int = 30) -> int:
     """
     Supprime les notifications lues plus anciennes de `days` jours.
-
-    Returns:
-        Nombre de notifications supprimées.
     """
     cutoff = timezone.now() - timezone.timedelta(days=days)
     count, _ = Notification.objects.filter(
@@ -304,43 +356,3 @@ def purge_old_notifications(organization: Organization, days: int = 30) -> int:
         read_at__lt=cutoff,
     ).delete()
     return count
-
-
-# ---------------------------------------------------------------------------
-# Interne : vérification des préférences
-# ---------------------------------------------------------------------------
-
-def _should_deliver(
-    organization: Organization,
-    recipient: BaseUser,
-    notification_type: str,
-    priority: str,
-) -> bool:
-    """
-    Vérifie si la notification doit être livrée selon les préférences du destinataire.
-
-    Si aucune préférence n'existe → livraison par défaut (True).
-    """
-    try:
-        pref = NotificationPreference.objects.get(
-            organization=organization,
-            user=recipient,
-        )
-    except NotificationPreference.DoesNotExist:
-        # Pas de préférences configurées : on livre par défaut
-        return True
-
-    # --- Filtrer par type -------------------------------------------------------
-    type_map = {
-        'alert': pref.receive_alerts,
-        'system': pref.receive_system,
-        'user': pref.receive_user,
-    }
-    if not type_map.get(notification_type, True):
-        return False
-
-    # --- Filtrer par priorité minimale ------------------------------------------
-    if PRIORITY_ORDER.get(priority, 0) < PRIORITY_ORDER.get(pref.min_priority, 0):
-        return False
-
-    return True
