@@ -103,6 +103,8 @@ class CategoryViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     serializer_class = CategorySerializer
     permission_classes = [IsAuthenticated, CategoryPermission]
 
+    allow_list_without_permission = True
+
     def get_queryset(self):
         """
         Get filtered queryset using CategoryRepository.
