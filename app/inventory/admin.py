@@ -1,6 +1,6 @@
 from django.contrib import admin
 from .models import (
-    Category, Warehouse, Supplier, Product, Stock,
+    Category, Expense, Warehouse, Supplier, Product, Stock,
     Movement, Order, OrderItem, StockCount, StockCountItem, Alert
 )
 
@@ -93,3 +93,11 @@ class AlertAdmin(admin.ModelAdmin):
     search_fields = ['product__name', 'message']
     readonly_fields = ['id', 'created_at', 'updated_at']
     date_hierarchy = 'created_at'
+
+@admin.register(Expense)
+class ExpenseAdmin(admin.ModelAdmin):
+    list_display = ['expense_number', 'category', 'description', 'amount', 'expense_date', 'payment_method']
+    list_filter = ['category', 'payment_method', 'organization']
+    search_fields = ['expense_number', 'description', 'beneficiary', 'notes']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'expense_date'

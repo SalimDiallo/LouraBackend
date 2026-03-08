@@ -87,6 +87,13 @@ PERMISSIONS = [
     {'code': 'inventory.update_customers', 'name': 'Modifier des clients', 'category': 'Clients', 'description': 'Peut modifier des clients'},
     {'code': 'inventory.delete_customers', 'name': 'Supprimer des clients', 'category': 'Clients', 'description': 'Peut supprimer des clients'},
 
+
+    # === EXPENSES ===
+    {'code': 'inventory.view_expenses', 'name': 'Voir les dépenses', 'category': 'Dépenses', 'description': 'Peut consulter les dépenses'},
+    {'code': 'inventory.create_expenses', 'name': 'Enregistrer des dépenses', 'category': 'Dépenses', 'description': 'Peut enregistrer des dépenses'},
+    {'code': 'inventory.update_expenses', 'name': 'Modifier des dépenses', 'category': 'Dépenses', 'description': 'Peut modifier des dépenses'},
+    {'code': 'inventory.delete_expenses', 'name': 'Supprimer des dépenses', 'category': 'Dépenses', 'description': 'Peut supprimer des dépenses'},
+
     # === PAYMENTS ===
     {'code': 'inventory.view_payments', 'name': 'Voir les paiements', 'category': 'Paiements', 'description': 'Peut consulter les paiements'},
     {'code': 'inventory.create_payments', 'name': 'Enregistrer des paiements', 'category': 'Paiements', 'description': 'Peut enregistrer des paiements'},
@@ -166,6 +173,12 @@ class CustomerPermission(BaseCRUDPermission):
     """Permission CRUD pour les clients."""
     permission_prefix = 'inventory'
     permission_resource = 'customers'
+
+
+class ExpensePermission(BaseCRUDPermission):
+    """Permission CRUD pour les dépenses."""
+    permission_prefix = 'inventory'
+    permission_resource = 'expenses'
 
 
 class PaymentPermission(BaseCRUDPermission):

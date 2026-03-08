@@ -39,7 +39,7 @@ from rest_framework.response import Response
 from .pdf_base import PDFGeneratorMixin
 
 # Models
-from .permissions import CategoryPermission, CustomerPermission, OrderPermission, ProductPermission, SupplierPermission
+from .permissions import CategoryPermission, CustomerPermission, ExpensePermission, OrderPermission, ProductPermission, SupplierPermission
 from core.models import Organization
 from .models import (
     Category, Warehouse, Supplier, Product, Stock,
@@ -157,6 +157,8 @@ class WarehouseViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     serializer_class = WarehouseSerializer
     permission_classes = [IsAuthenticated, WarehousePermission]
 
+    allow_list_without_permission = True
+
     def get_queryset(self):
         """
         Get filtered queryset using WarehouseRepository.
@@ -213,6 +215,8 @@ class SupplierViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     queryset = Supplier.objects.all()
     serializer_class = SupplierSerializer
     permission_classes = [IsAuthenticated,SupplierPermission]
+
+    allow_list_without_permission = True
 
     def get_queryset(self):
         """
@@ -570,6 +574,17 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
     def confirm(self, request, organization_slug=None, pk=None):
         """Confirm an order"""
         order = self.get_object()
+        user = self.request.user
+
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_orders')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
 
         if order.status != 'draft' and order.status != 'pending':
             return Response(
@@ -603,6 +618,17 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
     def receive(self, request, organization_slug=None, pk=None):
         """Mark order as received and update stock"""
         order = self.get_object()
+        user = self.request.user
+
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.receive_orders')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
 
         if order.status != 'confirmed':
             return Response(
@@ -663,6 +689,16 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
     def cancel(self, request, organization_slug=None, pk=None):
         """Cancel an order"""
         order = self.get_object()
+        user = self.request.user
+        
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.delete_orders')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         if order.status == 'received':
             return Response(
@@ -2262,7 +2298,7 @@ class ExpenseViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.M
     """
     queryset = Expense.objects.all()
     serializer_class = ExpenseSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated, ExpensePermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
