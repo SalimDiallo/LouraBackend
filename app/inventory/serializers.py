@@ -626,6 +626,7 @@ class SaleSerializer(InventoryBaseSerializer):
     payment_status_display = serializers.CharField(source='get_payment_status_display', read_only=True)
     payment_method_display = serializers.CharField(source='get_payment_method_display', read_only=True)
     payments = serializers.SerializerMethodField()
+    credit_id = serializers.SerializerMethodField()
 
     class Meta:
         model = Sale
@@ -636,6 +637,7 @@ class SaleSerializer(InventoryBaseSerializer):
             'tax_rate', 'tax_amount', 'total_amount', 'paid_amount',
             'remaining_amount', 'payment_status', 'payment_status_display',
             'payment_method', 'payment_method_display', 'is_credit_sale',
+            'credit_id',  # Added here
             'notes', 'items', 'item_count', 'payments', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'subtotal', 'discount_amount', 'tax_amount',
@@ -665,6 +667,13 @@ class SaleSerializer(InventoryBaseSerializer):
             }
             for p in payments
         ]
+
+    def get_credit_id(self, obj):
+        # Return the associated CreditSale id if available, else None
+        credit_sale = getattr(obj, 'credit_info', None)
+        if credit_sale is not None:
+            return credit_sale.id
+        return None
 
 
 class SaleCreateUpdateSerializer(serializers.ModelSerializer):

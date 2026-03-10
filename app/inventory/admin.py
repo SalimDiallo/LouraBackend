@@ -1,7 +1,10 @@
 from django.contrib import admin
 from .models import (
-    Category, Expense, Warehouse, Supplier, Product, Stock,
-    Movement, Order, OrderItem, StockCount, StockCountItem, Alert
+    Category, Expense, ExpenseCategory,
+    Warehouse, Supplier, Product, Stock,
+    Movement, Order, OrderItem, StockCount, StockCountItem, Alert,
+    Customer, Sale, SaleItem, Payment, DeliveryNote, DeliveryNoteItem,
+    CreditSale, ProformaInvoice, PurchaseOrder, PurchaseOrderItem
 )
 
 
@@ -11,6 +14,23 @@ class CategoryAdmin(admin.ModelAdmin):
     list_filter = ['is_active', 'organization']
     search_fields = ['name', 'description']
     readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(ExpenseCategory)
+class ExpenseCategoryAdmin(admin.ModelAdmin):
+    list_display = ['name', 'organization', 'is_active', 'created_at']
+    list_filter = ['is_active', 'organization']
+    search_fields = ['name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(Expense)
+class ExpenseAdmin(admin.ModelAdmin):
+    list_display = ['expense_number', 'category', 'description', 'amount', 'expense_date', 'payment_method']
+    list_filter = ['category', 'payment_method', 'organization']
+    search_fields = ['expense_number', 'description', 'beneficiary', 'notes']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'expense_date'
 
 
 @admin.register(Warehouse)
@@ -94,10 +114,108 @@ class AlertAdmin(admin.ModelAdmin):
     readonly_fields = ['id', 'created_at', 'updated_at']
     date_hierarchy = 'created_at'
 
-@admin.register(Expense)
-class ExpenseAdmin(admin.ModelAdmin):
-    list_display = ['expense_number', 'category', 'description', 'amount', 'expense_date', 'payment_method']
-    list_filter = ['category', 'payment_method', 'organization']
-    search_fields = ['expense_number', 'description', 'beneficiary', 'notes']
+
+@admin.register(Customer)
+class CustomerAdmin(admin.ModelAdmin):
+    list_display = ['name', 'code', 'organization', 'email', 'phone']
+    list_filter = ['organization']
+    search_fields = ['name', 'code', 'email', 'phone']
     readonly_fields = ['id', 'created_at', 'updated_at']
-    date_hierarchy = 'expense_date'
+
+
+class SaleItemInline(admin.TabularInline):
+    model = SaleItem
+    extra = 1
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(Sale)
+class SaleAdmin(admin.ModelAdmin):
+    list_display = ['sale_number', 'customer', 'sale_date', 'total_amount', 'payment_status']
+    list_filter = ['payment_status', 'organization', 'customer']
+    search_fields = ['sale_number', 'customer__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'sale_date'
+    inlines = [SaleItemInline]
+
+
+@admin.register(SaleItem)
+class SaleItemAdmin(admin.ModelAdmin):
+    list_display = ['sale', 'product', 'quantity', 'unit_price', 'discount_type', 'discount_amount', 'total']
+    list_filter = ['sale', 'product']
+    search_fields = ['sale__sale_number', 'product__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(Payment)
+class PaymentAdmin(admin.ModelAdmin):
+    list_display = ['receipt_number', 'sale', 'amount', 'payment_date', 'payment_method']
+    list_filter = ['payment_method', 'organization']
+    search_fields = ['receipt_number', 'customer_name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'payment_date'
+
+
+class DeliveryNoteItemInline(admin.TabularInline):
+    model = DeliveryNoteItem
+    extra = 1
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(DeliveryNote)
+class DeliveryNoteAdmin(admin.ModelAdmin):
+    list_display = ['delivery_number', 'sale', 'recipient_name', 'delivery_date']
+    list_filter = ['organization', 'sale']
+    search_fields = ['delivery_number', 'recipient_name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'delivery_date'
+    inlines = [DeliveryNoteItemInline]
+
+
+@admin.register(DeliveryNoteItem)
+class DeliveryNoteItemAdmin(admin.ModelAdmin):
+    list_display = ['delivery_note', 'product', 'quantity', 'delivered_quantity']
+    list_filter = ['delivery_note', 'product']
+    search_fields = ['delivery_note__delivery_number', 'product__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+@admin.register(CreditSale)
+class CreditSaleAdmin(admin.ModelAdmin):
+    list_display = ['sale', 'status', 'due_date']
+    list_filter = ['status', 'organization']
+    search_fields = ['sale__sale_number']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'due_date'
+
+
+@admin.register(ProformaInvoice)
+class ProformaInvoiceItemAdmin(admin.ModelAdmin):
+    list_display = ['id']
+    list_filter = []
+    search_fields = []
+    readonly_fields = ['id', 'created_at', 'updated_at']
+
+
+class PurchaseOrderItemInline(admin.TabularInline):
+    model = PurchaseOrderItem
+    extra = 1
+    readonly_fields = ['created_at', 'updated_at']
+
+
+@admin.register(PurchaseOrder)
+class PurchaseOrderAdmin(admin.ModelAdmin):
+    list_display = ['order_number', 'supplier', 'warehouse', 'order_date', 'status', 'total_amount']
+    list_filter = ['status', 'organization', 'supplier', 'warehouse']
+    search_fields = ['order_number', 'supplier__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']
+    date_hierarchy = 'order_date'
+    inlines = [PurchaseOrderItemInline]
+
+
+@admin.register(PurchaseOrderItem)
+class PurchaseOrderItemAdmin(admin.ModelAdmin):
+    list_display = ['purchase_order', 'product', 'quantity', 'unit_price', 'received_quantity']
+    list_filter = ['purchase_order', 'product']
+    search_fields = ['purchase_order__order_number', 'product__name']
+    readonly_fields = ['id', 'created_at', 'updated_at']

@@ -35,11 +35,13 @@ from rest_framework.decorators import action
 from rest_framework.permissions import IsAuthenticated
 from rest_framework.response import Response
 
+from core.permissions import BaseHasPermission
+
 # PDF Generation
 from .pdf_base import PDFGeneratorMixin
 
 # Models
-from .permissions import CategoryPermission, CustomerPermission, ExpensePermission, OrderPermission, ProductPermission, SupplierPermission
+from .permissions import CategoryPermission, CustomerPermission, ExpensePermission, OrderPermission, ProductPermission, SalePermission, SupplierPermission
 from core.models import Organization
 from .models import (
     Category, Warehouse, Supplier, Product, Stock,
@@ -354,7 +356,6 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         
         return super().destroy(request, *args, **kwargs)
 
-
 # ===============================
 # STOCK VIEWSET
 # ===============================
@@ -385,17 +386,24 @@ class StockViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 # MOVEMENT VIEWSET
 # ===============================
 
+
 class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet for managing stock movements
     """
     queryset = Movement.objects.all()
-    permission_classes = [IsAuthenticated]
-    
-    
+    permission_classes = [IsAuthenticated, BaseHasPermission]
+    required_permission_map = {
+        'list':   'inventory.view_stock',
+        'retrieve': 'inventory.view_stock',
+        'create': 'inventory.manage_stock',
+        'update': 'inventory.manage_stock',
+        'partial_update': 'inventory.manage_stock',
+        'destroy': 'inventory.manage_stock',
+    }
+
     def get_serializer_class(self):
         if self.action in ['create', 'update', 'partial_update']:
-            # self.check_employee_permission(self.request, perm_view=False)
             return MovementCreateUpdateSerializer
         return MovementSerializer
 
@@ -405,8 +413,20 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         from decimal import Decimal
         logger = logging.getLogger(__name__)
 
-        # --- Vérif droits employé (manage_stocks nécessaire) ---
-        # self.check_employee_permission(self.request, perm_view=False)
+        user = self.request.user
+
+        # INSERT_YOUR_CODE
+        # Vérifie si l'utilisateur est un employé
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        # --- Permissions: managed by required_permission_map/BaseHasPermission ---
 
         # Récupérer l'organisation
         organization = self.get_organization_from_request()
@@ -488,30 +508,150 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         logger.info(f"Movement {movement.id} created, stock updated")
 
     def perform_update(self, serializer):
-        # Pour l'update on veut la même logique de permission manage_stocks
-        # self.check_employee_permission(self.request, perm_view=False)
+        user = self.request.user
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
         return super().perform_update(serializer)
     
     def perform_partial_update(self, serializer):
-        # Par sécurité (si ce hook existe), vérifier la permission manage_stocks
-        # self.check_employee_permission(self.request, perm_view=False)
+        user = self.request.user
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
         return super().perform_partial_update(serializer)
 
     def perform_destroy(self, instance):
-        # Pour la suppression, besoin de manage_stocks
-        self.check_employee_permission(self.request, perm_view=False)
+        """Delete movement and reverse stock changes"""
+        import logging
+        from decimal import Decimal
+        from rest_framework.exceptions import ValidationError
+        logger = logging.getLogger(__name__)
+
+        user = self.request.user
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
+
+        movement = instance
+        logger.info(f"Deleting Movement {movement.id}, reversing stock changes")
+
+        # Empêcher la suppression des ajustements car on ne connaît pas l'ancien stock
+        if movement.movement_type == 'adjustment':
+            raise ValidationError({
+                'error': 'Impossible de supprimer un mouvement de type ajustement. '
+                        'Les ajustements modifient directement le stock sans historique de l\'ancienne valeur.'
+            })
+
+        # Empêcher la suppression si le mouvement est lié à une commande ou une vente
+        if movement.order:
+            raise ValidationError({
+                'error': 'Impossible de supprimer ce mouvement car il est lié à une commande. '
+                        'Veuillez d\'abord modifier ou supprimer la commande associée.'
+            })
+
+        if movement.sale:
+            raise ValidationError({
+                'error': 'Impossible de supprimer ce mouvement car il est lié à une vente. '
+                        'Veuillez d\'abord modifier ou supprimer la vente associée.'
+            })
+
+        # Récupérer le stock actuel
+        stock = Stock.objects.filter(
+            product=movement.product,
+            warehouse=movement.warehouse
+        ).first()
+
+        if not stock:
+            logger.warning(f"Stock not found for product {movement.product} in warehouse {movement.warehouse}")
+            # Pas de stock trouvé, on peut quand même supprimer le mouvement
+            return super().perform_destroy(instance)
+
+        # Convertir les quantités en Decimal
+        stock_quantity = Decimal(str(stock.quantity))
+        movement_quantity = Decimal(str(movement.quantity))
+
+        # Inverser les opérations selon le type de mouvement
+        if movement.movement_type == 'in':
+            # Pour une entrée, on retire la quantité qui avait été ajoutée
+            new_quantity = stock_quantity - movement_quantity
+            if new_quantity < Decimal('0'):
+                raise ValidationError({
+                    'error': f'Impossible de supprimer ce mouvement. '
+                            f'Le stock actuel ({float(stock_quantity)}) est inférieur à la quantité du mouvement ({float(movement_quantity)}). '
+                            f'Cela rendrait le stock négatif.'
+                })
+            stock.quantity = new_quantity
+            stock.save()
+            logger.info(f"Reversed 'in' movement: stock decreased by {movement_quantity}")
+
+        elif movement.movement_type == 'out':
+            # Pour une sortie, on restaure la quantité qui avait été retirée
+            stock.quantity = stock_quantity + movement_quantity
+            stock.save()
+            logger.info(f"Reversed 'out' movement: stock increased by {movement_quantity}")
+
+        elif movement.movement_type == 'transfer' and movement.destination_warehouse:
+            # Pour un transfert, on inverse les deux opérations
+            # 1. Restaurer le stock source
+            stock.quantity = stock_quantity + movement_quantity
+            stock.save()
+            logger.info(f"Reversed 'transfer' source: stock increased by {movement_quantity}")
+
+            # 2. Retirer du stock destination
+            dest_stock = Stock.objects.filter(
+                product=movement.product,
+                warehouse=movement.destination_warehouse
+            ).first()
+
+            if dest_stock:
+                dest_stock_quantity = Decimal(str(dest_stock.quantity))
+                new_dest_quantity = dest_stock_quantity - movement_quantity
+                if new_dest_quantity < Decimal('0'):
+                    raise ValidationError({
+                        'error': f'Impossible de supprimer ce mouvement. '
+                                f'Le stock à l\'entrepôt de destination ({float(dest_stock_quantity)}) est inférieur à la quantité du mouvement ({float(movement_quantity)}). '
+                                f'Cela rendrait le stock négatif.'
+                    })
+                dest_stock.quantity = new_dest_quantity
+                dest_stock.save()
+                logger.info(f"Reversed 'transfer' destination: stock decreased by {movement_quantity}")
+
+        # Vérifier et mettre à jour les alertes de stock
+        from .alert_utils import check_and_update_stock_alert
+        check_and_update_stock_alert(movement.product, movement.warehouse)
+        if movement.movement_type == 'transfer' and movement.destination_warehouse:
+            check_and_update_stock_alert(movement.product, movement.destination_warehouse)
+
+        # Supprimer le mouvement
+        logger.info(f"Movement {movement.id} deleted, stock updated")
         return super().perform_destroy(instance)
 
     def get_queryset(self):
-        """
-        Get filtered queryset using MovementRepository.
+        user = self.request.user
+        is_admin = getattr(user, 'user_type', None) == 'admin'
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.view_stock')
 
-        REFACTORED: Now uses QueryFilterExtractor and MovementRepository
-        to eliminate duplicate filtering logic.
-        On vérifie view_stocks pour les employés.
-        """
-        # Permission de visualisation uniquement : view_stocks
-        # self.check_employee_permission(self.request, perm_view=True)
+        if not (is_admin or is_employee_with_permission):
+            return Response(
+                {'error': 'You do not have permission '},
+                status=status.HTTP_403_FORBIDDEN
+            )
         organization = self.get_organization_from_request()
         extractor = QueryFilterExtractor(self.request.query_params)
         filters = extractor.extract_movement_filters()
@@ -741,7 +881,6 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
             filename=f"Commande_{order.order_number}.pdf",
             request=request
         )
-
 
 # ===============================
 # STOCK COUNT VIEWSET
@@ -1902,7 +2041,7 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
     Includes unified PDF generation with preview support via PDFGeneratorMixin
     """
     queryset = Sale.objects.all()
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated,SalePermission]
 
     def get_serializer_class(self):
         if self.action == 'list':
@@ -2177,6 +2316,8 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
     def cancel(self, request, organization_slug=None, pk=None):
         """Cancel a sale"""
         sale = self.get_object()
+
+        
         
         if sale.payment_status == 'paid':
             return Response(

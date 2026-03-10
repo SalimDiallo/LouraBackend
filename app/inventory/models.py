@@ -578,9 +578,12 @@ class Alert(TimeStampedModel):
     Alert: Alertes de stock (stocks bas, péremption, etc.)
     """
     ALERT_TYPE_CHOICES = [
-        ('low_stock', 'Stock bas'),
-        ('out_of_stock', 'Rupture de stock'),
-        ('overstock', 'Surstock'),
+        ('stock_warning', 'Avertissement stock'),  # Nouveau: stock proche du minimum
+        ('low_stock', 'Stock bas'),  # Stock <= min_stock
+        ('out_of_stock', 'Rupture de stock'),  # Stock épuisé (0)
+        ('overstock', 'Surstock'),  # Stock > max_stock
+        ('high_value_low_stock', 'Produit de valeur en stock faible'),  # Produit cher avec stock bas
+        ('no_movement', 'Aucun mouvement'),  # Pas de mouvement depuis longtemps
         ('expiring_soon', 'Expiration proche'),
     ]
 
