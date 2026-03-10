@@ -2043,6 +2043,7 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
     queryset = Sale.objects.all()
     permission_classes = [IsAuthenticated,SalePermission]
 
+
     def get_serializer_class(self):
         if self.action == 'list':
             return SaleListSerializer
@@ -2634,7 +2635,7 @@ class ProformaInvoiceViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, vi
             tax_amount=proforma.tax_amount,
             total_amount=proforma.total_amount,
             payment_status='pending',
-            notes=f"Converti depuis proforma {proforma.proforma_number}"
+            notes=f"Converti depuis proforma {proforma.id}"
         )
         
         # Copy items

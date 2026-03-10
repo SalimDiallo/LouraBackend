@@ -98,6 +98,8 @@ PERMISSIONS = [
     {'code': 'inventory.view_payments', 'name': 'Voir les paiements', 'category': 'Paiements', 'description': 'Peut consulter les paiements'},
     {'code': 'inventory.create_payments', 'name': 'Enregistrer des paiements', 'category': 'Paiements', 'description': 'Peut enregistrer des paiements'},
 
+   {'code': 'inventory.manage_documents', 'name': 'Gérer les documents', 'category': 'Documents', 'description': 'Peut gérer (créer/modifier/supprimer) les documents'},
+
     # === REPORTS ===
     {'code': 'inventory.view_reports', 'name': 'Voir les rapports', 'category': 'Rapports', 'description': 'Peut consulter les rapports'},
     {'code': 'inventory.export_reports', 'name': 'Exporter les rapports', 'category': 'Rapports', 'description': 'Peut exporter les rapports'},

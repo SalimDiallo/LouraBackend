@@ -637,7 +637,7 @@ class SaleSerializer(InventoryBaseSerializer):
             'tax_rate', 'tax_amount', 'total_amount', 'paid_amount',
             'remaining_amount', 'payment_status', 'payment_status_display',
             'payment_method', 'payment_method_display', 'is_credit_sale',
-            'credit_id',  # Added here
+            'credit_id', 
             'notes', 'items', 'item_count', 'payments', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'subtotal', 'discount_amount', 'tax_amount',
@@ -674,7 +674,6 @@ class SaleSerializer(InventoryBaseSerializer):
         if credit_sale is not None:
             return credit_sale.id
         return None
-
 
 class SaleCreateUpdateSerializer(serializers.ModelSerializer):
     """Serializer for creating and updating sales"""
