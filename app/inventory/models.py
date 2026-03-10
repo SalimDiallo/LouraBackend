@@ -1572,24 +1572,41 @@ class CreditSale(TimeStampedModel):
             self.remaining_amount = max(Decimal('0.00'), self.total_amount - self.paid_amount)
 
     def update_status(self):
-        """Met à jour le statut basé sur les paiements et la date"""
+        """Met à jour le statut basé sur les paiements et la date (avec délai de grâce)"""
         from django.utils import timezone
-        
+        from datetime import timedelta
+
         # S'assurer que remaining_amount n'est jamais négatif
         self.remaining_amount = max(Decimal('0.00'), self.total_amount - self.paid_amount)
-        
+
         if self.remaining_amount <= 0:
             self.status = 'paid'
         elif self.paid_amount > 0:
             # Si pas de due_date, ne peut pas être en retard
-            if self.due_date and self.due_date < timezone.now().date():
-                self.status = 'overdue'
+            if self.due_date:
+                # Calculer la date limite effective avec délai de grâce
+                effective_due_date = self.due_date
+                if self.grace_period_days > 0:
+                    effective_due_date = self.due_date + timedelta(days=self.grace_period_days)
+
+                if effective_due_date < timezone.now().date():
+                    self.status = 'overdue'
+                else:
+                    self.status = 'partial'
             else:
                 self.status = 'partial'
         else:
             # Si pas de due_date, ne peut pas être en retard
-            if self.due_date and self.due_date < timezone.now().date():
-                self.status = 'overdue'
+            if self.due_date:
+                # Calculer la date limite effective avec délai de grâce
+                effective_due_date = self.due_date
+                if self.grace_period_days > 0:
+                    effective_due_date = self.due_date + timedelta(days=self.grace_period_days)
+
+                if effective_due_date < timezone.now().date():
+                    self.status = 'overdue'
+                else:
+                    self.status = 'pending'
             else:
                 self.status = 'pending'
 

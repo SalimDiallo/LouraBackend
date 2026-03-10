@@ -41,7 +41,7 @@ from core.permissions import BaseHasPermission
 from .pdf_base import PDFGeneratorMixin
 
 # Models
-from .permissions import CategoryPermission, CustomerPermission, ExpensePermission, OrderPermission, ProductPermission, SalePermission, SupplierPermission
+from .permissions import CategoryPermission, CustomerPermission, ExpensePermission, OrderPermission, ProductPermission, SalePermission, StockCountPermission, SupplierPermission
 from core.models import Organization
 from .models import (
     Category, Warehouse, Supplier, Product, Stock,
@@ -892,7 +892,7 @@ class StockCountViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewset
     """
     queryset = StockCount.objects.all()
     serializer_class = StockCountSerializer
-    permission_classes = [IsAuthenticated]
+    permission_classes = [IsAuthenticated ,StockCountPermission]
 
     def get_queryset(self):
         queryset = super().get_queryset()
@@ -2235,6 +2235,15 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
     @action(detail=True, methods=['post'])
     def add_payment(self, request, organization_slug=None, pk=None):
         """Add a payment to a sale"""
+        # Vérifier si l'utilisateur est un employé et a la permission "create_sales"
+        user = request.user
+        admin = getattr(user, 'user_type', None) == 'admin' 
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales')
+        if not (admin or is_employee_with_permission):
+            return Response(
+                {'error': "Vous n'avez pas la permission de créer des paiements."},
+                status=status.HTTP_403_FORBIDDEN
+            )
         sale = self.get_object()
         amount = Decimal(str(request.data.get('amount', 0)))
         payment_method = request.data.get('payment_method', 'cash')
@@ -2317,7 +2326,7 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
         """Cancel a sale"""
         sale = self.get_object()
 
-        
+
         
         if sale.payment_status == 'paid':
             return Response(
@@ -2971,6 +2980,15 @@ class CreditSaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewset
         """Add a credit payment with transaction.atomic"""
         from django.db import transaction
         from django.db.models import Sum
+
+        user = request.user
+        admin = getattr(user, 'user_type', None) == 'admin' 
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales')
+        if not (admin or is_employee_with_permission):
+            return Response(
+                {'error': "Vous n'avez pas la permission de créer des paiements."},
+                status=status.HTTP_403_FORBIDDEN
+            )
 
         credit_sale = self.get_object()
         

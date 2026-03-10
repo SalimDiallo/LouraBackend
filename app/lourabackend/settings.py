@@ -79,6 +79,34 @@ CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers.DatabaseScheduler'
 CELERY_TASK_ALWAYS_EAGER = True                         # Exécution synchrone en dev (pas besoin de worker séparé)
 CELERY_TASK_EAGER_PROPAGATES = True
 
+# Tâches périodiques (Celery Beat Schedule)
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    # Vérifier les échéances de ventes à crédit tous les jours à 8h00
+    'check-credit-sale-deadlines': {
+        'task': 'inventory.tasks.check_credit_sale_deadlines',
+        'schedule': crontab(hour=8, minute=0),  # Tous les jours à 8h00 UTC
+        'options': {
+            'expires': 3600,  # Expire après 1h si pas exécutée
+        }
+    },
+    # Mettre à jour les statuts overdue tous les jours à 9h00
+    'update-overdue-credit-sales': {
+        'task': 'inventory.tasks.update_overdue_credit_sales',
+        'schedule': crontab(hour=9, minute=0),  # Tous les jours à 9h00 UTC
+        'options': {
+            'expires': 3600,
+        }
+    },
+    # Purger les anciennes notifications tous les lundis à 2h00
+    'purge-old-notifications': {
+        'task': 'notifications.tasks.purge_old_notifications_task',
+        'schedule': crontab(hour=2, minute=0, day_of_week=1),  # Lundi à 2h00
+        'kwargs': {'days': 30},  # Supprimer les notifications lues de plus de 30 jours
+    },
+}
+
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
     'django.contrib.sessions.middleware.SessionMiddleware',
