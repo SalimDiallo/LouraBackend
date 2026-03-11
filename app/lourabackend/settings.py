@@ -12,9 +12,19 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 
 from pathlib import Path
 from datetime import timedelta
+import os
+
+# Load environment variables from .env file
+from dotenv import load_dotenv
 
 # Build paths inside the project like this: BASE_DIR / 'subdir'.
 BASE_DIR = Path(__file__).resolve().parent.parent
+
+# Load .env from backend/ directory (parent of app/)
+ENV_PATH = BASE_DIR.parent / '.env'
+if ENV_PATH.exists():
+    load_dotenv(ENV_PATH)
+    print(f"✅ Loaded .env from {ENV_PATH}")
 
 
 # Quick-start development settings - unsuitable for production
@@ -32,6 +42,7 @@ ALLOWED_HOSTS = []
 # Application definition
 
 INSTALLED_APPS = [
+    'daphne',  # IMPORTANT: Must be FIRST for WebSocket support
     'django.contrib.admin',
     'django.contrib.auth',
     'django.contrib.contenttypes',
@@ -43,9 +54,58 @@ INSTALLED_APPS = [
     'rest_framework',
     'rest_framework_simplejwt',  # JWT authentication
     'rest_framework_simplejwt.token_blacklist',  # JWT token blacklist
-    'core',  # Added core app
+    'channels',  # WebSocket support
+    'core',
     'hr',
+    'inventory',  # Inventory management
+    'authentication',  # Centralized authentication
+    'ai',  # AI Assistant module
+    'notifications',  # Notifications interne
+    'django_celery_beat',
+    'django_celery_results',
 ]
+
+# ---------------------------------------------------------------------------
+# Celery — backend database (SQLite, pas besoin de Redis en dev)
+# ---------------------------------------------------------------------------
+CELERY_BROKER_URL = 'memory://'                          # In-memory pour dev (pas de Redis nécessaire)
+CELERY_RESULT_BACKEND = 'django-db'                     # Résultats dans la DB Django
+CELERY_RESULT_SERIALIZER = 'json'
+CELERY_ACCEPT_CONTENT = ['json']
+CELERY_TASK_SERIALIZER = 'json'
+# CELERY_TIMEZONE = TIME_ZONE
+CELERY_ENABLE_UTC = True
+CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers.DatabaseScheduler'
+CELERY_TASK_ALWAYS_EAGER = True                         # Exécution synchrone en dev (pas besoin de worker séparé)
+CELERY_TASK_EAGER_PROPAGATES = True
+
+# Tâches périodiques (Celery Beat Schedule)
+from celery.schedules import crontab
+
+CELERY_BEAT_SCHEDULE = {
+    # Vérifier les échéances de ventes à crédit tous les jours à 8h00
+    'check-credit-sale-deadlines': {
+        'task': 'inventory.tasks.check_credit_sale_deadlines',
+        'schedule': crontab(hour=8, minute=0),  # Tous les jours à 8h00 UTC
+        'options': {
+            'expires': 3600,  # Expire après 1h si pas exécutée
+        }
+    },
+    # Mettre à jour les statuts overdue tous les jours à 9h00
+    'update-overdue-credit-sales': {
+        'task': 'inventory.tasks.update_overdue_credit_sales',
+        'schedule': crontab(hour=9, minute=0),  # Tous les jours à 9h00 UTC
+        'options': {
+            'expires': 3600,
+        }
+    },
+    # Purger les anciennes notifications tous les lundis à 2h00
+    'purge-old-notifications': {
+        'task': 'notifications.tasks.purge_old_notifications_task',
+        'schedule': crontab(hour=2, minute=0, day_of_week=1),  # Lundi à 2h00
+        'kwargs': {'days': 30},  # Supprimer les notifications lues de plus de 30 jours
+    },
+}
 
 MIDDLEWARE = [
     'django.middleware.security.SecurityMiddleware',
@@ -57,6 +117,7 @@ MIDDLEWARE = [
     'django.contrib.messages.middleware.MessageMiddleware',
     'django.middleware.clickjacking.XFrameOptionsMiddleware',
     'core.middleware.JWTAuthCookieMiddleware',  # JWT from cookies
+    'authentication.middleware.TokenFromQueryParamMiddleware',  # JWT from query params
 ]
 
 ROOT_URLCONF = 'lourabackend.urls'
@@ -125,6 +186,10 @@ USE_TZ = True
 
 STATIC_URL = 'static/'
 
+# Media files (Uploaded files)
+MEDIA_URL = '/media/'
+MEDIA_ROOT = BASE_DIR / 'media'
+
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
 
@@ -138,7 +203,15 @@ REST_FRAMEWORK = {
         'rest_framework.permissions.AllowAny',
     ],
     'DEFAULT_AUTHENTICATION_CLASSES': [
-        'rest_framework_simplejwt.authentication.JWTAuthentication',
+        'lourabackend.authentication.MultiUserJWTAuthentication',
+    ],
+    'DEFAULT_PAGINATION_CLASS': 'lourabackend.pagination.StandardResultsSetPagination',
+    'PAGE_SIZE': 20,
+    # Use custom JSON renderer to handle UUIDs and other Django types
+    'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S.%fZ',
+    'DEFAULT_RENDERER_CLASSES': [
+        'lourabackend.renderers.UUIDJSONRenderer',
+        'rest_framework.renderers.BrowsableAPIRenderer',
     ],
 }
 
@@ -148,6 +221,21 @@ CORS_ALLOWED_ORIGINS = [
 
 # Autoriser cookies / authentification (si besoin) Si tu utilises JWT avec cookies, sessions ou authentification cross-domain :
 CORS_ALLOW_CREDENTIALS = True
+
+# Allow custom headers
+CORS_ALLOW_HEADERS = [
+    'accept',
+    'accept-encoding',
+    'authorization',
+    'content-type',
+    'dnt',
+    'origin',
+    'user-agent',
+    'x-csrftoken',
+    'x-requested-with',
+    'x-organization-slug',  # Custom header for organization context
+    'x-organization-subdomain',  # Custom header for organization subdomain
+]
 
 # JWT Configuration
 
@@ -191,3 +279,21 @@ SIMPLE_JWT = {
     'JWK_URL': None,
     'LEEWAY': 0,
 }
+# ==============================================================================
+# ASGI & WebSocket Configuration (Django Channels)
+# ==============================================================================
+ASGI_APPLICATION = "lourabackend.asgi.application"
+
+CHANNEL_LAYERS = {
+    "default": {
+        # Development: In-memory channel layer (no Redis required)
+        "BACKEND": "channels.layers.InMemoryChannelLayer"
+        
+        # Production: Use Redis for channel layer
+        # "BACKEND": "channels_redis.core.RedisChannelLayer",
+        # "CONFIG": {
+        #     "hosts": [("127.0.0.1", 6379)],
+        # },
+    },
+}
+

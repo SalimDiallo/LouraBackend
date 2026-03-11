@@ -10,9 +10,6 @@ from django.conf import settings
 
 from .models import Organization, Category
 from .serializers import (
-    RegisterSerializer,
-    LoginSerializer,
-    UserSerializer,
     OrganizationSerializer,
     OrganizationCreateSerializer,
     CategorySerializer
@@ -20,218 +17,34 @@ from .serializers import (
 
 
 # -------------------------------
-# JWT Cookie Helper Functions
-# -------------------------------
-
-def set_jwt_cookies(response, access_token, refresh_token):
-    """Set JWT tokens in HTTP-only cookies"""
-    # Access token cookie
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        value=access_token,
-        max_age=settings.SIMPLE_JWT['ACCESS_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-    # Refresh token cookie
-    response.set_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        value=refresh_token,
-        max_age=settings.SIMPLE_JWT['REFRESH_TOKEN_LIFETIME'].total_seconds(),
-        secure=settings.SIMPLE_JWT['AUTH_COOKIE_SECURE'],
-        httponly=settings.SIMPLE_JWT['AUTH_COOKIE_HTTP_ONLY'],
-        samesite=settings.SIMPLE_JWT['AUTH_COOKIE_SAMESITE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-
-def clear_jwt_cookies(response):
-    """Clear JWT cookies"""
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-    response.delete_cookie(
-        key=settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'],
-        path=settings.SIMPLE_JWT['AUTH_COOKIE_PATH'],
-    )
-
-
-# -------------------------------
-# Authentication Views
-# -------------------------------
-
-class RegisterView(APIView):
-    """API endpoint for user registration with JWT"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = RegisterSerializer(data=request.data)
-        if serializer.is_valid():
-            user = serializer.save()
-
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-
-            # Return user data
-            user_data = UserSerializer(user).data
-
-            # Create response
-            response = Response({
-                'user': user_data,
-                'message': 'Inscription reussie',
-                'access': access_token,  # Also return in body for flexibility
-                'refresh': refresh_token,
-            }, status=status.HTTP_201_CREATED)
-
-            # Set tokens in HTTP-only cookies
-            set_jwt_cookies(response, access_token, refresh_token)
-
-            return response
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class LoginView(APIView):
-    """API endpoint for user login with JWT"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        serializer = LoginSerializer(data=request.data, context={'request': request})
-        if serializer.is_valid():
-            user = serializer.validated_data['user']
-
-            # Generate JWT tokens
-            refresh = RefreshToken.for_user(user)
-            access_token = str(refresh.access_token)
-            refresh_token = str(refresh)
-
-            # Return user data
-            user_data = UserSerializer(user).data
-
-            # Create response
-            response = Response({
-                'user': user_data,
-                'message': 'Connexion reussie',
-                'access': access_token,  # Also return in body for flexibility
-                'refresh': refresh_token,
-            }, status=status.HTTP_200_OK)
-
-            # Set tokens in HTTP-only cookies
-            set_jwt_cookies(response, access_token, refresh_token)
-
-            return response
-
-        return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
-
-
-class LogoutView(APIView):
-    """API endpoint for user logout - blacklist refresh token"""
-    permission_classes = [IsAuthenticated]
-
-    def post(self, request):
-        try:
-            # Get refresh token from cookie or request body
-            refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
-            if not refresh_token:
-                refresh_token = request.data.get('refresh')
-
-            if refresh_token:
-                # Blacklist the refresh token
-                token = RefreshToken(refresh_token)
-                token.blacklist()
-
-            # Create response
-            response = Response({
-                'message': 'Deconnexion reussie'
-            }, status=status.HTTP_200_OK)
-
-            # Clear cookies
-            clear_jwt_cookies(response)
-
-            return response
-
-        except Exception as e:
-            response = Response({
-                'error': 'Erreur lors de la deconnexion'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-            # Still clear cookies even if blacklist fails
-            clear_jwt_cookies(response)
-
-            return response
-
-
-class RefreshTokenView(APIView):
-    """API endpoint to refresh access token using refresh token"""
-    permission_classes = [AllowAny]
-
-    def post(self, request):
-        # Get refresh token from cookie or request body
-        refresh_token = request.COOKIES.get(settings.SIMPLE_JWT['AUTH_COOKIE_REFRESH'])
-        if not refresh_token:
-            refresh_token = request.data.get('refresh')
-
-        if not refresh_token:
-            return Response({
-                'error': 'Refresh token manquant'
-            }, status=status.HTTP_400_BAD_REQUEST)
-
-        try:
-            # Validate and refresh token
-            refresh = RefreshToken(refresh_token)
-
-            # Get new access token
-            access_token = str(refresh.access_token)
-
-            # If rotation is enabled, get new refresh token
-            new_refresh_token = str(refresh) if settings.SIMPLE_JWT['ROTATE_REFRESH_TOKENS'] else refresh_token
-
-            # Create response
-            response = Response({
-                'access': access_token,
-                'refresh': new_refresh_token,
-                'message': 'Token rafraichi avec succes'
-            }, status=status.HTTP_200_OK)
-
-            # Set new tokens in cookies
-            set_jwt_cookies(response, access_token, new_refresh_token)
-
-            return response
-
-        except TokenError as e:
-            return Response({
-                'error': 'Token invalide ou expire'
-            }, status=status.HTTP_401_UNAUTHORIZED)
-
-
-class CurrentUserView(APIView):
-    """API endpoint to get current authenticated user"""
-    permission_classes = [IsAuthenticated]
-
-    def get(self, request):
-        serializer = UserSerializer(request.user)
-        return Response(serializer.data, status=status.HTTP_200_OK)
-
-
-# -------------------------------
 # Organization Views
 # -------------------------------
 
 class OrganizationViewSet(viewsets.ModelViewSet):
-    """ViewSet for managing organizations"""
+    """ViewSet for managing organizations and their settings"""
     permission_classes = [IsAuthenticated]
     queryset = Organization.objects.all()
     serializer_class = OrganizationSerializer
 
     def get_queryset(self):
-        """Return only organizations owned by the current user"""
-        return Organization.objects.filter(admin=self.request.user)
+        """Return only organizations accessible by the current user"""
+        user = self.request.user
+        user_type = getattr(user, 'user_type', None)
+
+        # Employee: retourne son organisation
+        if user_type == 'employee':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            org = getattr(concrete, 'organization', None)
+            if org:
+                return Organization.objects.filter(id=org.id)
+            return Organization.objects.none()
+
+        # Admin: retourne ses organisations
+        if user_type == 'admin':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            return Organization.objects.filter(admin=concrete)
+
+        return Organization.objects.none()
 
     def get_serializer_class(self):
         """Use different serializer for create action"""
@@ -244,21 +57,84 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         serializer.save(admin=self.request.user)
 
     def create(self, request, *args, **kwargs):
-        """Override create to return OrganizationSerializer for response"""
-        serializer = self.get_serializer(data=request.data)
+        """
+        Override create to handle organization creation and associated settings (if provided).
+        """
+        data = request.data.copy()
+        settings_data = data.pop("settings", None)
+
+        serializer = self.get_serializer(data=data)
         serializer.is_valid(raise_exception=True)
         self.perform_create(serializer)
+        instance = serializer.instance
+
+        # Create settings if provided
+        if settings_data:
+            from .models import OrganizationSettings
+            settings_serializer = None
+            # settings_data may be dict or string (eg, via multipart/form). Force dict.
+            if isinstance(settings_data, str):
+                import json
+                settings_data = json.loads(settings_data)
+            try:
+                org_settings = instance.organization_settings
+                # should not happen on create, but just in case, update
+                for k, v in settings_data.items():
+                    setattr(org_settings, k, v)
+                org_settings.save()
+            except AttributeError:
+                OrganizationSettings.objects.create(organization=instance, **settings_data)
 
         # Use OrganizationSerializer for the response to include all fields
-        instance = serializer.instance
         response_serializer = OrganizationSerializer(instance)
-
         headers = self.get_success_headers(response_serializer.data)
         return Response(
             response_serializer.data,
             status=status.HTTP_201_CREATED,
             headers=headers
         )
+
+    def update(self, request, *args, **kwargs):
+        """
+        Update the organization and create or update OrganizationSettings if 'settings' in payload
+        """
+        partial = kwargs.pop('partial', False)
+        instance = self.get_object()
+
+        data = request.data.copy()
+        settings_data = data.pop("settings", None)
+        serializer = self.get_serializer(instance, data=data, partial=partial)
+        serializer.is_valid(raise_exception=True)
+        self.perform_update(serializer)
+
+        # Handle settings create or update
+        if settings_data is not None:
+            from .models import OrganizationSettings
+            # Accept settings_data as dict or JSON string
+            if isinstance(settings_data, str):
+                import json
+                settings_data = json.loads(settings_data)
+            try:
+                org_settings = instance.organization_settings
+                # Update existing OrganizationSettings
+                for k, v in settings_data.items():
+                    setattr(org_settings, k, v)
+                org_settings.save()
+            except OrganizationSettings.DoesNotExist:
+                # Create new OrganizationSettings
+                OrganizationSettings.objects.create(organization=instance, **settings_data)
+
+        if getattr(instance, '_prefetched_objects_cache', None):
+            instance._prefetched_objects_cache = {}
+
+        response_serializer = OrganizationSerializer(instance)
+        return Response(response_serializer.data)
+
+    def partial_update(self, request, *args, **kwargs):
+        """
+        Ensure settings property can be passed when partially updating organization.
+        """
+        return self.update(request, *args, partial=True, **kwargs)
 
     @action(detail=True, methods=['post'])
     def activate(self, request, pk=None):
@@ -284,13 +160,62 @@ class OrganizationViewSet(viewsets.ModelViewSet):
             'organization': serializer.data
         }, status=status.HTTP_200_OK)
 
+    @action(detail=True, methods=['post', 'delete'], url_path='logo')
+    def upload_logo(self, request, pk=None):
+        """Upload or delete organization logo"""
+        organization = self.get_object()
+
+        if request.method == 'DELETE':
+            # Delete logo
+            if organization.logo:
+                organization.logo.delete(save=False)
+            organization.logo = None
+            organization.save()
+            return Response({'message': 'Logo supprimé'}, status=status.HTTP_200_OK)
+
+        # Upload logo
+        logo_file = request.FILES.get('logo')
+        if not logo_file:
+            return Response(
+                {'error': 'Aucun fichier fourni'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate file type
+        allowed_types = ['image/jpeg', 'image/png', 'image/gif', 'image/webp', 'image/svg+xml']
+        if logo_file.content_type not in allowed_types:
+            return Response(
+                {'error': 'Type de fichier non autorisé. Formats acceptés: JPG, PNG, GIF, WebP, SVG'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Validate file size (max 5MB)
+        if logo_file.size > 5 * 1024 * 1024:
+            return Response(
+                {'error': 'Le fichier est trop volumineux (max 5 Mo)'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Delete old logo if exists
+        if organization.logo:
+            organization.logo.delete(save=False)
+
+        organization.logo = logo_file
+        organization.save()
+
+        serializer = self.get_serializer(organization)
+        return Response({
+            'message': 'Logo mis à jour avec succès',
+            'organization': serializer.data
+        }, status=status.HTTP_200_OK)
+
 
 # -------------------------------
 # Category Views
 # -------------------------------
 
-class CategoryViewSet(viewsets.ReadOnlyModelViewSet):
+class CategoryViewSet(viewsets.ModelViewSet):
     """ViewSet for viewing categories (read-only)"""
-    permission_classes = [IsAuthenticated]
+    # permission_classes = [IsAuthenticated]
     queryset = Category.objects.all()
     serializer_class = CategorySerializer

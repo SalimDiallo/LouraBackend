@@ -1,17 +1,34 @@
 from django.contrib import admin
 from .models import (
-    Employee, Department, Position, Contract,
-    LeaveType, LeaveBalance, LeaveRequest,
-    PayrollPeriod, Payslip, PayslipItem
+    Attendance, Break, Employee, Department, PayrollAdvance, Position, Contract,
+    LeaveType, LeaveRequest,
+    PayrollPeriod, Payslip, PayslipItem,
+    Permission, Role
 )
+
+
+@admin.register(Permission)
+class PermissionAdmin(admin.ModelAdmin):
+    list_display = ['code', 'name', 'category']
+    list_filter = ['category']
+    search_fields = ['code', 'name']
+
+
+@admin.register(Role)
+class RoleAdmin(admin.ModelAdmin):
+    list_display = ['name', 'code', 'organization', 'is_system_role', 'is_active']
+    list_filter = ['organization', 'is_system_role', 'is_active']
+    search_fields = ['name', 'code']
+    filter_horizontal = ['permissions']
 
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'department', 'role', 'employment_status', 'is_active']
-    list_filter = ['organization', 'department', 'role', 'employment_status', 'is_active']
+    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'department', 'assigned_role', 'employment_status', 'is_active']
+    list_filter = ['organization', 'department', 'assigned_role', 'employment_status', 'is_active']
     search_fields = ['email', 'first_name', 'last_name', 'employee_id']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_login']
+    filter_horizontal = ['custom_permissions']
     fieldsets = (
         ('Informations de base', {
             'fields': ('email', 'first_name', 'last_name', 'phone', 'avatar_url')
@@ -20,7 +37,11 @@ class EmployeeAdmin(admin.ModelAdmin):
             'fields': ('organization', 'employee_id', 'department', 'position', 'contract')
         }),
         ('Emploi', {
-            'fields': ('hire_date', 'termination_date', 'manager', 'role', 'employment_status')
+            'fields': ('hire_date', 'termination_date', 'manager', 'assigned_role', 'employment_status')
+        }),
+        ('Permissions', {
+            'fields': ('custom_permissions',),
+            'classes': ('collapse',)
         }),
         ('Préférences', {
             'fields': ('language', 'timezone')
@@ -64,13 +85,6 @@ class LeaveTypeAdmin(admin.ModelAdmin):
     search_fields = ['name', 'code']
 
 
-@admin.register(LeaveBalance)
-class LeaveBalanceAdmin(admin.ModelAdmin):
-    list_display = ['employee', 'leave_type', 'year', 'total_days', 'used_days', 'pending_days', 'available_days']
-    list_filter = ['year', 'leave_type']
-    search_fields = ['employee__email', 'employee__first_name', 'employee__last_name']
-
-
 @admin.register(LeaveRequest)
 class LeaveRequestAdmin(admin.ModelAdmin):
     list_display = ['employee', 'leave_type', 'start_date', 'end_date', 'total_days', 'status', 'approver']
@@ -98,7 +112,59 @@ class PayslipAdmin(admin.ModelAdmin):
 
 @admin.register(PayslipItem)
 class PayslipItemAdmin(admin.ModelAdmin):
-    list_display = ['payslip', 'item_type', 'description', 'amount', 'quantity', 'total']
-    list_filter = ['item_type']
-    search_fields = ['description']
-    readonly_fields = ['total']
+    list_display = ['payslip', 'name', 'amount', 'is_deduction']
+    list_filter = ['is_deduction']
+    search_fields = ['name']
+
+
+
+@admin.register(PayrollAdvance)
+class PayrollAdvanceAdmin(admin.ModelAdmin):
+    list_display = [
+        'employee',
+        'amount',
+        'status',
+        'request_date',
+        'approved_by',
+        'approved_date',
+        'payment_date',
+        'deduction_month',
+        'payslip',
+    ]
+    list_filter = ['status', 'employee', 'request_date', 'payment_date', 'deduction_month']
+    search_fields = ['employee__email', 'employee__first_name', 'employee__last_name', 'reason', 'rejection_reason', 'notes']
+    readonly_fields = ['request_date', 'approved_date', 'payment_date']
+
+
+class BreakInline(admin.TabularInline):
+    model = Break
+    extra = 0
+    readonly_fields = ['start_time', 'end_time', 'created_at']
+
+
+@admin.register(Attendance)
+class AttendanceAdmin(admin.ModelAdmin):
+    inlines = [BreakInline]
+    list_display = [
+        'user', 'organization', 'date', 'check_in', 'check_out',
+        'status', 'approval_status', 'is_approved', 'approved_by', 'approval_date',
+        'is_overtime', 'overtime_hours', 'total_hours'
+    ]
+    list_filter = [
+        'organization', 'status', 'approval_status', 'is_approved', 'is_overtime', 'date'
+    ]
+    search_fields = [
+        'user__email', 'user__first_name', 'user__last_name', 'user_full_name', 'user_email'
+    ]
+    readonly_fields = [
+        'user_email', 'user_full_name', 'total_hours', 'overtime_hours',
+        'break_duration', 'created_at', 'updated_at'
+    ]
+    date_hierarchy = 'date'
+
+
+@admin.register(Break)
+class BreakAdmin(admin.ModelAdmin):
+    list_display = ['attendance', 'start_time', 'end_time', 'duration_minutes']
+    list_filter = ['attendance__date']
+    search_fields = ['attendance__user_full_name']

@@ -39,6 +39,42 @@ class Command(BaseCommand):
                 'name': 'Restauration',
                 'description': 'Restaurants, hôtels, services de restauration'
             },
+             {
+                'name': 'BTP',
+                'description': 'Bâtiment et travaux publics : construction, génie civil'
+            },
+            {
+                'name': 'Transports',
+                'description': 'Transport de marchandises, logistique, mobilité'
+            },
+            {
+                'name': 'Agriculture',
+                'description': 'Exploitations agricoles, production végétale et animale'
+            },
+            {
+                'name': 'Energie',
+                'description': 'Production et distribution d\'énergie, énergies renouvelables'
+            },
+            {
+                'name': 'Média & Communication',
+                'description': 'Presse, agences de communication, médias numériques'
+            },
+            {
+                'name': 'Immobilier',
+                'description': 'Agences immobilières, gestion de biens, promotion'
+            },
+            {
+                'name': 'Associatif',
+                'description': 'Associations, ONG, fondations'
+            },
+             {
+                'name': 'Agence de voyage',
+                'description': 'Agence de voyage, de tourisme, de billetterie'
+            },
+            {
+                'name': 'Art & Culture',
+                'description': 'Galeries, musées, spectacles, organisations culturelles'
+            },
         ]
 
         created_count = 0
