@@ -1609,12 +1609,16 @@ class PayrollStatsView(APIView):
 
 class HROverviewStatsView(APIView):
     """
-    Get general HR statistics for an organization
+    Get comprehensive HR statistics & BI data for an organization dashboard.
+    All data is filtered by the correct organization via subdomain.
     """
     permission_classes = [IsAuthenticated]
 
     def get(self, request):
         from datetime import datetime, timedelta
+        from dateutil.relativedelta import relativedelta
+        from django.db.models.functions import TruncMonth, Coalesce
+        from django.db.models import Value, DecimalField
 
         org_subdomain = request.query_params.get('organization_subdomain')
         if not org_subdomain:
@@ -1649,6 +1653,12 @@ class HROverviewStatsView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
+        now = timezone.now()
+        today = now.date()
+
+        # ──────────────────────────────────────────────────────
+        # 1. EMPLOYEE STATS
+        # ──────────────────────────────────────────────────────
         employees = Employee.objects.filter(organization=organization)
         total_employees = employees.count()
         active_employees = employees.filter(employment_status='active').count()
@@ -1659,101 +1669,319 @@ class HROverviewStatsView(APIView):
         roles_count = Role.objects.filter(
             models.Q(organization=organization) | models.Q(organization__isnull=True)
         ).count()
+
+        # ──────────────────────────────────────────────────────
+        # 2. ATTENDANCE TODAY — real data from Attendance model
+        # ──────────────────────────────────────────────────────
+        today_attendances = Attendance.objects.filter(
+            organization=organization,
+            date=today
+        )
+        attendance_present = today_attendances.filter(status='present').count()
+        attendance_late = today_attendances.filter(status='late').count()
+        attendance_absent = today_attendances.filter(status='absent').count()
+        attendance_checked_in = attendance_present + attendance_late  # those who showed up
+        attendance_total_expected = active_employees  # expected is all active employees
+        attendance_not_checked_in = max(0, attendance_total_expected - attendance_checked_in - attendance_absent)
+        attendance_rate = round((attendance_checked_in / attendance_total_expected * 100), 1) if attendance_total_expected > 0 else 0
+
+        attendance_today = {
+            'total_expected': attendance_total_expected,
+            'present': attendance_present,
+            'late': attendance_late,
+            'absent': attendance_absent,
+            'not_checked_in': attendance_not_checked_in,
+            'checked_in': attendance_checked_in,
+            'rate': attendance_rate,
+        }
+
+        # ──────────────────────────────────────────────────────
+        # 3. LEAVE REQUESTS
+        # ──────────────────────────────────────────────────────
         pending_leave_requests = LeaveRequest.objects.filter(
             employee__organization=organization,
             status='pending'
         ).count()
-        now = timezone.now()
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         approved_leave_requests_this_month = LeaveRequest.objects.filter(
             employee__organization=organization,
             status='approved',
             approval_date__gte=start_of_month
         ).count()
+
+        # Leave utilization: total approved leave days this year vs total possible
+        year_start = today.replace(month=1, day=1)
+        approved_leaves_this_year = LeaveRequest.objects.filter(
+            employee__organization=organization,
+            status='approved',
+            start_date__gte=year_start,
+        )
+        total_leave_days_used = sum(
+            lr.total_days for lr in approved_leaves_this_year if hasattr(lr, 'total_days') and lr.total_days
+        )
+
+        # Pending leave details (with employee info)
+        pending_leaves_detail = LeaveRequest.objects.filter(
+            employee__organization=organization,
+            status='pending'
+        ).select_related('employee', 'leave_type').order_by('created_at')[:5]
+        pending_leaves_data = LeaveRequestSerializer(pending_leaves_detail, many=True).data
+
+        # ──────────────────────────────────────────────────────
+        # 4. PAYROLL — Current month & previous month comparison
+        # ──────────────────────────────────────────────────────
         current_month_payrolls = Payslip.objects.filter(
             employee__organization=organization,
             payroll_period__start_date__year=now.year,
             payroll_period__start_date__month=now.month
         )
-        payroll_aggregates = current_month_payrolls.aggregate(
-            total=models.Sum('net_salary'),
-            avg=models.Avg('net_salary')
+        payroll_agg = current_month_payrolls.aggregate(
+            total=Coalesce(models.Sum('net_salary'), Value(0, output_field=DecimalField())),
+            avg=models.Avg('net_salary'),
+            count=models.Count('id'),
         )
-        total_payroll_this_month = float(payroll_aggregates['total'] or 0)
-        average_salary = float(payroll_aggregates['avg'] or 0)
-        recent_hires = Employee.objects.filter(
-            organization=organization,
-            hire_date__isnull=False
-        ).order_by('-hire_date')[:5]
-        recent_hires_data = EmployeeListSerializer(recent_hires, many=True).data
-        upcoming_leaves = LeaveRequest.objects.filter(
+        total_payroll_this_month = float(payroll_agg['total'])
+        average_salary = float(payroll_agg['avg'] or 0)
+
+        # Previous month payroll for variation calc
+        if now.month == 1:
+            prev_year, prev_month = now.year - 1, 12
+        else:
+            prev_year, prev_month = now.year, now.month - 1
+
+        prev_payroll_agg = Payslip.objects.filter(
             employee__organization=organization,
-            status='approved',
-            start_date__gte=now
-        ).order_by('start_date')[:10]
-        upcoming_leaves_data = LeaveRequestSerializer(upcoming_leaves, many=True).data
+            payroll_period__start_date__year=prev_year,
+            payroll_period__start_date__month=prev_month
+        ).aggregate(
+            total=Coalesce(models.Sum('net_salary'), Value(0, output_field=DecimalField())),
+        )
+        total_payroll_prev_month = float(prev_payroll_agg['total'])
+        payroll_variation = 0.0
+        if total_payroll_prev_month > 0:
+            payroll_variation = round(((total_payroll_this_month - total_payroll_prev_month) / total_payroll_prev_month) * 100, 1)
 
-        # Contract stats
-        contracts = Contract.objects.filter(employee__organization=organization)
-        total_contracts = contracts.count()
-        active_contracts = contracts.filter(is_active=True).count()
-        # Contracts expiring within 30 days
-        thirty_days_from_now = now + timedelta(days=30)
-        expiring_contracts = contracts.filter(
+        # Average salary from active contracts (more reliable than payslips)
+        avg_contract_salary_agg = Contract.objects.filter(
+            employee__organization=organization,
             is_active=True,
-            end_date__isnull=False,
-            end_date__lte=thirty_days_from_now.date(),
-            end_date__gte=now.date()
-        ).count()
+        ).aggregate(
+            avg=models.Avg('base_salary'),
+            total=Coalesce(models.Sum('base_salary'), Value(0, output_field=DecimalField())),
+        )
+        avg_contract_salary = float(avg_contract_salary_agg['avg'] or 0)
+        total_contract_mass = float(avg_contract_salary_agg['total'] or 0)
 
-        # Payroll trend (last 6 months)
+        # ──────────────────────────────────────────────────────
+        # 5. PAYROLL TREND — last 12 months (more history)
+        # ──────────────────────────────────────────────────────
         payroll_trend = []
-        for i in range(5, -1, -1):
-            # Calculate the month
-            month_date = now - timedelta(days=i * 30)  # Approximate
+        for i in range(11, -1, -1):
+            try:
+                month_date = today - relativedelta(months=i)
+            except Exception:
+                month_date = today - timedelta(days=i * 30)
             target_year = month_date.year
             target_month = month_date.month
-            
-            # Get payrolls for this month
+
             month_payrolls = Payslip.objects.filter(
                 employee__organization=organization,
                 payroll_period__start_date__year=target_year,
                 payroll_period__start_date__month=target_month
             )
-            
-            month_aggregates = month_payrolls.aggregate(
-                total=models.Sum('net_salary'),
-                count=models.Count('id')
+            month_agg = month_payrolls.aggregate(
+                total=Coalesce(models.Sum('net_salary'), Value(0, output_field=DecimalField())),
+                count=models.Count('id'),
             )
-            
             payroll_trend.append({
                 'month': month_date.strftime('%b'),
                 'full_month': month_date.strftime('%B %Y'),
                 'year': target_year,
                 'month_number': target_month,
-                'montant': float(month_aggregates['total'] or 0),
-                'employes': month_aggregates['count'] or 0,
+                'montant': float(month_agg['total']),
+                'employes': month_agg['count'],
             })
 
+        # ──────────────────────────────────────────────────────
+        # 6. CONTRACTS — detailed health
+        # ──────────────────────────────────────────────────────
+        contracts = Contract.objects.filter(employee__organization=organization)
+        total_contracts = contracts.count()
+        active_contracts = contracts.filter(is_active=True).count()
+        
+        thirty_days = now + timedelta(days=30)
+        sixty_days = now + timedelta(days=60)
+        
+        expiring_contracts_qs = contracts.filter(
+            is_active=True,
+            end_date__isnull=False,
+            end_date__lte=thirty_days.date(),
+            end_date__gte=today
+        ).select_related('employee')
+        expiring_contracts = expiring_contracts_qs.count()
+        
+        # Return details of expiring contracts for the dashboard widget
+        expiring_contracts_data = [{
+            'employee_id': str(c.employee.id),
+            'employee_name': c.employee.get_full_name(),
+            'contract_type': c.contract_type,
+            'end_date': c.end_date.isoformat() if c.end_date else None,
+            'days_remaining': (c.end_date - today).days if c.end_date else None,
+        } for c in expiring_contracts_qs[:5]]
+
+        # Contracts expiring in 30-60 days (early warning)
+        contracts_warning = contracts.filter(
+            is_active=True,
+            end_date__isnull=False,
+            end_date__gt=thirty_days.date(),
+            end_date__lte=sixty_days.date(),
+        ).count()
+
+        # No active contract count
+        employees_without_contract = employees.filter(
+            employment_status='active',
+        ).exclude(
+            contracts__is_active=True
+        ).count()
+
+        # ──────────────────────────────────────────────────────
+        # 7. RECENT HIRES & TURNOVER
+        # ──────────────────────────────────────────────────────
+        recent_hires = Employee.objects.filter(
+            organization=organization,
+            hire_date__isnull=False
+        ).order_by('-hire_date')[:5]
+        recent_hires_data = EmployeeListSerializer(recent_hires, many=True).data
+
+        # Turnover: hires in last 90 days vs total
+        ninety_days_ago = today - timedelta(days=90)
+        hires_last_90d = employees.filter(hire_date__gte=ninety_days_ago).count()
+        departures_last_90d = employees.filter(
+            employment_status='inactive',
+            updated_at__gte=now - timedelta(days=90)
+        ).count()
+        turnover_rate = round(
+            ((departures_last_90d) / max(total_employees, 1)) * 100, 1
+        )
+
+        # ──────────────────────────────────────────────────────
+        # 8. UPCOMING LEAVES
+        # ──────────────────────────────────────────────────────
+        upcoming_leaves = LeaveRequest.objects.filter(
+            employee__organization=organization,
+            status='approved',
+            start_date__gte=now
+        ).select_related('employee', 'leave_type').order_by('start_date')[:10]
+        upcoming_leaves_data = LeaveRequestSerializer(upcoming_leaves, many=True).data
+
+        # People on leave right now
+        on_leave_now = LeaveRequest.objects.filter(
+            employee__organization=organization,
+            status='approved',
+            start_date__lte=today,
+            end_date__gte=today,
+        ).count()
+
+        # ──────────────────────────────────────────────────────
+        # 9. DEPARTMENT PAYROLL BREAKDOWN (top 5)
+        # ──────────────────────────────────────────────────────
+        dept_payroll = []
+        departments = Department.objects.filter(organization=organization, is_active=True)
+        for dept in departments:
+            dept_contracts = Contract.objects.filter(
+                employee__department=dept,
+                is_active=True,
+                employee__employment_status='active',
+            )
+            dept_agg = dept_contracts.aggregate(
+                total=Coalesce(models.Sum('base_salary'), Value(0, output_field=DecimalField())),
+                count=models.Count('id'),
+                avg=models.Avg('base_salary'),
+            )
+            dept_employee_count = Employee.objects.filter(department=dept, employment_status='active').count()
+            dept_payroll.append({
+                'department_id': str(dept.id),
+                'department_name': dept.name,
+                'employee_count': dept_employee_count,
+                'total_salary': float(dept_agg['total']),
+                'avg_salary': float(dept_agg['avg'] or 0),
+                'pct_of_total': round((float(dept_agg['total']) / total_contract_mass * 100), 1) if total_contract_mass > 0 else 0,
+            })
+        dept_payroll.sort(key=lambda x: x['total_salary'], reverse=True)
+
+        # ──────────────────────────────────────────────────────
+        # 10. PAYROLL ADVANCE STATS
+        # ──────────────────────────────────────────────────────
+        pending_advances = PayrollAdvance.objects.filter(
+            employee__organization=organization,
+            status='pending'
+        ).count()
+        pending_advances_amount = float(
+            PayrollAdvance.objects.filter(
+                employee__organization=organization,
+                status='pending'
+            ).aggregate(
+                total=Coalesce(models.Sum('amount'), Value(0, output_field=DecimalField()))
+            )['total']
+        )
+
+        # ──────────────────────────────────────────────────────
+        # BUILD RESPONSE
+        # ──────────────────────────────────────────────────────
         stats = {
+            # Core employee counts
             'total_employees': total_employees,
             'active_employees': active_employees,
             'inactive_employees': inactive_employees,
             'on_leave_employees': on_leave_employees,
             'departments_count': departments_count,
             'roles_count': roles_count,
+
+            # Attendance today (pre-aggregated)
+            'attendance_today': attendance_today,
+
+            # Leave requests
             'pending_leave_requests': pending_leave_requests,
             'approved_leave_requests_this_month': approved_leave_requests_this_month,
+            'total_leave_days_used_this_year': total_leave_days_used,
+            'on_leave_now': on_leave_now,
+            'pending_leaves_detail': pending_leaves_data,
+
+            # Payroll
             'total_payroll_this_month': total_payroll_this_month,
+            'total_payroll_prev_month': total_payroll_prev_month,
+            'payroll_variation': payroll_variation,
             'average_salary': average_salary,
-            'recent_hires': recent_hires_data,
-            'upcoming_leaves': upcoming_leaves_data,
-            # Contract stats
+            'avg_contract_salary': avg_contract_salary,
+            'total_contract_mass': total_contract_mass,
+            'payroll_count_this_month': payroll_agg['count'],
+
+            # Contracts
             'total_contracts': total_contracts,
             'active_contracts': active_contracts,
             'expiring_contracts': expiring_contracts,
-            # Payroll trend
+            'expiring_contracts_detail': expiring_contracts_data,
+            'contracts_warning_60d': contracts_warning,
+            'employees_without_contract': employees_without_contract,
+
+            # Turnover
+            'hires_last_90d': hires_last_90d,
+            'departures_last_90d': departures_last_90d,
+            'turnover_rate': turnover_rate,
+
+            # Advances
+            'pending_advances': pending_advances,
+            'pending_advances_amount': pending_advances_amount,
+
+            # Trends
             'payroll_trend': payroll_trend,
+
+            # Department payroll breakdown
+            'department_payroll': dept_payroll,
+
+            # Lists
+            'recent_hires': recent_hires_data,
+            'upcoming_leaves': upcoming_leaves_data,
         }
         return Response(stats, status=status.HTTP_200_OK)
 
@@ -1788,7 +2016,6 @@ class DepartmentStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif getattr(user, 'user_type', None) == 'employee':
-            print(user.get_all_permissions)
             if user.organization != organization or not user.has_permission("hr.view_departments"):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},

@@ -26,8 +26,8 @@ SALES & COMMERCIAL:
 
 from datetime import timedelta
 from decimal import Decimal
-from django.db.models import Sum, F, Q, Count, Max, Func
-from django.db.models.functions import TruncDate, TruncMonth, TruncYear
+from django.db.models import Sum, F, Q, Count, Max, Func, Avg
+from django.db.models.functions import TruncDate, TruncMonth, TruncYear, ExtractWeekDay, ExtractHour
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import status, viewsets
@@ -1358,51 +1358,608 @@ class InventoryStatsViewSet(PDFGeneratorMixin, OrganizationResolverMixin, viewse
 
     @action(detail=False, methods=['get'])
     def overview(self, request, organization_slug=None):
-        """Get inventory overview statistics"""
+        """
+        Comprehensive inventory dashboard stats.
+        Returns all data needed to build a rich, professional dashboard.
+        """
+        from dateutil.relativedelta import relativedelta
+
         organization = self.get_organization_from_request()
+        now = timezone.now()
+        today = now.date()
 
-        total_products = Product.objects.filter(
+        # ──────────────────────────────────────────────────
+        # 1. STOCK METRICS
+        # ──────────────────────────────────────────────────
+        products_qs = Product.objects.filter(
             organization=organization,
             is_active=True
-        ).count()
+        )
+        total_products = products_qs.count()
 
-        total_stock_value = Stock.objects.filter(
-            product__organization=organization
+        stock_agg = Stock.objects.filter(
+            product__organization=organization,
+            product__is_active=True
         ).aggregate(
-            total=Sum(F('quantity') * F('product__purchase_price'))
-        )['total'] or 0
+            value_purchase=Sum(F('quantity') * F('product__purchase_price')),
+            value_selling=Sum(F('quantity') * F('product__selling_price')),
+            total_quantity=Sum('quantity'),
+        )
+        total_stock_value = float(stock_agg['value_purchase'] or 0)
+        total_stock_value_selling = float(stock_agg['value_selling'] or 0)
+        total_stock_quantity = float(stock_agg['total_quantity'] or 0)
+        potential_margin = total_stock_value_selling - total_stock_value
 
-        low_stock_count = Product.objects.filter(
-            organization=organization,
-            is_active=True
-        ).annotate(
+        # Products with stock annotations
+        products_annotated = products_qs.annotate(
             total_stock=Sum('stocks__quantity')
-        ).filter(
+        )
+        low_stock_count = products_annotated.filter(
+            total_stock__gt=0,
             total_stock__lte=F('min_stock_level')
         ).count()
+        out_of_stock_count = products_annotated.filter(
+            Q(total_stock__lte=0) | Q(total_stock__isnull=True)
+        ).count()
+        overstock_count = products_annotated.filter(
+            max_stock_level__gt=0,
+            total_stock__gt=F('max_stock_level')
+        ).count()
 
+        # Warehouse count
+        warehouse_count = Warehouse.objects.filter(
+            organization=organization, is_active=True
+        ).count()
+
+        # ──────────────────────────────────────────────────
+        # 2. SALES METRICS (last 30 days vs previous 30 days)
+        # ──────────────────────────────────────────────────
+        period_end = now
+        period_start = now - timedelta(days=30)
+        prev_period_start = period_start - timedelta(days=30)
+
+        sales_current = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=period_start,
+            sale_date__lte=period_end,
+            payment_status__in=['paid', 'partial', 'pending'],
+        ).exclude(payment_status='cancelled')
+
+        sales_previous = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=prev_period_start,
+            sale_date__lt=period_start,
+            payment_status__in=['paid', 'partial', 'pending'],
+        ).exclude(payment_status='cancelled')
+
+        current_agg = sales_current.aggregate(
+            revenue=Sum('total_amount'),
+            count=Count('id'),
+            paid=Sum('paid_amount'),
+        )
+        prev_agg = sales_previous.aggregate(
+            revenue=Sum('total_amount'),
+        )
+
+        revenue_30d = float(current_agg['revenue'] or 0)
+        revenue_prev_30d = float(prev_agg['revenue'] or 0)
+        revenue_variation = None
+        if revenue_prev_30d > 0:
+            revenue_variation = round(
+                ((revenue_30d - revenue_prev_30d) / revenue_prev_30d) * 100, 1
+            )
+        sales_count_30d = current_agg['count'] or 0
+        avg_ticket = round(revenue_30d / max(sales_count_30d, 1), 2)
+
+        # Payment methods distribution (current period)
+        payment_methods = list(
+            sales_current.values('payment_method').annotate(
+                count=Count('id'),
+                total=Sum('total_amount'),
+            ).order_by('-total')
+        )
+        for pm in payment_methods:
+            pm['total'] = float(pm['total'] or 0)
+
+        # ──────────────────────────────────────────────────
+        # 3. EXPENSES (last 30 days vs previous 30 days)
+        # ──────────────────────────────────────────────────
+        expenses_current = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=period_start.date(),
+            expense_date__lte=period_end.date(),
+        ).aggregate(total=Sum('amount'), count=Count('id'))
+
+        expenses_previous = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=prev_period_start.date(),
+            expense_date__lt=period_start.date(),
+        ).aggregate(total=Sum('amount'))
+
+        # Paiements des commandes fournisseurs (Achats)
+        # On compte les commandes reçues comme payées
+        orders_payments_current = Order.objects.filter(
+            organization=organization,
+            order_date__gte=period_start,
+            order_date__lte=period_end,
+            status='received',  # Seulement les commandes reçues
+        ).aggregate(total=Sum('total_amount'), count=Count('id'))
+
+        orders_payments_previous = Order.objects.filter(
+            organization=organization,
+            order_date__gte=prev_period_start,
+            order_date__lt=period_start,
+            status='received',  # Seulement les commandes reçues
+        ).aggregate(total=Sum('total_amount'))
+
+        # Dépenses de base (expenses uniquement)
+        base_expenses_30d = float(expenses_current['total'] or 0)
+        base_expenses_prev_30d = float(expenses_previous['total'] or 0)
+
+        # Achats/commandes fournisseurs
+        purchases_30d = float(orders_payments_current['total'] or 0)
+        purchases_prev_30d = float(orders_payments_previous['total'] or 0)
+
+        # Total des dépenses (expenses + achats)
+        expenses_30d = base_expenses_30d + purchases_30d
+        expenses_prev_30d = base_expenses_prev_30d + purchases_prev_30d
+
+        expenses_variation = None
+        if expenses_prev_30d > 0:
+            expenses_variation = round(
+                ((expenses_30d - expenses_prev_30d) / expenses_prev_30d) * 100, 1
+            )
+        expenses_count_30d = expenses_current['count'] or 0
+        purchases_count_30d = orders_payments_current['count'] or 0
+
+        # Net profit (revenue - expenses)
+        net_profit_30d = revenue_30d - expenses_30d
+        margin_percent = round(
+            (net_profit_30d / max(revenue_30d, 1)) * 100, 1
+        ) if revenue_30d > 0 else 0
+
+        # ──────────────────────────────────────────────────
+        # 4. CREDIT SALES / RECEIVABLES
+        # ──────────────────────────────────────────────────
+        credit_agg = CreditSale.objects.filter(
+            organization=organization,
+            status__in=['pending', 'partial', 'overdue']
+        ).aggregate(
+            total_debt=Sum('remaining_amount'),
+            count=Count('id'),
+            overdue_count=Count('id', filter=Q(status='overdue')),
+            overdue_amount=Sum('remaining_amount', filter=Q(status='overdue')),
+        )
+        total_receivables = float(credit_agg['total_debt'] or 0)
+        credit_count = credit_agg['count'] or 0
+        overdue_count = credit_agg['overdue_count'] or 0
+        overdue_amount = float(credit_agg['overdue_amount'] or 0)
+
+        # ──────────────────────────────────────────────────
+        # 5. ORDERS & SUPPLIERS
+        # ──────────────────────────────────────────────────
+        orders_agg = Order.objects.filter(
+            organization=organization,
+            status__in=['draft', 'pending', 'confirmed']
+        ).aggregate(
+            count=Count('id'),
+            total_value=Sum('total_amount'),
+        )
+        pending_orders = orders_agg['count'] or 0
+        pending_orders_value = float(orders_agg['total_value'] or 0)
+
+        supplier_count = Supplier.objects.filter(
+            organization=organization, is_active=True
+        ).count()
+        customer_count = Customer.objects.filter(
+            organization=organization, is_active=True
+        ).count()
+
+        # ──────────────────────────────────────────────────
+        # 6. ALERTS
+        # ──────────────────────────────────────────────────
         active_alerts = Alert.objects.filter(
             organization=organization,
             is_resolved=False
-        ).count()
+        )
+        alerts_count = active_alerts.count()
+        alerts_by_severity = dict(
+            active_alerts.values_list('severity').annotate(
+                c=Count('id')
+            ).values_list('severity', 'c')
+        )
+        recent_alerts = list(
+            active_alerts.select_related('product', 'warehouse')
+            .order_by('-created_at')[:5]
+            .values(
+                'id', 'alert_type', 'severity', 'message',
+                'product__name', 'product__sku',
+                'warehouse__name', 'created_at'
+            )
+        )
+        for a in recent_alerts:
+            a['created_at'] = a['created_at'].isoformat() if a['created_at'] else None
 
-        pending_orders = Order.objects.filter(
+        # ──────────────────────────────────────────────────
+        # 7. SALES TREND (12 months)
+        # ──────────────────────────────────────────────────
+        twelve_months_ago = (now - relativedelta(months=12)).replace(
+            day=1, hour=0, minute=0, second=0, microsecond=0
+        )
+
+        sales_by_month = (
+            Sale.objects.filter(
+                organization=organization,
+                sale_date__gte=twelve_months_ago,
+            ).exclude(payment_status='cancelled')
+            .annotate(month=TruncMonth('sale_date'))
+            .values('month')
+            .annotate(
+                revenue=Sum('total_amount'),
+                count=Count('id'),
+                paid=Sum('paid_amount'),
+            )
+            .order_by('month')
+        )
+
+        expenses_by_month = (
+            Expense.objects.filter(
+                organization=organization,
+                expense_date__gte=twelve_months_ago.date(),
+            )
+            .annotate(month=TruncMonth('expense_date'))
+            .values('month')
+            .annotate(total=Sum('amount'))
+            .order_by('month')
+        )
+
+        # Paiements des commandes fournisseurs par mois (Achats)
+        # On compte les commandes reçues comme payées
+        orders_payments_by_month = (
+            Order.objects.filter(
+                organization=organization,
+                order_date__gte=twelve_months_ago,
+                status='received',  # Seulement les commandes reçues
+            )
+            .annotate(month=TruncMonth('order_date'))
+            .values('month')
+            .annotate(total=Sum('total_amount'))
+            .order_by('month')
+        )
+
+        # Build 12-month timeline
+        expense_map = {
+            e['month'].date() if hasattr(e['month'], 'date') else e['month']: float(e['total'] or 0)
+            for e in expenses_by_month
+        }
+
+        purchases_map = {
+            p['month'].date() if hasattr(p['month'], 'date') else p['month']: float(p['total'] or 0)
+            for p in orders_payments_by_month
+        }
+
+        sales_trend = []
+        for s in sales_by_month:
+            month_key = s['month'].date() if hasattr(s['month'], 'date') else s['month']
+            base_expenses = expense_map.get(month_key, 0)
+            purchases = purchases_map.get(month_key, 0)
+            total_expenses = base_expenses + purchases
+
+            sales_trend.append({
+                'month': s['month'].strftime('%Y-%m'),
+                'label': s['month'].strftime('%b %Y'),
+                'revenue': float(s['revenue'] or 0),
+                'sales_count': s['count'] or 0,
+                'paid': float(s['paid'] or 0),
+                'expenses': total_expenses,
+                'base_expenses': base_expenses,
+                'purchases': purchases,
+                'profit': float(s['revenue'] or 0) - total_expenses,
+            })
+
+        # ──────────────────────────────────────────────────
+        # 8. TOP SELLING PRODUCTS (last 90 days)
+        # ──────────────────────────────────────────────────
+        ninety_days_ago = now - timedelta(days=90)
+        top_selling = (
+            SaleItem.objects.filter(
+                sale__organization=organization,
+                sale__sale_date__gte=ninety_days_ago,
+            ).exclude(sale__payment_status='cancelled')
+            .values('product__id', 'product__name', 'product__sku')
+            .annotate(
+                qty_sold=Sum('quantity'),
+                revenue=Sum('total'),
+            )
+            .order_by('-qty_sold')[:10]
+        )
+        top_selling_data = [{
+            'id': str(p['product__id']),
+            'name': p['product__name'],
+            'sku': p['product__sku'],
+            'qty_sold': float(p['qty_sold'] or 0),
+            'revenue': float(p['revenue'] or 0),
+        } for p in top_selling]
+
+        # ──────────────────────────────────────────────────
+        # 9. LOW STOCK DETAIL (top 10)
+        # ──────────────────────────────────────────────────
+        low_stock_products = list(
+            products_annotated.filter(
+                total_stock__gt=0,
+                total_stock__lte=F('min_stock_level')
+            ).order_by('total_stock')[:10]
+            .values(
+                'id', 'name', 'sku', 'category__name',
+                'min_stock_level', 'purchase_price',
+            )
+            .annotate(
+                current_stock=Sum('stocks__quantity'),
+                stock_val=Sum(F('stocks__quantity') * F('purchase_price')),
+            )
+        )
+        for p in low_stock_products:
+            p['id'] = str(p['id'])
+            p['current_stock'] = float(p['current_stock'] or 0)
+            p['min_stock_level'] = float(p['min_stock_level'] or 0)
+            p['purchase_price'] = float(p['purchase_price'] or 0)
+            p['stock_val'] = float(p['stock_val'] or 0)
+
+        # ──────────────────────────────────────────────────
+        # 10. MOVEMENTS SUMMARY (last 30 days)
+        # ──────────────────────────────────────────────────
+        movements_30d = Movement.objects.filter(
             organization=organization,
-            status__in=['draft', 'pending', 'confirmed']
-        ).count()
+            movement_date__gte=period_start,
+        ).aggregate(
+            total=Count('id'),
+            entries=Count('id', filter=Q(movement_type='in')),
+            exits=Count('id', filter=Q(movement_type='out')),
+            transfers=Count('id', filter=Q(movement_type='transfer')),
+            adjustments=Count('id', filter=Q(movement_type='adjustment')),
+            entries_value=Sum(
+                F('quantity') * F('product__purchase_price'),
+                filter=Q(movement_type='in')
+            ),
+            exits_value=Sum(
+                F('quantity') * F('product__purchase_price'),
+                filter=Q(movement_type='out')
+            ),
+        )
 
-        warehouse_count = Warehouse.objects.filter(
+        # ──────────────────────────────────────────────────
+        # 11. EXPENSE BREAKDOWN BY CATEGORY
+        # ──────────────────────────────────────────────────
+        expense_by_category = list(
+            Expense.objects.filter(
+                organization=organization,
+                expense_date__gte=period_start.date(),
+                expense_date__lte=period_end.date(),
+            ).values('category__name')
+            .annotate(total=Sum('amount'), count=Count('id'))
+            .order_by('-total')[:8]
+        )
+        for ec in expense_by_category:
+            ec['total'] = float(ec['total'] or 0)
+            ec['category__name'] = ec['category__name'] or 'Sans catégorie'
+
+        # ──────────────────────────────────────────────────
+        # 12. STOCK TURNOVER RATIO (last 90 days)
+        # ──────────────────────────────────────────────────
+        ninety_days_start = now - timedelta(days=90)
+
+        # Total quantity sold in last 90 days
+        qty_sold_90d = SaleItem.objects.filter(
+            sale__organization=organization,
+            sale__sale_date__gte=ninety_days_start,
+        ).exclude(sale__payment_status='cancelled').aggregate(
+            total=Sum('quantity')
+        )['total'] or 0
+
+        # Average inventory (current stock quantity)
+        avg_inventory = total_stock_quantity
+
+        # Stock turnover ratio = qty sold / avg inventory (annualized)
+        stock_turnover_ratio = 0
+        if avg_inventory > 0:
+            # Annualize: (90 days sold / inventory) * (365/90)
+            stock_turnover_ratio = round((float(qty_sold_90d) / avg_inventory) * (365 / 90), 2)
+
+        # Days of inventory = 365 / turnover ratio
+        days_of_inventory = 0
+        if stock_turnover_ratio > 0:
+            days_of_inventory = round(365 / stock_turnover_ratio, 1)
+
+        # ──────────────────────────────────────────────────
+        # 13. ABC ANALYSIS (by revenue contribution)
+        # ──────────────────────────────────────────────────
+        products_with_revenue = list(
+            SaleItem.objects.filter(
+                sale__organization=organization,
+                sale__sale_date__gte=ninety_days_start,
+            ).exclude(sale__payment_status='cancelled')
+            .values('product__id', 'product__name')
+            .annotate(revenue=Sum('total'))
+            .order_by('-revenue')
+        )
+
+        total_revenue_90d = float(sum(float(p['revenue'] or 0) for p in products_with_revenue))
+        cumulative = 0.0
+        abc_distribution = {'A': 0, 'B': 0, 'C': 0}
+
+        for p in products_with_revenue:
+            rev = float(p['revenue'] or 0)
+            cumulative += rev
+            pct = (cumulative / max(total_revenue_90d, 1.0)) * 100
+
+            if pct <= 80:
+                abc_distribution['A'] += 1
+            elif pct <= 95:
+                abc_distribution['B'] += 1
+            else:
+                abc_distribution['C'] += 1
+
+        # ──────────────────────────────────────────────────
+        # 14. CATEGORY PERFORMANCE METRICS
+        # ──────────────────────────────────────────────────
+        category_performance = []
+        categories = Category.objects.filter(organization=organization)
+
+        for cat in categories:
+            # Stock value by category
+            cat_stock = Stock.objects.filter(
+                product__category=cat,
+                product__is_active=True
+            ).aggregate(
+                value=Sum(F('quantity') * F('product__purchase_price')),
+                qty=Sum('quantity'),
+                products=Count('product', distinct=True)
+            )
+
+            # Revenue by category (90d)
+            cat_revenue = SaleItem.objects.filter(
+                product__category=cat,
+                sale__organization=organization,
+                sale__sale_date__gte=ninety_days_start,
+            ).exclude(sale__payment_status='cancelled').aggregate(
+                revenue=Sum('total'),
+                qty_sold=Sum('quantity')
+            )
+
+            stock_val = float(cat_stock['value'] or 0)
+            revenue_val = float(cat_revenue['revenue'] or 0)
+
+            if stock_val > 0 or revenue_val > 0:
+                category_performance.append({
+                    'category_id': str(cat.id),
+                    'category_name': cat.name,
+                    'stock_value': stock_val,
+                    'stock_quantity': float(cat_stock['qty'] or 0),
+                    'product_count': cat_stock['products'] or 0,
+                    'revenue_90d': revenue_val,
+                    'qty_sold_90d': float(cat_revenue['qty_sold'] or 0),
+                    'turnover_ratio': round((float(cat_revenue['qty_sold'] or 0) / max(float(cat_stock['qty'] or 1), 1)) * (365/90), 2),
+                })
+
+        category_performance.sort(key=lambda x: x['revenue_90d'], reverse=True)
+
+        # ──────────────────────────────────────────────────
+        # 15. WEEKLY COMPARISON (last 7 days vs previous 7)
+        # ──────────────────────────────────────────────────
+        seven_days_ago = now - timedelta(days=7)
+        fourteen_days_ago = now - timedelta(days=14)
+
+        sales_7d = Sale.objects.filter(
             organization=organization,
-            is_active=True
-        ).count()
+            sale_date__gte=seven_days_ago,
+            payment_status__in=['paid', 'partial', 'pending'],
+        ).exclude(payment_status='cancelled').aggregate(
+            revenue=Sum('total_amount'),
+            count=Count('id')
+        )
 
+        sales_prev_7d = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=fourteen_days_ago,
+            sale_date__lt=seven_days_ago,
+            payment_status__in=['paid', 'partial', 'pending'],
+        ).exclude(payment_status='cancelled').aggregate(
+            revenue=Sum('total_amount'),
+            count=Count('id')
+        )
+
+        revenue_7d = float(sales_7d['revenue'] or 0)
+        revenue_prev_7d = float(sales_prev_7d['revenue'] or 0)
+        sales_count_7d = sales_7d['count'] or 0
+        sales_count_prev_7d = sales_prev_7d['count'] or 0
+
+        revenue_variation_7d = None
+        if revenue_prev_7d > 0:
+            revenue_variation_7d = round(((revenue_7d - revenue_prev_7d) / revenue_prev_7d) * 100, 1)
+
+        # ──────────────────────────────────────────────────
+        # ASSEMBLE RESPONSE
+        # ──────────────────────────────────────────────────
         return Response({
+            # Stock
             'total_products': total_products,
-            'total_stock_value': float(total_stock_value),
+            'total_stock_value': total_stock_value,
+            'total_stock_value_selling': total_stock_value_selling,
+            'total_stock_quantity': total_stock_quantity,
+            'potential_margin': potential_margin,
             'low_stock_count': low_stock_count,
-            'active_alerts': active_alerts,
-            'pending_orders': pending_orders,
+            'out_of_stock_count': out_of_stock_count,
+            'overstock_count': overstock_count,
             'warehouse_count': warehouse_count,
+
+            # Sales (30d)
+            'revenue_30d': revenue_30d,
+            'revenue_prev_30d': revenue_prev_30d,
+            'revenue_variation': revenue_variation,
+            'sales_count_30d': sales_count_30d,
+            'avg_ticket': avg_ticket,
+            'payment_methods': payment_methods,
+
+            # Sales (7d) - Weekly comparison
+            'revenue_7d': revenue_7d,
+            'revenue_prev_7d': revenue_prev_7d,
+            'revenue_variation_7d': revenue_variation_7d,
+            'sales_count_7d': sales_count_7d,
+            'sales_count_prev_7d': sales_count_prev_7d,
+
+            # Expenses (30d)
+            'expenses_30d': expenses_30d,
+            'expenses_prev_30d': expenses_prev_30d,
+            'expenses_variation': expenses_variation,
+            'expenses_count_30d': expenses_count_30d,
+            'expense_by_category': expense_by_category,
+            # Breakdown of expenses
+            'base_expenses_30d': base_expenses_30d,
+            'purchases_30d': purchases_30d,
+            'purchases_count_30d': purchases_count_30d,
+
+            # Profitability
+            'net_profit_30d': net_profit_30d,
+            'margin_percent': margin_percent,
+
+            # Credit / Receivables
+            'total_receivables': total_receivables,
+            'credit_count': credit_count,
+            'overdue_count': overdue_count,
+            'overdue_amount': overdue_amount,
+
+            # Orders & Supply Chain
+            'pending_orders': pending_orders,
+            'pending_orders_value': pending_orders_value,
+            'supplier_count': supplier_count,
+            'customer_count': customer_count,
+
+            # Alerts
+            'active_alerts': alerts_count,
+            'alerts_by_severity': alerts_by_severity,
+            'recent_alerts': recent_alerts,
+
+            # Trends & Charts
+            'sales_trend': sales_trend,
+            'top_selling_products': top_selling_data,
+            'low_stock_products': low_stock_products,
+
+            # Movements (30d)
+            'movements_30d': {
+                'total': movements_30d['total'] or 0,
+                'entries': movements_30d['entries'] or 0,
+                'exits': movements_30d['exits'] or 0,
+                'transfers': movements_30d['transfers'] or 0,
+                'adjustments': movements_30d['adjustments'] or 0,
+                'entries_value': float(movements_30d['entries_value'] or 0),
+                'exits_value': float(movements_30d['exits_value'] or 0),
+            },
+
+            # Advanced Analytics
+            'stock_turnover_ratio': stock_turnover_ratio,
+            'days_of_inventory': days_of_inventory,
+            'abc_distribution': abc_distribution,
+            'category_performance': category_performance[:10],  # Top 10 categories
         })
 
     @action(detail=False, methods=['get'])
@@ -1706,11 +2263,434 @@ class InventoryStatsViewSet(PDFGeneratorMixin, OrganizationResolverMixin, viewse
         })
 
     @action(detail=False, methods=['get'])
+    def financial_analysis(self, request, organization_slug=None):
+        """
+        Analyse financière détaillée avec revenus, dépenses, marges par période
+        """
+        organization = self.get_organization_from_request()
+
+        # Paramètres de période
+        days = int(request.query_params.get('days', 30))
+        end_date = timezone.now()
+        start_date = end_date - timedelta(days=days)
+
+        # Ventes par période
+        sales = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=start_date,
+            sale_date__lte=end_date
+        ).exclude(payment_status='cancelled')
+
+        sales_agg = sales.aggregate(
+            total_revenue=Sum('total_amount'),
+            total_paid=Sum('paid_amount'),
+            total_discount=Sum('discount_amount'),
+            total_tax=Sum('tax_amount'),
+            sales_count=Count('id'),
+            avg_ticket=Avg('total_amount')
+        )
+
+        # Coût des marchandises vendues (COGS)
+        cogs = SaleItem.objects.filter(
+            sale__organization=organization,
+            sale__sale_date__gte=start_date,
+            sale__sale_date__lte=end_date
+        ).exclude(sale__payment_status='cancelled').aggregate(
+            total_cogs=Sum(F('quantity') * F('product__purchase_price'))
+        )
+
+        # Dépenses
+        expenses = Expense.objects.filter(
+            organization=organization,
+            expense_date__gte=start_date.date(),
+            expense_date__lte=end_date.date()
+        ).aggregate(
+            total_expenses=Sum('amount'),
+            count=Count('id')
+        )
+
+        # Achats (commandes reçues)
+        purchases = Order.objects.filter(
+            organization=organization,
+            order_date__gte=start_date,
+            order_date__lte=end_date,
+            status='received'
+        ).aggregate(
+            total_purchases=Sum('total_amount'),
+            count=Count('id')
+        )
+
+        # Calculs financiers
+        revenue = float(sales_agg['total_revenue'] or 0)
+        cogs_value = float(cogs['total_cogs'] or 0)
+        expenses_value = float(expenses['total_expenses'] or 0)
+        purchases_value = float(purchases['total_purchases'] or 0)
+
+        gross_profit = revenue - cogs_value
+        gross_margin_percent = (gross_profit / revenue * 100) if revenue > 0 else 0
+
+        total_operating_expenses = expenses_value + purchases_value
+        net_profit = gross_profit - total_operating_expenses
+        net_margin_percent = (net_profit / revenue * 100) if revenue > 0 else 0
+
+        # Répartition par méthode de paiement
+        payment_methods = list(
+            sales.values('payment_method').annotate(
+                total=Sum('total_amount'),
+                count=Count('id')
+            ).order_by('-total')
+        )
+        for pm in payment_methods:
+            pm['total'] = float(pm['total'] or 0)
+            pm['percentage'] = (pm['total'] / revenue * 100) if revenue > 0 else 0
+
+        # Top catégories par revenus
+        top_categories = list(
+            SaleItem.objects.filter(
+                sale__organization=organization,
+                sale__sale_date__gte=start_date,
+                sale__sale_date__lte=end_date
+            ).exclude(sale__payment_status='cancelled')
+            .values('product__category__name')
+            .annotate(
+                revenue=Sum('total'),
+                qty_sold=Sum('quantity'),
+                cogs=Sum(F('quantity') * F('product__purchase_price'))
+            )
+            .order_by('-revenue')[:10]
+        )
+
+        for cat in top_categories:
+            cat['revenue'] = float(cat['revenue'] or 0)
+            cat['cogs'] = float(cat['cogs'] or 0)
+            cat['gross_profit'] = cat['revenue'] - cat['cogs']
+            cat['margin_percent'] = (cat['gross_profit'] / cat['revenue'] * 100) if cat['revenue'] > 0 else 0
+            cat['category_name'] = cat['product__category__name'] or 'Sans catégorie'
+            cat['qty_sold'] = float(cat['qty_sold'] or 0)
+
+        # Évolution journalière
+        daily_sales = list(
+            sales.annotate(day=TruncDate('sale_date'))
+            .values('day')
+            .annotate(
+                revenue=Sum('total_amount'),
+                count=Count('id')
+            )
+            .order_by('day')
+        )
+
+        for ds in daily_sales:
+            ds['day'] = ds['day'].isoformat()
+            ds['revenue'] = float(ds['revenue'] or 0)
+
+        return Response({
+            'period': {
+                'days': days,
+                'start_date': start_date.date().isoformat(),
+                'end_date': end_date.date().isoformat()
+            },
+            'summary': {
+                'revenue': revenue,
+                'cogs': cogs_value,
+                'gross_profit': gross_profit,
+                'gross_margin_percent': round(gross_margin_percent, 2),
+                'operating_expenses': total_operating_expenses,
+                'base_expenses': expenses_value,
+                'purchases': purchases_value,
+                'net_profit': net_profit,
+                'net_margin_percent': round(net_margin_percent, 2),
+                'sales_count': sales_agg['sales_count'] or 0,
+                'avg_ticket': float(sales_agg['avg_ticket'] or 0),
+                'total_paid': float(sales_agg['total_paid'] or 0),
+                'total_discount': float(sales_agg['total_discount'] or 0),
+                'expenses_count': expenses['count'] or 0,
+                'purchases_count': purchases['count'] or 0,
+            },
+            'payment_methods': payment_methods,
+            'top_categories': top_categories,
+            'daily_trend': daily_sales,
+        })
+
+    @action(detail=False, methods=['get'])
+    def abc_analysis(self, request, organization_slug=None):
+        """
+        Analyse ABC/Pareto des produits par contribution au revenu
+        """
+        organization = self.get_organization_from_request()
+
+        days = int(request.query_params.get('days', 90))
+        start_date = timezone.now() - timedelta(days=days)
+
+        # Revenus par produit
+        products_revenue = list(
+            SaleItem.objects.filter(
+                sale__organization=organization,
+                sale__sale_date__gte=start_date
+            ).exclude(sale__payment_status='cancelled')
+            .values(
+                'product__id', 'product__name', 'product__sku',
+                'product__category__name'
+            )
+            .annotate(
+                revenue=Sum('total'),
+                qty_sold=Sum('quantity'),
+                sales_count=Count('sale', distinct=True)
+            )
+            .order_by('-revenue')
+        )
+
+        total_revenue = sum(float(p['revenue'] or 0) for p in products_revenue)
+
+        # Classification ABC
+        cumulative = 0
+        classified_products = []
+
+        for p in products_revenue:
+            revenue = float(p['revenue'] or 0)
+            cumulative += revenue
+            cumulative_percent = (cumulative / total_revenue * 100) if total_revenue > 0 else 0
+
+            if cumulative_percent <= 80:
+                classification = 'A'
+            elif cumulative_percent <= 95:
+                classification = 'B'
+            else:
+                classification = 'C'
+
+            classified_products.append({
+                'id': str(p['product__id']),
+                'name': p['product__name'],
+                'sku': p['product__sku'],
+                'category': p['product__category__name'] or 'Sans catégorie',
+                'revenue': revenue,
+                'qty_sold': float(p['qty_sold'] or 0),
+                'sales_count': p['sales_count'] or 0,
+                'revenue_percent': (revenue / total_revenue * 100) if total_revenue > 0 else 0,
+                'cumulative_percent': cumulative_percent,
+                'classification': classification
+            })
+
+        # Statistiques par classe
+        abc_stats = {
+            'A': {'count': 0, 'revenue': 0, 'revenue_percent': 0},
+            'B': {'count': 0, 'revenue': 0, 'revenue_percent': 0},
+            'C': {'count': 0, 'revenue': 0, 'revenue_percent': 0}
+        }
+
+        for p in classified_products:
+            cls = p['classification']
+            abc_stats[cls]['count'] += 1
+            abc_stats[cls]['revenue'] += p['revenue']
+
+        for cls in abc_stats:
+            abc_stats[cls]['revenue_percent'] = (
+                (abc_stats[cls]['revenue'] / total_revenue * 100) if total_revenue > 0 else 0
+            )
+
+        return Response({
+            'period_days': days,
+            'total_revenue': total_revenue,
+            'total_products': len(classified_products),
+            'products': classified_products[:50],  # Top 50
+            'abc_distribution': abc_stats,
+        })
+
+    @action(detail=False, methods=['get'])
+    def credits_report(self, request, organization_slug=None):
+        """
+        Rapport détaillé des ventes à crédit et créances
+        """
+        organization = self.get_organization_from_request()
+
+        # Statistiques globales
+        credits = CreditSale.objects.filter(organization=organization)
+
+        summary = credits.aggregate(
+            total_credits=Count('id'),
+            total_amount=Sum('total_amount'),
+            total_paid=Sum('paid_amount'),
+            total_remaining=Sum('remaining_amount'),
+            pending_count=Count('id', filter=Q(status='pending')),
+            partial_count=Count('id', filter=Q(status='partial')),
+            overdue_count=Count('id', filter=Q(status='overdue')),
+            paid_count=Count('id', filter=Q(status='paid')),
+            overdue_amount=Sum('remaining_amount', filter=Q(status='overdue'))
+        )
+
+        # Crédits par client
+        credits_by_customer = list(
+            credits.filter(status__in=['pending', 'partial', 'overdue'])
+            .values(
+                'customer__id', 'customer__name', 'customer__phone'
+            )
+            .annotate(
+                total_debt=Sum('remaining_amount'),
+                credits_count=Count('id'),
+                overdue_count=Count('id', filter=Q(status='overdue'))
+            )
+            .order_by('-total_debt')[:20]
+        )
+
+        for c in credits_by_customer:
+            c['customer_id'] = str(c['customer__id'])
+            c['customer_name'] = c['customer__name']
+            c['total_debt'] = float(c['total_debt'] or 0)
+
+        # Évolution des créances
+        recent_credits = list(
+            credits.filter(status__in=['pending', 'partial', 'overdue'])
+            .select_related('customer', 'sale')
+            .order_by('-created_at')[:20]
+            .values(
+                'id', 'sale__sale_number', 'customer__name',
+                'total_amount', 'paid_amount', 'remaining_amount',
+                'due_date', 'status', 'created_at'
+            )
+        )
+
+        for c in recent_credits:
+            c['id'] = str(c['id'])
+            c['total_amount'] = float(c['total_amount'] or 0)
+            c['paid_amount'] = float(c['paid_amount'] or 0)
+            c['remaining_amount'] = float(c['remaining_amount'] or 0)
+            c['created_at'] = c['created_at'].isoformat() if c['created_at'] else None
+            c['due_date'] = c['due_date'].isoformat() if c['due_date'] else None
+            c['days_overdue'] = (timezone.now().date() - c['due_date']).days if c['due_date'] and c['due_date'] < timezone.now().date() else 0
+
+        # Taux de recouvrement
+        total_amt = float(summary['total_amount'] or 0)
+        total_paid_amt = float(summary['total_paid'] or 0)
+        recovery_rate = (total_paid_amt / total_amt * 100) if total_amt > 0 else 0
+
+        return Response({
+            'summary': {
+                'total_credits': summary['total_credits'] or 0,
+                'total_amount': float(summary['total_amount'] or 0),
+                'total_paid': float(summary['total_paid'] or 0),
+                'total_remaining': float(summary['total_remaining'] or 0),
+                'pending_count': summary['pending_count'] or 0,
+                'partial_count': summary['partial_count'] or 0,
+                'overdue_count': summary['overdue_count'] or 0,
+                'paid_count': summary['paid_count'] or 0,
+                'overdue_amount': float(summary['overdue_amount'] or 0),
+                'recovery_rate': round(recovery_rate, 2)
+            },
+            'by_customer': credits_by_customer,
+            'recent_credits': recent_credits,
+        })
+
+    @action(detail=False, methods=['get'])
+    def sales_performance(self, request, organization_slug=None):
+        """
+        Performance des ventes avec indicateurs avancés
+        """
+        organization = self.get_organization_from_request()
+
+        days = int(request.query_params.get('days', 30))
+        end_date = timezone.now()
+        start_date = end_date - timedelta(days=days)
+
+        # Statistiques de base
+        sales = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=start_date,
+            sale_date__lte=end_date
+        ).exclude(payment_status='cancelled')
+
+        stats = sales.aggregate(
+            total_sales=Count('id'),
+            total_revenue=Sum('total_amount'),
+            avg_ticket=Avg('total_amount'),
+            total_items_sold=Sum('items__quantity'),
+            unique_customers=Count('customer', distinct=True)
+        )
+
+        # Ventes par jour de la semaine
+        sales_by_weekday = list(
+            sales.annotate(
+                weekday=ExtractWeekDay('sale_date')
+            )
+            .values('weekday')
+            .annotate(
+                count=Count('id'),
+                revenue=Sum('total_amount')
+            )
+            .order_by('weekday')
+        )
+
+        weekday_names = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+        for s in sales_by_weekday:
+            # ExtractWeekDay retourne 1=Dimanche, 2=Lundi, etc.
+            weekday_idx = (s['weekday'] + 5) % 7  # Convertir pour commencer par Lundi
+            s['weekday_name'] = weekday_names[weekday_idx]
+            s['revenue'] = float(s['revenue'] or 0)
+
+        # Ventes par heure (si applicable)
+        sales_by_hour = list(
+            sales.annotate(
+                hour=ExtractHour('sale_date')
+            )
+            .values('hour')
+            .annotate(
+                count=Count('id'),
+                revenue=Sum('total_amount')
+            )
+            .order_by('hour')
+        )
+
+        for s in sales_by_hour:
+            s['revenue'] = float(s['revenue'] or 0)
+
+        # Top produits vendus
+        top_products = list(
+            SaleItem.objects.filter(
+                sale__organization=organization,
+                sale__sale_date__gte=start_date,
+                sale__sale_date__lte=end_date
+            ).exclude(sale__payment_status='cancelled')
+            .values('product__name', 'product__sku')
+            .annotate(
+                qty_sold=Sum('quantity'),
+                revenue=Sum('total')
+            )
+            .order_by('-qty_sold')[:10]
+        )
+
+        for p in top_products:
+            p['revenue'] = float(p['revenue'] or 0)
+            p['qty_sold'] = float(p['qty_sold'] or 0)
+
+        # Taux de conversion (ventes / clients uniques)
+        conversion_rate = (
+            (stats['total_sales'] / stats['unique_customers'] * 100)
+            if stats['unique_customers'] and stats['unique_customers'] > 0 else 0
+        )
+
+        return Response({
+            'period': {
+                'days': days,
+                'start_date': start_date.date().isoformat(),
+                'end_date': end_date.date().isoformat()
+            },
+            'summary': {
+                'total_sales': stats['total_sales'] or 0,
+                'total_revenue': float(stats['total_revenue'] or 0),
+                'avg_ticket': float(stats['avg_ticket'] or 0),
+                'total_items_sold': float(stats['total_items_sold'] or 0),
+                'unique_customers': stats['unique_customers'] or 0,
+                'conversion_rate': round(conversion_rate, 2)
+            },
+            'by_weekday': sales_by_weekday,
+            'by_hour': sales_by_hour,
+            'top_products': top_products,
+        })
+
+    @action(detail=False, methods=['get'])
     def export_stock_list(self, request, organization_slug=None):
         """Export complete stock list as CSV"""
         import csv
         from django.http import HttpResponse
-        
+
         organization = self.get_organization_from_request()
         
         response = HttpResponse(content_type='text/csv')
