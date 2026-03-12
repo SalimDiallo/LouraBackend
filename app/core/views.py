@@ -8,12 +8,15 @@ from rest_framework_simplejwt.views import TokenRefreshView
 from rest_framework_simplejwt.exceptions import InvalidToken, TokenError
 from django.conf import settings
 
-from .models import Organization, Category
+from .models import Organization, Category, Module, OrganizationModule
 from .serializers import (
     OrganizationSerializer,
     OrganizationCreateSerializer,
-    CategorySerializer
+    CategorySerializer,
+    ModuleSerializer,
+    OrganizationModuleSerializer
 )
+from .modules import ModuleRegistry
 
 
 # -------------------------------
@@ -219,3 +222,137 @@ class CategoryViewSet(viewsets.ModelViewSet):
     # permission_classes = [IsAuthenticated]
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
+
+
+# -------------------------------
+# Module Views
+# -------------------------------
+
+class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
+    """
+    ViewSet for viewing available modules.
+    Read-only: modules are managed via management commands.
+    """
+    permission_classes = [IsAuthenticated]
+    queryset = Module.objects.filter(is_active=True)
+    serializer_class = ModuleSerializer
+
+    @action(detail=False, methods=['get'])
+    def defaults(self, request):
+        """
+        Get default modules for a specific category.
+        Query params: category_id or category_name
+        """
+        category_id = request.query_params.get('category_id')
+        category_name = request.query_params.get('category_name')
+
+        if not category_id and not category_name:
+            return Response(
+                {'error': 'Veuillez fournir category_id ou category_name'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Get category
+        try:
+            if category_id:
+                category = Category.objects.get(id=category_id)
+            else:
+                category = Category.objects.get(name=category_name)
+        except Category.DoesNotExist:
+            return Response(
+                {'error': 'Catégorie introuvable'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Get default modules for this category
+        default_module_defs = ModuleRegistry.get_default_modules_for_category(category.name)
+        default_module_codes = [m.code for m in default_module_defs]
+
+        # Get modules from database
+        modules = Module.objects.filter(
+            code__in=default_module_codes,
+            is_active=True
+        )
+
+        serializer = self.get_serializer(modules, many=True)
+        return Response({
+            'category': CategorySerializer(category).data,
+            'default_modules': serializer.data,
+            'count': len(serializer.data)
+        })
+
+    @action(detail=False, methods=['get'])
+    def by_category(self, request):
+        """Get all modules grouped by category"""
+        modules = Module.objects.filter(is_active=True).order_by('category', 'order', 'name')
+
+        # Group by category
+        grouped = {}
+        for module in modules:
+            if module.category not in grouped:
+                grouped[module.category] = []
+            grouped[module.category].append(ModuleSerializer(module).data)
+
+        return Response(grouped)
+
+
+class OrganizationModuleViewSet(viewsets.ModelViewSet):
+    """
+    ViewSet for managing organization modules.
+    Allows enabling/disabling modules for an organization.
+    """
+    permission_classes = [IsAuthenticated]
+    serializer_class = OrganizationModuleSerializer
+
+    def get_queryset(self):
+        """Return modules for organizations accessible by the current user"""
+        user = self.request.user
+        user_type = getattr(user, 'user_type', None)
+
+        if user_type == 'employee':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            org = getattr(concrete, 'organization', None)
+            if org:
+                return OrganizationModule.objects.filter(organization=org)
+            return OrganizationModule.objects.none()
+
+        if user_type == 'admin':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            org_ids = Organization.objects.filter(admin=concrete).values_list('id', flat=True)
+            return OrganizationModule.objects.filter(organization_id__in=org_ids)
+
+        return OrganizationModule.objects.none()
+
+    @action(detail=True, methods=['post'])
+    def enable(self, request, pk=None):
+        """Enable a module for an organization"""
+        org_module = self.get_object()
+        org_module.is_enabled = True
+        org_module.save()
+
+        serializer = self.get_serializer(org_module)
+        return Response({
+            'message': f'Module "{org_module.module.name}" activé',
+            'organization_module': serializer.data
+        })
+
+    @action(detail=True, methods=['post'])
+    def disable(self, request, pk=None):
+        """Disable a module for an organization"""
+        org_module = self.get_object()
+
+        # Check if module is core (cannot be disabled)
+        if org_module.module.is_core:
+            return Response(
+                {'error': 'Ce module core ne peut pas être désactivé'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        org_module.is_enabled = False
+        org_module.save()
+
+        serializer = self.get_serializer(org_module)
+        return Response({
+            'message': f'Module "{org_module.module.name}" désactivé',
+            'organization_module': serializer.data
+        })

@@ -23,6 +23,7 @@ echo "🔄 Applying database migrations..."
 python manage.py migrate --noinput
 python manage.py sync_permissions
 python manage.py create_sample_categories
+python manage.py initialize_modules
  
 
 
