@@ -46,9 +46,21 @@ else:
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
-    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',')]
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()]
 else:
-    CSRF_TRUSTED_ORIGINS = []
+    CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
+
+# Configuration CSRF supplémentaire
+CSRF_COOKIE_HTTPONLY = False  # Permet l'accès JS au cookie CSRF (requis pour les SPAs)
+CSRF_COOKIE_SAMESITE = 'Lax'
+CSRF_USE_SESSIONS = False
+CSRF_COOKIE_NAME = 'csrftoken'
+
+# En développement, autoriser CSRF depuis n'importe quelle origine
+if DEBUG:
+    CSRF_TRUSTED_ORIGINS.extend(['http://localhost:3000', 'http://127.0.0.1:3000'])
+    # Retirer les doublons
+    CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS))
 
 
 # Application definition
