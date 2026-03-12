@@ -21,8 +21,8 @@ python manage.py collectstatic --noinput --clear || true
 # Apply database migrations
 echo "🔄 Applying database migrations..."
 python manage.py migrate --noinput
-python manage.py sync_permissions --noinput
-python manage.py create_sample_categories --noinput
+python manage.py sync_permissions
+python manage.py create_sample_categories
  
 
 
