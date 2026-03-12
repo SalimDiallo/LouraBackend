@@ -43,6 +43,8 @@ if ALLOWED_HOSTS_ENV:
 else:
     ALLOWED_HOSTS = []
 
+ALLOWED_HOSTS.append("72.60.92.105")
+
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
