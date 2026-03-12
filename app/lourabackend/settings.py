@@ -31,12 +31,24 @@ if ENV_PATH.exists():
 # See https://docs.djangoproject.com/en/5.2/howto/deployment/checklist/
 
 # SECURITY WARNING: keep the secret key used in production secret!
-SECRET_KEY = 'django-insecure-(0io1(8urv-qldqq2dh$!$*9-jt*wbrci^_d7y#_*9a*-qh5&w'
+SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-(0io1(8urv-qldqq2dh$!$*9-jt*wbrci^_d7y#_*9a*-qh5&w')
 
 # SECURITY WARNING: don't run with debug turned on in production!
-DEBUG = True
+DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
-ALLOWED_HOSTS = ["72.60.92.105"]
+# Allowed Hosts - supporte les variables d'environnement
+ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
+if ALLOWED_HOSTS_ENV:
+    ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',')]
+else:
+    ALLOWED_HOSTS = []
+
+# CSRF Trusted Origins - important pour les requêtes POST en production
+CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
+if CSRF_TRUSTED_ORIGINS_ENV:
+    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',')]
+else:
+    CSRF_TRUSTED_ORIGINS = []
 
 
 # Application definition
@@ -66,18 +78,26 @@ INSTALLED_APPS = [
 ]
 
 # ---------------------------------------------------------------------------
-# Celery — backend database (SQLite, pas besoin de Redis en dev)
+# Celery Configuration
 # ---------------------------------------------------------------------------
-CELERY_BROKER_URL = 'memory://'                          # In-memory pour dev (pas de Redis nécessaire)
-CELERY_RESULT_BACKEND = 'django-db'                     # Résultats dans la DB Django
+# Utilise Redis si configuré, sinon mode in-memory pour développement
+
+CELERY_BROKER_URL = os.getenv('CELERY_BROKER_URL', 'memory://')
+CELERY_RESULT_BACKEND = os.getenv('CELERY_RESULT_BACKEND', 'django-db')
 CELERY_RESULT_SERIALIZER = 'json'
 CELERY_ACCEPT_CONTENT = ['json']
 CELERY_TASK_SERIALIZER = 'json'
-# CELERY_TIMEZONE = TIME_ZONE
 CELERY_ENABLE_UTC = True
 CELERY_BEAT_SCHEDULER = 'django_celery_beat.schedulers.DatabaseScheduler'
-CELERY_TASK_ALWAYS_EAGER = True                         # Exécution synchrone en dev (pas besoin de worker séparé)
-CELERY_TASK_EAGER_PROPAGATES = True
+
+# En développement local (sans Redis), exécution synchrone
+if CELERY_BROKER_URL == 'memory://':
+    CELERY_TASK_ALWAYS_EAGER = True
+    CELERY_TASK_EAGER_PROPAGATES = True
+else:
+    # En production avec Redis, exécution asynchrone
+    CELERY_TASK_ALWAYS_EAGER = False
+    CELERY_TASK_EAGER_PROPAGATES = False
 
 # Tâches périodiques (Celery Beat Schedule)
 from celery.schedules import crontab
@@ -141,13 +161,33 @@ WSGI_APPLICATION = 'lourabackend.wsgi.application'
 
 
 # Database
+# Utilise PostgreSQL si les variables d'environnement sont définies, sinon SQLite
 
-DATABASES = {
-    'default': {
-        'ENGINE': 'django.db.backends.sqlite3',
-        'NAME': BASE_DIR / 'db.sqlite3',
+DB_ENGINE = os.getenv('DB_ENGINE', 'django.db.backends.sqlite3')
+
+if DB_ENGINE == 'django.db.backends.postgresql':
+    DATABASES = {
+        'default': {
+            'ENGINE': DB_ENGINE,
+            'NAME': os.getenv('DB_NAME', 'loura_db'),
+            'USER': os.getenv('DB_USER', 'loura_user'),
+            'PASSWORD': os.getenv('DB_PASSWORD', ''),
+            'HOST': os.getenv('DB_HOST', 'localhost'),
+            'PORT': os.getenv('DB_PORT', '5432'),
+            'CONN_MAX_AGE': 600,  # Persistent connections
+            'OPTIONS': {
+                'connect_timeout': 10,
+            }
+        }
     }
-}
+else:
+    # SQLite par défaut pour développement local
+    DATABASES = {
+        'default': {
+            'ENGINE': 'django.db.backends.sqlite3',
+            'NAME': BASE_DIR / 'db.sqlite3',
+        }
+    }
 
 
 # Password validation
@@ -184,11 +224,12 @@ USE_TZ = True
 # Static files (CSS, JavaScript, Images)
 # https://docs.djangoproject.com/en/5.2/howto/static-files/
 
-STATIC_URL = 'static/'
+STATIC_URL = '/static/'
+STATIC_ROOT = os.getenv('STATIC_ROOT', BASE_DIR.parent / 'staticfiles')
 
 # Media files (Uploaded files)
 MEDIA_URL = '/media/'
-MEDIA_ROOT = BASE_DIR / 'media'
+MEDIA_ROOT = os.getenv('MEDIA_ROOT', BASE_DIR / 'media')
 
 # Default primary key field type
 # https://docs.djangoproject.com/en/5.2/ref/settings/#default-auto-field
@@ -215,9 +256,14 @@ REST_FRAMEWORK = {
     ],
 }
 
-CORS_ALLOWED_ORIGINS = [
-    "http://localhost:3000",  # Next.js
-]
+# CORS Configuration - supporte les variables d'environnement
+CORS_ALLOWED_ORIGINS_ENV = os.getenv('CORS_ALLOWED_ORIGINS', '')
+if CORS_ALLOWED_ORIGINS_ENV:
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_ENV.split(',')]
+else:
+    CORS_ALLOWED_ORIGINS = [
+        "http://localhost:3000",  # Next.js dev
+    ]
 
 # Autoriser cookies / authentification (si besoin) Si tu utilises JWT avec cookies, sessions ou authentification cross-domain :
 CORS_ALLOW_CREDENTIALS = True
@@ -286,14 +332,11 @@ ASGI_APPLICATION = "lourabackend.asgi.application"
 
 CHANNEL_LAYERS = {
     "default": {
-        # Development: In-memory channel layer (no Redis required)
-        "BACKEND": "channels.layers.InMemoryChannelLayer"
-        
-        # Production: Use Redis for channel layer
-        # "BACKEND": "channels_redis.core.RedisChannelLayer",
-        # "CONFIG": {
-        #     "hosts": [("127.0.0.1", 6379)],
-        # },
+        # Utilise Redis si la variable d'environnement est définie
+        "BACKEND": os.getenv('CHANNEL_LAYERS_BACKEND', 'channels.layers.InMemoryChannelLayer'),
+        "CONFIG": {
+            "hosts": [os.getenv('CHANNEL_LAYERS_HOST', 'redis://localhost:6379/2')],
+        } if os.getenv('CHANNEL_LAYERS_BACKEND') == 'channels_redis.core.RedisChannelLayer' else {},
     },
 }
 

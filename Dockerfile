@@ -8,10 +8,11 @@ ENV PYTHONUNBUFFERED=1
 # Définir le dossier de travail principal dans le conteneur
 WORKDIR /app
 
-# Installer les dépendances système nécessaires pour les packages Python (Pillow, reportlab, etc.)
+# Installer les dépendances système nécessaires pour les packages Python (Pillow, reportlab, PostgreSQL, etc.)
 RUN apt-get update && apt-get install -y --no-install-recommends \
     build-essential \
     libpq-dev \
+    postgresql-client \
     libjpeg-dev \
     zlib1g-dev \
     libfreetype6-dev \
@@ -20,6 +21,7 @@ RUN apt-get update && apt-get install -y --no-install-recommends \
     libharfbuzz-dev \
     libfribidi-dev \
     libxcb1-dev \
+    netcat-openbsd \
     && rm -rf /var/lib/apt/lists/*
 
 # Créer un utilisateur non-root pour la sécurité
@@ -28,14 +30,19 @@ RUN addgroup --system django && adduser --system --group django
 # Mettre à jour pip et installer les dépendances Python
 COPY requirements.txt .
 RUN pip install --upgrade pip && \
-    pip install --no-cache-dir -r requirements.txt
+    pip install --no-cache-dir -r requirements.txt && \
+    pip install --no-cache-dir psycopg2-binary
 
 # Copier le reste du code source
 COPY --chown=django:django . .
 
 # Créer les répertoires nécessaires pour les fichiers statiques et média avec les bonnes permissions
-RUN mkdir -p /app/app/static /app/app/media && \
-    chown -R django:django /app/app/static /app/app/media
+RUN mkdir -p /app/staticfiles /app/media /app/app/static /app/app/media && \
+    chown -R django:django /app
+
+# Copier le script d'entrée
+COPY --chown=django:django docker-entrypoint.sh /app/docker-entrypoint.sh
+RUN chmod +x /app/docker-entrypoint.sh
 
 # Passer à l'utilisateur non-root
 USER django
@@ -50,5 +57,8 @@ ENV PORT=8000
 # Exposer le port par défaut
 EXPOSE 8000
 
-# Commande par défaut: faire une migration avant de lancer Daphne
-CMD ["sh", "-c", "python manage.py migrate && daphne -b 0.0.0.0 -p 8000 lourabackend.asgi:application"]
+# Utiliser le script d'entrée
+ENTRYPOINT ["/app/docker-entrypoint.sh"]
+
+# Commande par défaut: lancer Daphne
+CMD ["daphne", "-b", "0.0.0.0", "-p", "8000", "lourabackend.asgi:application"]
