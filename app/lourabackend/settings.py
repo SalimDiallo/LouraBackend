@@ -41,9 +41,7 @@ ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',')]
 else:
-    ALLOWED_HOSTS = []
-
-ALLOWED_HOSTS.append("72.60.92.105")
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1']
 
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
@@ -261,14 +259,19 @@ REST_FRAMEWORK = {
 # CORS Configuration - supporte les variables d'environnement
 CORS_ALLOWED_ORIGINS_ENV = os.getenv('CORS_ALLOWED_ORIGINS', '')
 if CORS_ALLOWED_ORIGINS_ENV:
-    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_ENV.split(',')]
+    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_ENV.split(',') if origin.strip()]
 else:
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:3000",  # Next.js dev
+        "http://127.0.0.1:3000",
     ]
 
 # Autoriser cookies / authentification (si besoin) Si tu utilises JWT avec cookies, sessions ou authentification cross-domain :
 CORS_ALLOW_CREDENTIALS = True
+
+# En développement, autoriser tous les CORS (à retirer en prod finale)
+if DEBUG:
+    CORS_ALLOW_ALL_ORIGINS = True
 
 # Allow custom headers
 CORS_ALLOW_HEADERS = [
