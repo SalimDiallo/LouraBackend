@@ -21,6 +21,10 @@ python manage.py collectstatic --noinput --clear || true
 # Apply database migrations
 echo "🔄 Applying database migrations..."
 python manage.py migrate --noinput
+python manage.py sync_permissions --noinput
+python manage.py create_sample_categories --noinput
+ 
+
 
 # Create a superuser if environment variables are set
 if [ "$DJANGO_SUPERUSER_EMAIL" ] && [ "$DJANGO_SUPERUSER_PASSWORD" ]; then
