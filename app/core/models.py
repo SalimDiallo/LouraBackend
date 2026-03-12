@@ -305,7 +305,7 @@ class Organization(TimeStampedModel):
 
 class OrganizationSettings(models.Model):
     """Paramètres d'organisation"""
-    
+
     organization = models.OneToOneField(
         Organization,
         on_delete=models.CASCADE,
@@ -323,3 +323,153 @@ class OrganizationSettings(models.Model):
 
     def __str__(self):
         return f"Paramètres: {self.organization.name}"
+
+
+# ===============================
+# MODULE MANAGEMENT
+# ===============================
+
+class Module(TimeStampedModel):
+    """
+    Module représentant une fonctionnalité de l'application.
+    Les modules peuvent être activés/désactivés pour chaque organisation.
+    """
+
+    code = models.CharField(
+        max_length=100,
+        unique=True,
+        help_text="Identifiant unique du module (ex: hr.employees, hr.payroll)"
+    )
+    name = models.CharField(
+        max_length=200,
+        help_text="Nom d'affichage du module"
+    )
+    description = models.TextField(
+        blank=True,
+        help_text="Description détaillée du module"
+    )
+    app_name = models.CharField(
+        max_length=50,
+        help_text="Nom de l'application Django associée (ex: hr, inventory)"
+    )
+    icon = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Icône du module (ex: Users, DollarSign, Calendar)"
+    )
+    category = models.CharField(
+        max_length=50,
+        default='general',
+        help_text="Catégorie du module (ex: hr, finance, inventory)"
+    )
+
+    # Configuration pour l'activation automatique
+    default_for_all = models.BooleanField(
+        default=False,
+        help_text="Si True, ce module est activé par défaut pour toutes les organisations"
+    )
+    default_categories = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Liste des noms de catégories pour lesquelles ce module est activé par défaut"
+    )
+
+    # Gestion des dépendances et permissions
+    requires_subscription_tier = models.CharField(
+        max_length=50,
+        blank=True,
+        help_text="Niveau d'abonnement requis (ex: basic, premium, enterprise)"
+    )
+    depends_on = models.JSONField(
+        default=list,
+        blank=True,
+        help_text="Liste des codes de modules requis"
+    )
+
+    is_core = models.BooleanField(
+        default=False,
+        help_text="Module core qui ne peut pas être désactivé"
+    )
+    is_active = models.BooleanField(
+        default=True,
+        help_text="Module actif et disponible"
+    )
+
+    order = models.IntegerField(
+        default=0,
+        help_text="Ordre d'affichage"
+    )
+
+    class Meta:
+        db_table = 'modules'
+        verbose_name = "Module"
+        verbose_name_plural = "Modules"
+        ordering = ['order', 'name']
+
+    def __str__(self):
+        return f"{self.name} ({self.code})"
+
+    def is_default_for_category(self, category_name):
+        """Vérifie si ce module est activé par défaut pour une catégorie donnée"""
+        if self.default_for_all:
+            return True
+        return category_name in self.default_categories
+
+    def get_dependencies(self):
+        """Retourne les modules dont ce module dépend"""
+        if not self.depends_on:
+            return Module.objects.none()
+        return Module.objects.filter(code__in=self.depends_on)
+
+
+class OrganizationModule(TimeStampedModel):
+    """
+    RelationMany-to-Many entre Organization et Module.
+    Permet de gérer les modules activés pour chaque organisation.
+    """
+
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='organization_modules'
+    )
+    module = models.ForeignKey(
+        Module,
+        on_delete=models.CASCADE,
+        related_name='organization_modules'
+    )
+
+    is_enabled = models.BooleanField(
+        default=True,
+        help_text="Module activé pour cette organisation"
+    )
+
+    settings = models.JSONField(
+        default=dict,
+        blank=True,
+        help_text="Paramètres spécifiques du module pour cette organisation"
+    )
+
+    enabled_at = models.DateTimeField(
+        auto_now_add=True,
+        help_text="Date d'activation du module"
+    )
+    enabled_by = models.ForeignKey(
+        BaseUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        related_name='enabled_modules',
+        help_text="Utilisateur ayant activé le module"
+    )
+
+    class Meta:
+        db_table = 'organization_modules'
+        verbose_name = "Module d'organisation"
+        verbose_name_plural = "Modules d'organisations"
+        unique_together = [['organization', 'module']]
+        ordering = ['module__order', 'module__name']
+
+    def __str__(self):
+        status = "✓" if self.is_enabled else "✗"
+        return f"{status} {self.organization.name} - {self.module.name}"
