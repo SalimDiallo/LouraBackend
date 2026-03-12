@@ -189,10 +189,10 @@ class OrganizationViewSet(viewsets.ModelViewSet):
                 status=status.HTTP_400_BAD_REQUEST
             )
 
-        # Validate file size (max 5MB)
-        if logo_file.size > 5 * 1024 * 1024:
+        # Validate file size (max 10MB)
+        if logo_file.size > 10 * 1024 * 1024:
             return Response(
-                {'error': 'Le fichier est trop volumineux (max 5 Mo)'},
+                {'error': 'Le fichier est trop volumineux (max 10 Mo)'},
                 status=status.HTTP_400_BAD_REQUEST
             )
 
