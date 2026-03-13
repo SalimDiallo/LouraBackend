@@ -561,14 +561,16 @@ class CustomerSerializer(InventoryBaseSerializer):
     id = serializers.SerializerMethodField()
     organization = serializers.SerializerMethodField()
     total_debt = serializers.SerializerMethodField()
+    total_sales = serializers.SerializerMethodField()
+    total_purchases = serializers.SerializerMethodField()
 
     class Meta:
         model = Customer
         fields = [
             'id', 'organization', 'name', 'code', 'email', 'phone',
             'secondary_phone', 'address', 'city', 'country', 'tax_id',
-            'credit_limit', 'total_debt', 'notes', 'is_active',
-            'created_at', 'updated_at'
+            'credit_limit', 'total_debt', 'total_sales', 'total_purchases',
+            'notes', 'is_active', 'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
 
@@ -576,6 +578,16 @@ class CustomerSerializer(InventoryBaseSerializer):
 
     def get_total_debt(self, obj):
         return float(obj.get_total_debt())
+
+    def get_total_sales(self, obj):
+        """Retourne le nombre total de ventes du client"""
+        return obj.sales.count()
+
+    def get_total_purchases(self, obj):
+        """Retourne le montant total des achats du client"""
+        from django.db.models import Sum
+        total = obj.sales.aggregate(total=Sum('total_amount'))['total'] or Decimal('0.00')
+        return float(total)
 
 
 # ===============================

@@ -98,7 +98,7 @@ python manage.py initialize_modules
 ### Créer les catégories
 
 ```bash
-python manage.py create_sample_categories
+python manage.py create_sample_categories --with-modules
 
 # Options :
 --with-modules  # Afficher les modules par défaut pour chaque catégorie
