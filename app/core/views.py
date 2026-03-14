@@ -359,17 +359,30 @@ class OrganizationModuleViewSet(viewsets.ModelViewSet):
         user = self.request.user
         user_type = getattr(user, 'user_type', None)
 
+        # Get organization filter from query params
+        org_filter = self.request.query_params.get('organization', None)
+
         if user_type == 'employee':
             concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
             org = getattr(concrete, 'organization', None)
             if org:
-                return OrganizationModule.objects.filter(organization=org)
+                queryset = OrganizationModule.objects.filter(organization=org).select_related('module', 'organization')
+                # Apply organization filter if provided
+                if org_filter:
+                    queryset = queryset.filter(organization_id=org_filter)
+                return queryset.distinct()
             return OrganizationModule.objects.none()
 
         if user_type == 'admin':
             concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
             org_ids = Organization.objects.filter(admin=concrete).values_list('id', flat=True)
-            return OrganizationModule.objects.filter(organization_id__in=org_ids)
+            queryset = OrganizationModule.objects.filter(organization_id__in=org_ids).select_related('module', 'organization')
+
+            # Apply organization filter if provided
+            if org_filter:
+                queryset = queryset.filter(organization_id=org_filter)
+
+            return queryset.distinct()
 
         return OrganizationModule.objects.none()
 
