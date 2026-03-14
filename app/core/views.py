@@ -295,6 +295,56 @@ class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
 
         return Response(grouped)
 
+    @action(detail=False, methods=['get'])
+    def active_for_user(self, request):
+        """
+        Retourne les modules activés pour l'organisation de l'utilisateur connecté.
+        Pour les admins, utilise le paramètre 'organization_subdomain' pour filtrer.
+        Retourne seulement les codes de modules pour minimiser la taille de la réponse.
+        """
+        user = request.user
+        user_type = getattr(user, 'user_type', None)
+
+        # Récupérer le subdomain depuis les query params (pour les admins)
+        organization_subdomain = request.query_params.get('organization_subdomain', None)
+
+        # Récupérer l'organisation de l'utilisateur
+        organization = None
+        if user_type == 'employee':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            organization = getattr(concrete, 'organization', None)
+        elif user_type == 'admin':
+            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            orgs = Organization.objects.filter(admin=concrete)
+
+            # Filtrer par subdomain si fourni
+            if organization_subdomain:
+                organization = orgs.filter(subdomain=organization_subdomain).first()
+            else:
+                organization = orgs.first()
+
+        if not organization:
+            return Response({
+                'active_modules': [],
+                'organization_id': None,
+                'organization_name': None,
+                'message': 'Aucune organisation trouvée pour cet utilisateur'
+            })
+
+        # Récupérer les modules actifs
+        active_org_modules = OrganizationModule.objects.filter(
+            organization=organization,
+            is_enabled=True
+        ).select_related('module')
+
+        active_module_codes = [om.module.code for om in active_org_modules]
+
+        return Response({
+            'active_modules': active_module_codes,
+            'organization_id': str(organization.id),
+            'organization_name': organization.name
+        })
+
 
 class OrganizationModuleViewSet(viewsets.ModelViewSet):
     """
@@ -309,17 +359,30 @@ class OrganizationModuleViewSet(viewsets.ModelViewSet):
         user = self.request.user
         user_type = getattr(user, 'user_type', None)
 
+        # Get organization filter from query params
+        org_filter = self.request.query_params.get('organization', None)
+
         if user_type == 'employee':
             concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
             org = getattr(concrete, 'organization', None)
             if org:
-                return OrganizationModule.objects.filter(organization=org)
+                queryset = OrganizationModule.objects.filter(organization=org).select_related('module', 'organization')
+                # Apply organization filter if provided
+                if org_filter:
+                    queryset = queryset.filter(organization_id=org_filter)
+                return queryset.distinct()
             return OrganizationModule.objects.none()
 
         if user_type == 'admin':
             concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
             org_ids = Organization.objects.filter(admin=concrete).values_list('id', flat=True)
-            return OrganizationModule.objects.filter(organization_id__in=org_ids)
+            queryset = OrganizationModule.objects.filter(organization_id__in=org_ids).select_related('module', 'organization')
+
+            # Apply organization filter if provided
+            if org_filter:
+                queryset = queryset.filter(organization_id=org_filter)
+
+            return queryset.distinct()
 
         return OrganizationModule.objects.none()
 
