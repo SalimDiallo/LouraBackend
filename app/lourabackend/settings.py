@@ -321,7 +321,7 @@ SIMPLE_JWT = {
 
     # Signing
     'ALGORITHM': 'HS256',
-    'SIGNING_KEY': SECRET_KEY,
+    'SIGNING_KEY': SECRET_KEY if SECRET_KEY else 'fallback-secret-key-please-change',
 
     # Token behavior
     'ROTATE_REFRESH_TOKENS': True,  # Generate new refresh token on refresh
