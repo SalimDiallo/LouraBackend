@@ -3511,19 +3511,55 @@ class ExpenseViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.M
 
     @action(detail=False, methods=['get'], url_path='export')
     def export_expenses(self, request, organization_slug=None):
-        """Export expenses to Excel or PDF"""
+        """Export expenses to Excel or PDF - supports preview mode for PDF"""
         export_format = request.query_params.get('format', 'pdf')
         organization = self.get_organization_from_request()
-        
+
         # Get filtered queryset
         queryset = self.get_queryset()
-        
+
         if export_format == 'excel':
             from .excel_exports import export_expenses_excel
             return export_expenses_excel(queryset)
         else:
             from .pdf_sales import export_expenses_pdf
-            return export_expenses_pdf(queryset, organization)
+
+            # Collect filter information for PDF
+            filters = {}
+            start_date = request.query_params.get('start_date')
+            end_date = request.query_params.get('end_date')
+            category_id = request.query_params.get('category')
+
+            if start_date:
+                filters['start_date'] = start_date
+            if end_date:
+                filters['end_date'] = end_date
+            if category_id:
+                # Get category name for display
+                from .models import ExpenseCategory
+                try:
+                    category = ExpenseCategory.objects.get(id=category_id)
+                    filters['category_name'] = category.name
+                except ExpenseCategory.DoesNotExist:
+                    pass
+
+            # Build filename
+            filename_parts = ["depenses"]
+            if start_date and end_date:
+                filename_parts.append(f"{start_date}_{end_date}")
+            elif start_date:
+                filename_parts.append(f"depuis_{start_date}")
+            elif end_date:
+                filename_parts.append(f"jusqua_{end_date}")
+
+            filename = "_".join(filename_parts) + ".pdf"
+
+            return self.generate_and_respond(
+                generator_func=export_expenses_pdf,
+                generator_args=(queryset, organization, filters),
+                filename=filename,
+                request=request
+            )
 
 
 # ===============================

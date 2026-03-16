@@ -259,7 +259,7 @@ REST_FRAMEWORK = {
         'lourabackend.authentication.MultiUserJWTAuthentication',
     ],
     'DEFAULT_PAGINATION_CLASS': 'lourabackend.pagination.StandardResultsSetPagination',
-    'PAGE_SIZE': 20,
+    'PAGE_SIZE': 10,
     # Use custom JSON renderer to handle UUIDs and other Django types
     'DATETIME_FORMAT': '%Y-%m-%dT%H:%M:%S.%fZ',
     'DEFAULT_RENDERER_CLASSES': [

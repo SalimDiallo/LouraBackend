@@ -2405,6 +2405,7 @@ class PermissionViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Permission.objects.all()
     serializer_class = PermissionSerializer
     permission_classes = [IsAuthenticated]
+    pagination_class = None  # Désactive la pagination pour lister toutes les permissions
 
     def get_queryset(self):
         queryset = Permission.objects.all().order_by('category', 'name')

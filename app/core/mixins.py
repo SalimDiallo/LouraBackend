@@ -6,6 +6,7 @@ Ces mixins sont adaptés au nouveau système BaseUser avec user_type.
 Admin a toutes les permissions, Employee vérifie via son rôle.
 """
 
+from rest_framework.pagination import PageNumberPagination
 import logging
 from rest_framework import serializers
 from rest_framework.response import Response
@@ -277,7 +278,7 @@ class ActivationMixin:
 class BaseOrganizationViewSetMixin(
     OrganizationQuerySetMixin,
     OrganizationCreateMixin,
-    ActivationMixin
+    ActivationMixin,
 ):
     """
     Mixin combiné principal pour les ViewSets multi-tenant.

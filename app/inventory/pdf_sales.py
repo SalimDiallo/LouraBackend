@@ -1002,8 +1002,8 @@ def generate_invoice_pdf(sale):
     return buffer
 
 
-def export_expenses_pdf(queryset, organization):
-    """Export expenses list to PDF"""
+def export_expenses_pdf(queryset, organization, filters=None):
+    """Export expenses list to PDF with filters info"""
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
@@ -1013,24 +1013,47 @@ def export_expenses_pdf(queryset, organization):
         topMargin=2*cm,
         bottomMargin=2*cm
     )
-    
+
     styles = get_styles()
     elements = []
-    
+
     # Header
     elements.append(Paragraph("RAPPORT DES DÉPENSES", styles['CustomTitle']))
     elements.append(Paragraph(f"Organisation: {organization.name}", styles['Normal']))
+
+    # Date de génération
+    from django.utils import timezone
+    elements.append(Paragraph(
+        f"Date de génération: {timezone.now().strftime('%d/%m/%Y %H:%M')}",
+        styles['Small']
+    ))
+
+    # Filtres appliqués
+    if filters:
+        filter_text = "Filtres: "
+        filter_parts = []
+        if filters.get('start_date'):
+            filter_parts.append(f"Du {filters['start_date']}")
+        if filters.get('end_date'):
+            filter_parts.append(f"Au {filters['end_date']}")
+        if filters.get('category_name'):
+            filter_parts.append(f"Catégorie: {filters['category_name']}")
+
+        if filter_parts:
+            filter_text += ", ".join(filter_parts)
+            elements.append(Paragraph(filter_text, styles['Small']))
+
     elements.append(Spacer(1, 10*mm))
-    
+
     # Summary
-    from django.db.models import Sum
+    from django.db.models import Sum, Count
     total = queryset.aggregate(total=Sum('amount'))['total'] or 0
-    
+
     summary_data = [
         ["Nombre de dépenses:", str(queryset.count())],
         ["Total:", format_currency(total)],
     ]
-    
+
     summary_table = Table(summary_data, colWidths=[4*cm, 8*cm])
     summary_table.setStyle(TableStyle([
         ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
@@ -1038,10 +1061,41 @@ def export_expenses_pdf(queryset, organization):
     ]))
     elements.append(summary_table)
     elements.append(Spacer(1, 10*mm))
-    
+
+    # Répartition par catégorie
+    by_category = queryset.values('category__name').annotate(
+        total=Sum('amount'),
+        count=Count('id')
+    ).order_by('-total')
+
+    if by_category:
+        elements.append(Paragraph("Répartition par catégorie:", styles['Heading2']))
+        category_data = [["Catégorie", "Nombre", "Total"]]
+        for cat in by_category:
+            category_data.append([
+                cat['category__name'] or "Sans catégorie",
+                str(cat['count']),
+                format_currency(cat['total'])
+            ])
+
+        cat_table = Table(category_data, colWidths=[6*cm, 3*cm, 4*cm])
+        cat_table.setStyle(TableStyle([
+            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
+            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
+            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8),
+            ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
+            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
+            ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ]))
+        elements.append(cat_table)
+        elements.append(Spacer(1, 10*mm))
+
     # Expenses table
+    elements.append(Paragraph("Liste détaillée des dépenses:", styles['Heading2']))
     data = [["Date", "Description", "Catégorie", "Bénéficiaire", "Montant"]]
-    
+
     for expense in queryset:
         data.append([
             format_date(expense.expense_date),
@@ -1050,7 +1104,7 @@ def export_expenses_pdf(queryset, organization):
             expense.beneficiary[:20] if expense.beneficiary else "-",
             format_currency(expense.amount)
         ])
-    
+
     table = Table(data, colWidths=[2.5*cm, 5*cm, 3*cm, 3*cm, 3*cm])
     table.setStyle(TableStyle([
         ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
@@ -1063,10 +1117,8 @@ def export_expenses_pdf(queryset, organization):
         ('TOPPADDING', (0, 0), (-1, -1), 6),
     ]))
     elements.append(table)
-    
+
     doc.build(elements)
     buffer.seek(0)
-    
-    response = HttpResponse(buffer.getvalue(), content_type='application/pdf')
-    response['Content-Disposition'] = 'attachment; filename="rapport_depenses.pdf"'
-    return response
+
+    return buffer
