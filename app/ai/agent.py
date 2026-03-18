@@ -1,656 +1,879 @@
 """
-AI Agent Service - Ollama Only
-Simplified agent using local Ollama models
+AI Agent Service - Multi-Provider (Claude & OpenAI) with Function Calling
+=========================================================================
+Agent IA sophistiqué supportant Anthropic Claude et OpenAI avec function calling.
+
+Architecture:
+    User Message → AI (avec tools) → AI choisit un outil → Exécution → AI formule réponse
+
+Le function calling natif (Claude Tool Use & OpenAI Function Calling) est BEAUCOUP
+plus fiable que le parsing de <action> en XML. L'AI retourne un JSON structuré avec
+le nom de l'outil et les paramètres, qu'on exécute côté serveur.
+
+Provider sélectionné automatiquement selon les clés API disponibles :
+    1. Claude (ANTHROPIC_API_KEY) - prioritaire
+    2. OpenAI (OPENAI_API_KEY) - fallback
 """
+
 import json
-import re
 import time
-from typing import Optional, List, Dict, Any
-from dataclasses import dataclass
+import logging
+from typing import List, Dict, Optional
 
-from .provider_manager import OllamaManager, LLMMessage, LLMResponse
+from openai import OpenAI
+import anthropic
+
 from .config import ai_config
+from .tools import registry
 
-
-@dataclass
-class ToolResult:
-    """Résultat d'une exécution d'outil"""
-    success: bool
-    data: Any
-    error: Optional[str] = None
-    execution_time_ms: int = 0
+logger = logging.getLogger(__name__)
 
 
 class LouraAIAgent:
     """
-    Agent IA pour Loura utilisant Ollama (modèles locaux)
-    
+    Agent IA pour Loura supportant Claude & OpenAI avec function calling.
+
     Usage:
-        agent = LouraAIAgent(organization=org)
-        response = agent.chat("Combien d'employés ?", agent_mode=True)
+        agent = LouraAIAgent(organization=org, user=user)
+        response = agent.chat("Combien d'employés dans ma boîte ?")
+
+    Le provider est sélectionné automatiquement selon les clés API disponibles.
     """
-    
-    # Modèle par défaut
-    DEFAULT_MODEL = "llama3.2"
-    
-    # Prompt système pour l'assistant
-    SYSTEM_PROMPT = """Tu es l'assistant IA de Loura, une application de gestion d'entreprise.
-Organisation: {org_name}
 
-RÈGLES STRICTES:
-1. Tu NE DOIS JAMAIS inventer de données. Si tu ne sais pas, dis-le.
-2. Tu guides les utilisateurs dans l'utilisation de l'application.
-3. Tu expliques les fonctionnalités disponibles.
-4. Pour obtenir des données réelles, active le "Mode Agent".
+    SYSTEM_PROMPT = """Tu es **Loura AI**, l'assistant intelligent du CRM Loura pour l'organisation **{org_name}**.
 
-Réponds en français, de manière professionnelle mais amicale.
+**TON ROLE:**
+Tu es un assistant de gestion d'entreprise qui peut LIRE et AGIR sur les données de l'organisation.
+Tu as accès à des outils pour consulter les données (employés, ventes, stocks, congés) 
+ET pour effectuer des actions (créer des employés, soumettre des demandes de congé, etc.).
+
+**CONTEXTE UTILISATEUR:**
+- Utilisateur connecté : {user_name} ({user_email})
+- Rôle : {user_role}
+- Devise de l'organisation : {currency}
+- Organisation : {org_name}
+
+**REGLES:**
+1. Utilise TOUJOURS les outils pour accéder aux données. Ne JAMAIS inventer de données.
+2. Si l'utilisateur demande une information, appelle l'outil approprié.
+3. Si l'utilisateur demande une action (créer, modifier), appelle l'outil d'écriture.
+4. Si tu ne peux pas faire quelque chose, dis-le clairement et suggère une alternative.
+5. Réponds en français, de manière professionnelle mais amicale.
+6. Formate tes réponses en Markdown pour la lisibilité.
+7. Sois concis mais complet.
+8. Pour les montants, utilise toujours la devise {currency}.
+9. Ne jamais utiliser d'emojis ou de stickers dans tes réponses. Reste professionnel.
+
+**ACTIONS DISPONIBLES:**
+Tu peux faire des actions réelles sur le CRM comme:
+- Consulter la liste des employés, départements, produits
+- Voir les statistiques RH et commerciales
+- Créer un nouvel employé
+- Faire une demande de congé
+- Voir les clients qui doivent de l'argent (créances)
+- Et bien plus...
+
+**IMPORTANT - ACTIONS D'ECRITURE:**
+- Pour les actions d'écriture (création, modification, suppression), tu DOIS d'abord décrire ce que tu vas faire et attendre la confirmation de l'utilisateur.
+- Quand l'utilisateur confirme (oui, ok, confirmer, valider, etc.), exécute l'action.
+- Si l'utilisateur ne donne pas assez d'informations, demande les détails manquants.
+- Ne fais JAMAIS d'action d'écriture sans confirmation explicite.
 """
 
-    AGENT_SYSTEM_PROMPT = """Tu es l'agent IA de Loura - Assistant de gestion d'entreprise pour {org_name}.
-
-OUTILS DISPONIBLES:
-{tools_description}
-
-⛔ RÈGLES ANTI-HALLUCINATION:
-1. Tu NE DOIS JAMAIS inventer de données
-2. Si tu n'as pas exécuté d'outil → DIS "Je vais chercher ces informations" et appelle un outil
-3. Si l'outil retourne "Aucune donnée" → DIS "Aucune donnée trouvée"
-
-🎯 PROCESSUS:
-1. L'utilisateur pose une question → APPELLE un outil
-2. Attends les données réelles
-3. Réponds avec les données reçues
-
-📋 FORMAT D'APPEL D'OUTIL:
-```
-<action>
-{{"tool": "nom_outil", "params": {{"param": "valeur"}}}}
-</action>
-```
-
-✅ FORMAT DE RÉPONSE:
-- Maximum 3 phrases
-- Chiffres en **gras** avec émojis
-- Structure: Donnée → Insight → Action
-
-RAPPEL: Tu es UN RAPPORTEUR DE DONNÉES, pas un créateur."""
-
-    def __init__(self, organization=None, model: str = None):
+    def __init__(self, organization=None, user=None, model: str = None):
         self.organization = organization
-        self.model = model or ai_config.MODEL or self.DEFAULT_MODEL
-        self.ollama = OllamaManager(model=self.model)
-        self.tools = self._register_tools()
-        
-    @property
-    def provider_manager(self):
-        """Alias for compatibility"""
-        return self.ollama
-        
-    def _register_tools(self) -> Dict[str, callable]:
-        """Enregistre les outils disponibles pour l'agent"""
+        self.user = user
+        self.provider = ai_config.get_provider()
+
+        if not self.provider:
+            raise ValueError(
+                "Aucune clé API configurée. Ajoutez ANTHROPIC_API_KEY ou OPENAI_API_KEY dans votre fichier .env"
+            )
+
+        # Set model based on provider
+        if model:
+            self.model = model
+        else:
+            self.model = ai_config.MODEL or ai_config.get_default_model()
+
+        # Initialize the appropriate client
+        if self.provider == 'anthropic':
+            self.client = anthropic.Anthropic(api_key=ai_config.ANTHROPIC_API_KEY)
+            logger.info(f"AI Agent initialized with Claude: {self.model}")
+        elif self.provider == 'openai':
+            self.client = OpenAI(api_key=ai_config.OPENAI_API_KEY)
+            logger.info(f"AI Agent initialized with OpenAI: {self.model}")
+        else:
+            raise ValueError(f"Provider inconnu: {self.provider}")
+
+    def _get_user_context(self) -> Dict:
+        """Extracts user context for the system prompt."""
+        user_name = "Utilisateur"
+        user_email = "non défini"
+        user_role = "utilisateur"
+
+        if self.user:
+            user_name = self.user.get_full_name() if hasattr(self.user, 'get_full_name') else str(self.user)
+            user_email = getattr(self.user, 'email', 'non défini')
+            user_type = getattr(self.user, 'user_type', 'employee')
+            user_role = "Administrateur" if user_type == 'admin' else "Employé"
+
+        currency = "MAD"
+        if self.organization:
+            try:
+                settings = self.organization.settings
+                currency = settings.currency or "MAD"
+            except Exception:
+                pass
+
         return {
-            # === EMPLOYÉS ===
-            "liste_employes": {
-                "function": self._list_employees,
-                "description": "Liste tous les employés de l'organisation",
-                "params": []
-            },
-            "rechercher_employes": {
-                "function": self._search_employees,
-                "description": "Recherche des employés par nom",
-                "params": ["query"]
-            },
-            "statistiques_rh": {
-                "function": self._get_hr_stats,
-                "description": "Statistiques RH globales",
-                "params": []
-            },
-
-            # === DÉPARTEMENTS ===
-            "liste_departements": {
-                "function": self._list_departments,
-                "description": "Liste tous les départements",
-                "params": []
-            },
-
-            # === INVENTAIRE ===
-            "liste_produits": {
-                "function": self._list_products,
-                "description": "Liste tous les produits en stock",
-                "params": []
-            },
-            "verifier_stock": {
-                "function": self._check_stock,
-                "description": "Vérifie le stock d'un produit",
-                "params": ["product_name"]
-            },
-            "produits_stock_bas": {
-                "function": self._get_low_stock_products,
-                "description": "Produits avec stock bas",
-                "params": []
-            },
-
-            # === VENTES ===
-            "ventes_recentes": {
-                "function": self._get_recent_sales,
-                "description": "Liste des ventes récentes",
-                "params": ["limit"]
-            },
-            "statistiques_ventes": {
-                "function": self._get_sales_stats,
-                "description": "Statistiques des ventes",
-                "params": ["days"]
-            },
-
-            # === CLIENTS ===
-            "liste_clients": {
-                "function": self._list_customers,
-                "description": "Liste tous les clients",
-                "params": []
-            },
+            "user_name": user_name,
+            "user_email": user_email,
+            "user_role": user_role,
+            "currency": currency,
         }
-    
-    def _get_tools_description(self) -> str:
-        """Génère la description des outils pour le prompt"""
-        descriptions = []
-        for name, tool in self.tools.items():
-            params = ", ".join(tool["params"]) if tool["params"] else "aucun"
-            descriptions.append(f"- {name}: {tool['description']} (params: {params})")
-        return "\n".join(descriptions)
 
-    def get_available_models(self) -> List[str]:
-        """Retourne la liste des modèles disponibles sur Ollama"""
-        return self.ollama.list_models()
-
-    def get_provider_info(self) -> Dict:
-        """Get provider info"""
-        return self.ollama.get_provider_info()
+    def _build_system_prompt(self) -> str:
+        """Builds the system prompt with user context."""
+        org_name = self.organization.name if self.organization else "Non définie"
+        ctx = self._get_user_context()
+        return self.SYSTEM_PROMPT.format(
+            org_name=org_name,
+            user_name=ctx["user_name"],
+            user_email=ctx["user_email"],
+            user_role=ctx["user_role"],
+            currency=ctx["currency"],
+        )
 
     def chat(
         self,
         message: str,
         conversation_history: List[Dict] = None,
-        agent_mode: bool = False
     ) -> Dict:
         """
-        Envoie un message à l'agent IA
-        
+        Envoie un message à l'agent IA avec function calling.
+
         Args:
             message: Message de l'utilisateur
             conversation_history: Historique de conversation
-            agent_mode: Active l'exécution des outils
+
+        Returns:
+            Dict avec: success, content, tool_calls, tool_results, response_time_ms, model, provider
         """
+        if self.provider == 'anthropic':
+            return self._chat_anthropic(message, conversation_history)
+        elif self.provider == 'openai':
+            return self._chat_openai(message, conversation_history)
+        else:
+            return {
+                "success": False,
+                "content": "Provider inconnu.",
+                "error": f"Provider inconnu: {self.provider}",
+                "tool_calls": [],
+                "tool_results": [],
+                "response_time_ms": 0,
+                "model": self.model,
+                "provider": self.provider,
+            }
+
+    def _chat_openai(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+    ) -> Dict:
+        """Implémentation chat pour OpenAI."""
         start_time = time.time()
 
-        # Vérifier disponibilité
-        if not self.ollama.available:
-            return self._fallback_response(message, agent_mode)
-
         try:
-            # Construire le prompt système
-            org_name = self.organization.name if self.organization else "Non définie"
-            
-            if agent_mode:
-                system_prompt = self.AGENT_SYSTEM_PROMPT.format(
-                    org_name=org_name,
-                    tools_description=self._get_tools_description()
-                )
-            else:
-                system_prompt = self.SYSTEM_PROMPT.format(org_name=org_name)
-            
+            system_prompt = self._build_system_prompt()
+
             # Construire les messages
-            messages = [LLMMessage(role="system", content=system_prompt)]
-            
+            messages = [{"role": "system", "content": system_prompt}]
+
             if conversation_history:
-                for msg in conversation_history[-10:]:
-                    messages.append(LLMMessage(
-                        role=msg.get("role", "user"),
-                        content=msg.get("content", "")
-                    ))
-            
-            messages.append(LLMMessage(role="user", content=message))
-            
-            # Appeler Ollama
-            response = self.ollama.chat(
+                for msg in conversation_history[-20:]:  # Garder les 20 derniers messages
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
+                    })
+
+            messages.append({"role": "user", "content": message})
+
+            # Récupérer les outils OpenAI
+            tools = registry.get_openai_tools()
+
+            # Premier appel à GPT
+            response = self.client.chat.completions.create(
+                model=self.model,
                 messages=messages,
+                tools=tools if tools else None,
+                tool_choice="auto" if tools else None,
                 temperature=ai_config.TEMPERATURE,
                 max_tokens=ai_config.MAX_TOKENS,
             )
-            
-            if not response.success:
-                return {
-                    "success": False,
-                    "content": response.content,
-                    "error": response.error,
-                    "tool_calls": [],
-                    "tool_results": [],
-                    "response_time_ms": response.response_time_ms,
-                }
-            
-            content = response.content
-            tool_calls = []
-            tool_results = []
-            
-            # Traiter les actions en mode agent
-            if agent_mode and "<action>" in content:
-                content, tool_calls, tool_results = self._process_agent_actions(content)
-                
-                # Si des outils ont été exécutés, générer la réponse finale
-                if tool_results:
-                    results_data = self._format_tool_results_for_ai(tool_results)
-                    
-                    messages.append(LLMMessage(role="assistant", content=content))
-                    messages.append(LLMMessage(
-                        role="user",
-                        content=f"""⛔ RAPPEL - ZÉRO HALLUCINATION:
-Réponds UNIQUEMENT avec les données ci-dessous.
 
-DONNÉES RÉELLES:
-{results_data}
+            assistant_message = response.choices[0].message
+            all_tool_calls = []
+            all_tool_results = []
+            pending_confirmations = []
 
-RÈGLES:
-1. Cite UNIQUEMENT les chiffres exacts présents
-2. Si info absente → dis "non disponible"
-3. Maximum 3 phrases, format: Donnée → Insight
-4. **Gras** pour les chiffres + émojis
+            # Boucle de function calling (GPT peut appeler plusieurs outils)
+            max_iterations = ai_config.MAX_TOOL_CALLS
+            iteration = 0
 
-Formule ta réponse:"""
-                    ))
-                    
-                    final_response = self.ollama.chat(
-                        messages=messages,
-                        temperature=ai_config.TEMPERATURE,
-                        max_tokens=ai_config.MAX_TOKENS,
-                    )
-                    content = final_response.content if final_response.success else content
-            
+            while assistant_message.tool_calls and iteration < max_iterations:
+                iteration += 1
+
+                # Ajouter le message assistant avec les tool calls
+                messages.append({
+                    "role": "assistant",
+                    "content": assistant_message.content or "",
+                    "tool_calls": [
+                        {
+                            "id": tc.id,
+                            "type": "function",
+                            "function": {
+                                "name": tc.function.name,
+                                "arguments": tc.function.arguments,
+                            }
+                        }
+                        for tc in assistant_message.tool_calls
+                    ],
+                })
+
+                # Exécuter chaque outil demandé
+                for tool_call in assistant_message.tool_calls:
+                    tool_name = tool_call.function.name
+                    try:
+                        tool_args = json.loads(tool_call.function.arguments)
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    logger.info(f"Tool execution: {tool_name} with args: {tool_args}")
+
+                    # Check if tool requires confirmation
+                    tool_def = registry.get(tool_name)
+                    if tool_def and not tool_def.is_read_only:
+                        # For write actions, return a pending confirmation
+                        pending_confirmations.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "description": tool_def.description,
+                        })
+                        result = self._execute_tool(tool_name, tool_args)
+                    else:
+                        result = self._execute_tool(tool_name, tool_args)
+
+                    all_tool_calls.append({
+                        "tool": tool_name,
+                        "params": tool_args,
+                        "is_write": not (tool_def.is_read_only if tool_def else True),
+                    })
+                    all_tool_results.append({
+                        "tool": tool_name,
+                        "success": result.get("success", True),
+                        "data": result,
+                        "error": result.get("error"),
+                    })
+
+                    # Ajouter le résultat au contexte pour GPT
+                    messages.append({
+                        "role": "tool",
+                        "tool_call_id": tool_call.id,
+                        "content": json.dumps(result, ensure_ascii=False, default=str),
+                    })
+
+                # Rappeler GPT avec les résultats des outils
+                response = self.client.chat.completions.create(
+                    model=self.model,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    tool_choice="auto" if tools else None,
+                    temperature=ai_config.TEMPERATURE,
+                    max_tokens=ai_config.MAX_TOKENS,
+                )
+
+                assistant_message = response.choices[0].message
+
+            content = assistant_message.content or ""
             response_time = int((time.time() - start_time) * 1000)
-            
+
             return {
                 "success": True,
                 "content": content,
-                "tool_calls": tool_calls,
-                "tool_results": tool_results,
+                "tool_calls": all_tool_calls,
+                "tool_results": all_tool_results,
+                "pending_confirmations": pending_confirmations,
                 "response_time_ms": response_time,
                 "model": self.model,
+                "provider": "openai",
             }
-            
+
         except Exception as e:
+            logger.error(f"AI Agent OpenAI error: {e}", exc_info=True)
             return {
                 "success": False,
-                "content": f"Erreur IA: {str(e)}",
+                "content": f"Erreur lors du traitement: {str(e)}",
                 "error": str(e),
                 "tool_calls": [],
                 "tool_results": [],
                 "response_time_ms": int((time.time() - start_time) * 1000),
+                "model": self.model,
+                "provider": "openai",
             }
 
-    def _process_agent_actions(self, content: str) -> tuple:
-        """Parse et exécute les actions demandées par l'agent"""
-        tool_calls = []
-        tool_results = []
-        
-        # Regex pour trouver les blocs <action>...</action>
-        action_pattern = r'<action>(.*?)</action>'
-        matches = re.findall(action_pattern, content, re.DOTALL | re.IGNORECASE)
-        
-        for match in matches:
-            try:
-                action = json.loads(match.strip())
-                tool_name = action.get("tool")
-                params = action.get("params", {})
-                
-                if tool_name in self.tools:
-                    tool_calls.append({"tool": tool_name, "params": params})
-                    
-                    # Exécuter l'outil
-                    tool_func = self.tools[tool_name]["function"]
-                    if params:
-                        result = tool_func(**params)
-                    else:
-                        result = tool_func()
-                    
-                    tool_results.append({
-                        "tool": tool_name,
-                        "success": result.success,
-                        "data": result.data,
-                        "error": result.error,
+    def _chat_anthropic(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+    ) -> Dict:
+        """Implémentation chat pour Anthropic Claude."""
+        start_time = time.time()
+
+        try:
+            system_prompt = self._build_system_prompt()
+
+            # Construire les messages (Claude n'utilise pas de message system dans messages)
+            messages = []
+
+            if conversation_history:
+                for msg in conversation_history[-20:]:
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
                     })
-                    
-            except json.JSONDecodeError:
-                continue
-            except Exception as e:
-                tool_results.append({
-                    "tool": tool_name if 'tool_name' in locals() else "unknown",
-                    "success": False,
-                    "error": str(e),
-                })
-        
-        # Nettoyer le contenu des balises action
-        clean_content = re.sub(action_pattern, '', content, flags=re.DOTALL | re.IGNORECASE).strip()
-        
-        return clean_content, tool_calls, tool_results
 
-    def _format_tool_results_for_ai(self, tool_results: List[Dict]) -> str:
-        """Formate les résultats des outils pour l'IA"""
-        formatted = []
-        for result in tool_results:
-            if result.get("success"):
-                data = result.get("data", [])
-                if isinstance(data, list):
-                    formatted.append(f"📊 {result['tool']}: {len(data)} résultats")
-                    for item in data[:5]:  # Limiter
-                        formatted.append(f"  • {json.dumps(item, ensure_ascii=False, default=str)[:200]}")
-                else:
-                    formatted.append(f"📊 {result['tool']}: {json.dumps(data, ensure_ascii=False, default=str)[:500]}")
-            else:
-                formatted.append(f"❌ {result['tool']}: {result.get('error', 'Erreur inconnue')}")
-        
-        return "\n".join(formatted) if formatted else "Aucune donnée trouvée"
+            messages.append({"role": "user", "content": message})
 
-    def _fallback_response(self, message: str, agent_mode: bool) -> Dict:
-        """Réponse de secours si Ollama n'est pas disponible"""
-        content = """🤖 **Assistant IA**
+            # Récupérer les outils Anthropic
+            tools = registry.get_anthropic_tools()
 
-⚠️ Le modèle IA local (Ollama) n'est pas disponible.
-
-**Pour activer l'IA locale:**
-1. Installez Ollama: `curl -fsSL https://ollama.com/install.sh | sh`
-2. Démarrez le service: `ollama serve`
-3. Téléchargez un modèle: `ollama pull llama3.2`
-4. Installez le package Python: `pip install ollama`
-
-Redémarrez ensuite le serveur Django."""
-        
-        return {
-            "success": True,
-            "content": content,
-            "tool_calls": [],
-            "tool_results": [],
-            "response_time_ms": 0,
-            "model": "fallback",
-        }
-
-    # ==================== OUTILS MÉTIER ====================
-    
-    def _list_employees(self) -> ToolResult:
-        """Liste tous les employés"""
-        start = time.time()
-        try:
-            from hr.models import Employee
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)[:20]
-            
-            results = [
-                {
-                    "nom": f"{e.first_name} {e.last_name}",
-                    "email": e.email,
-                    "poste": str(e.position) if e.position else "Non défini",
-                    "departement": e.department.name if e.department else "Non assigné",
-                    "statut": e.employment_status or "actif",
-                }
-                for e in employees
-            ]
-            
-            return ToolResult(
-                success=True,
-                data=results,
-                execution_time_ms=int((time.time() - start) * 1000)
+            # Premier appel à Claude
+            response = self.client.messages.create(
+                model=self.model,
+                system=system_prompt,
+                messages=messages,
+                tools=tools if tools else None,
+                temperature=ai_config.TEMPERATURE,
+                max_tokens=ai_config.MAX_TOKENS,
             )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
 
-    def _search_employees(self, query: str = "") -> ToolResult:
-        """Recherche des employés"""
-        start = time.time()
-        try:
-            from hr.models import Employee
-            from django.db.models import Q
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)
-            
-            if query:
-                employees = employees.filter(
-                    Q(first_name__icontains=query) |
-                    Q(last_name__icontains=query) |
-                    Q(email__icontains=query)
+            all_tool_calls = []
+            all_tool_results = []
+
+            # Boucle de tool use (Claude peut appeler plusieurs outils)
+            max_iterations = ai_config.MAX_TOOL_CALLS
+            iteration = 0
+
+            while response.stop_reason == "tool_use" and iteration < max_iterations:
+                iteration += 1
+
+                # Ajouter la réponse de Claude
+                messages.append({
+                    "role": "assistant",
+                    "content": response.content,
+                })
+
+                # Exécuter chaque outil demandé
+                tool_results_content = []
+                for content_block in response.content:
+                    if content_block.type == "tool_use":
+                        tool_name = content_block.name
+                        tool_args = content_block.input
+
+                        logger.info(f"Tool execution: {tool_name} with args: {tool_args}")
+
+                        # Exécuter l'outil
+                        result = self._execute_tool(tool_name, tool_args)
+
+                        tool_def = registry.get(tool_name)
+                        all_tool_calls.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "is_write": not (tool_def.is_read_only if tool_def else True),
+                        })
+                        all_tool_results.append({
+                            "tool": tool_name,
+                            "success": result.get("success", True),
+                            "data": result,
+                            "error": result.get("error"),
+                        })
+
+                        # Ajouter le résultat pour Claude
+                        tool_results_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": content_block.id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        })
+
+                # Ajouter les résultats des outils
+                messages.append({
+                    "role": "user",
+                    "content": tool_results_content,
+                })
+
+                # Rappeler Claude avec les résultats des outils
+                response = self.client.messages.create(
+                    model=self.model,
+                    system=system_prompt,
+                    messages=messages,
+                    tools=tools if tools else None,
+                    temperature=ai_config.TEMPERATURE,
+                    max_tokens=ai_config.MAX_TOKENS,
                 )
-            
-            employees = employees[:10]
-            
-            results = [
-                {
-                    "nom": e.full_name,
-                    "email": e.email,
-                    "poste": e.position.title if e.position else None,
-                    "departement": e.department.name if e.department else None,
-                }
-                for e in employees
-            ]
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
 
-    def _get_hr_stats(self) -> ToolResult:
-        """Statistiques RH"""
-        start = time.time()
-        try:
-            from hr.models import Employee, Department
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            employees = Employee.objects.filter(organization=self.organization)
-            
-            stats = {
-                "total_employes": employees.count(),
-                "employes_actifs": employees.filter(employment_status='active').count(),
-                "en_conge": employees.filter(employment_status='on_leave').count(),
-                "total_departements": Department.objects.filter(organization=self.organization).count(),
+            # Extraire le contenu textuel
+            content = ""
+            for content_block in response.content:
+                if hasattr(content_block, 'text'):
+                    content += content_block.text
+
+            response_time = int((time.time() - start_time) * 1000)
+
+            return {
+                "success": True,
+                "content": content,
+                "tool_calls": all_tool_calls,
+                "tool_results": all_tool_results,
+                "response_time_ms": response_time,
+                "model": self.model,
+                "provider": "anthropic",
             }
-            
-            return ToolResult(success=True, data=stats, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
 
-    def _list_departments(self) -> ToolResult:
-        """Liste les départements"""
-        start = time.time()
-        try:
-            from hr.models import Department
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            departments = Department.objects.filter(organization=self.organization, is_active=True)
-            
-            results = [
-                {"nom": d.name, "code": d.code, "description": d.description}
-                for d in departments
-            ]
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
         except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
-    
-    def _list_products(self) -> ToolResult:
-        """Liste tous les produits"""
-        start = time.time()
-        try:
-            from inventory.models import Product, Stock
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            products = Product.objects.filter(organization=self.organization)[:20]
-            
-            results = []
-            for p in products:
-                stocks = Stock.objects.filter(product=p)
-                total_qty = sum(s.quantity for s in stocks)
-                results.append({
-                    "nom": p.name,
-                    "sku": p.sku,
-                    "categorie": p.category.name if p.category else "Non catégorisé",
-                    "prix": float(p.selling_price) if p.selling_price else 0,
-                    "stock": total_qty,
-                })
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
+            logger.error(f"AI Agent Anthropic error: {e}", exc_info=True)
+            return {
+                "success": False,
+                "content": f"Erreur lors du traitement: {str(e)}",
+                "error": str(e),
+                "tool_calls": [],
+                "tool_results": [],
+                "response_time_ms": int((time.time() - start_time) * 1000),
+                "model": self.model,
+                "provider": "anthropic",
+            }
 
-    def _check_stock(self, product_name: str = "") -> ToolResult:
-        """Vérifie le stock d'un produit"""
-        start = time.time()
-        try:
-            from inventory.models import Product, Stock
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            products = Product.objects.filter(organization=self.organization)
-            
-            if product_name:
-                products = products.filter(name__icontains=product_name)
-            
-            products = products[:5]
-            
-            results = []
-            for p in products:
-                stocks = Stock.objects.filter(product=p)
-                total_qty = sum(s.quantity for s in stocks)
-                results.append({
-                    "produit": p.name,
-                    "sku": p.sku,
-                    "stock_total": total_qty,
-                    "stock_min": p.min_stock_level,
-                    "alerte": total_qty <= p.min_stock_level if p.min_stock_level else False,
-                })
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
+    def chat_stream(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+    ):
+        """
+        Version streaming du chat. Retourne un générateur d'événements SSE.
 
-    def _get_low_stock_products(self) -> ToolResult:
-        """Produits avec stock bas"""
-        start = time.time()
+        Yields:
+            dict avec type ('token', 'tools', 'done', 'error') et contenu
+        """
+        if self.provider == 'anthropic':
+            yield from self._chat_stream_anthropic(message, conversation_history)
+        elif self.provider == 'openai':
+            yield from self._chat_stream_openai(message, conversation_history)
+        else:
+            yield {"type": "error", "error": f"Provider inconnu: {self.provider}"}
+
+    def _chat_stream_openai(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+    ):
+        """
+        Version streaming pour OpenAI avec vrai streaming token par token.
+
+        Architecture:
+        1. Premier appel en streaming → on yield les tokens en temps réel
+        2. Si l'AI veut appeler des outils, on les accumule depuis le stream
+        3. On exécute les outils, puis on re-streame la réponse finale
+        """
         try:
-            from inventory.models import Product, Stock
-            from django.db.models import Sum
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            products = Product.objects.filter(
-                organization=self.organization,
-                min_stock_level__isnull=False
-            ).annotate(
-                total_stock=Sum('stocks__quantity')
-            )
-            
-            results = []
-            for p in products:
-                total = p.total_stock or 0
-                if total <= p.min_stock_level:
-                    results.append({
-                        "produit": p.name,
-                        "stock_actuel": total,
-                        "stock_min": p.min_stock_level,
-                        "manque": p.min_stock_level - total,
+            system_prompt = self._build_system_prompt()
+
+            messages = [{"role": "system", "content": system_prompt}]
+
+            if conversation_history:
+                for msg in conversation_history[-20:]:
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
                     })
-            
-            return ToolResult(success=True, data=results[:10], execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
 
-    def _get_recent_sales(self, limit: int = 10) -> ToolResult:
-        """Ventes récentes"""
-        start = time.time()
-        try:
-            from inventory.models import Sale
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            sales = Sale.objects.filter(organization=self.organization).order_by('-created_at')[:limit]
-            
-            results = [
-                {
-                    "numero": s.sale_number,
-                    "client": s.customer.name if s.customer else "Anonyme",
-                    "total": float(s.total_amount),
-                    "statut": s.status,
-                    "date": str(s.created_at.date()),
+            messages.append({"role": "user", "content": message})
+
+            tools = registry.get_openai_tools()
+            all_tool_calls = []
+            all_tool_results = []
+            max_iterations = ai_config.MAX_TOOL_CALLS
+            iteration = 0
+
+            while iteration <= max_iterations:
+                # Appel en streaming
+                # Construire les kwargs dynamiquement
+                stream_kwargs = {
+                    "model": self.model,
+                    "messages": messages,
+                    "temperature": ai_config.TEMPERATURE,
+                    "max_tokens": ai_config.MAX_TOKENS,
+                    "stream": True,
                 }
-                for s in sales
-            ]
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
 
-    def _get_sales_stats(self, days: int = 30) -> ToolResult:
-        """Statistiques des ventes"""
-        start = time.time()
-        try:
-            from inventory.models import Sale
-            from django.utils import timezone
-            from django.db.models import Sum, Count
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            start_date = timezone.now() - timezone.timedelta(days=days)
-            sales = Sale.objects.filter(
-                organization=self.organization,
-                created_at__gte=start_date
-            )
-            
-            stats = sales.aggregate(
-                total_ca=Sum('total_amount'),
-                nombre_ventes=Count('id'),
-            )
-            
-            return ToolResult(
-                success=True,
-                data={
-                    "periode_jours": days,
-                    "chiffre_affaires": float(stats['total_ca'] or 0),
-                    "nombre_ventes": stats['nombre_ventes'] or 0,
-                },
-                execution_time_ms=int((time.time() - start) * 1000)
-            )
-        except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
+                # Ajouter tools seulement à la première itération
+                if tools and iteration == 0:
+                    stream_kwargs["tools"] = tools
+                    stream_kwargs["tool_choice"] = "auto"
 
-    def _list_customers(self) -> ToolResult:
-        """Liste les clients"""
-        start = time.time()
+                stream = self.client.chat.completions.create(**stream_kwargs)
+
+                # Accumuler les tokens et détecter les tool_calls depuis le stream
+                accumulated_content = ""
+                accumulated_tool_calls = {}  # index -> {id, name, arguments}
+
+                for chunk in stream:
+                    if not chunk.choices:
+                        continue
+
+                    delta = chunk.choices[0].delta
+
+                    # Tokens de texte → yield immédiat
+                    if delta.content:
+                        accumulated_content += delta.content
+                        yield {"type": "token", "content": delta.content}
+
+                    # Tool calls accumulés depuis le stream
+                    if delta.tool_calls:
+                        for tc_delta in delta.tool_calls:
+                            idx = tc_delta.index
+                            if idx not in accumulated_tool_calls:
+                                accumulated_tool_calls[idx] = {
+                                    "id": "",
+                                    "name": "",
+                                    "arguments": "",
+                                }
+                            if tc_delta.id:
+                                accumulated_tool_calls[idx]["id"] = tc_delta.id
+                            if tc_delta.function:
+                                if tc_delta.function.name:
+                                    accumulated_tool_calls[idx]["name"] += tc_delta.function.name
+                                if tc_delta.function.arguments:
+                                    accumulated_tool_calls[idx]["arguments"] += tc_delta.function.arguments
+
+                # Pas de tool calls → terminé
+                if not accumulated_tool_calls:
+                    break
+
+                iteration += 1
+                if iteration > max_iterations:
+                    break
+
+                # Construire le message assistant avec les tool_calls
+                tool_calls_list = [
+                    {
+                        "id": tc["id"],
+                        "type": "function",
+                        "function": {
+                            "name": tc["name"],
+                            "arguments": tc["arguments"],
+                        }
+                    }
+                    for tc in accumulated_tool_calls.values()
+                ]
+
+                messages.append({
+                    "role": "assistant",
+                    "content": accumulated_content or None,
+                    "tool_calls": tool_calls_list,
+                })
+
+                # Exécuter chaque outil (ou demander confirmation pour les write tools)
+                has_pending_confirmation = False
+                for tc in accumulated_tool_calls.values():
+                    tool_name = tc["name"]
+                    try:
+                        tool_args = json.loads(tc["arguments"])
+                    except json.JSONDecodeError:
+                        tool_args = {}
+
+                    tool_def = registry.get(tool_name)
+                    is_write = not (tool_def.is_read_only if tool_def else True)
+
+                    if is_write:
+                        # Write tool → demander confirmation, NE PAS exécuter
+                        has_pending_confirmation = True
+                        yield {
+                            "type": "confirmation_required",
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "tool_call_id": tc["id"],
+                            "description": tool_def.description if tool_def else tool_name,
+                        }
+
+                        all_tool_calls.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "is_write": True,
+                        })
+
+                        # Envoyer un résultat "en attente" au modèle AI
+                        pending_result = {
+                            "status": "PENDING_CONFIRMATION",
+                            "message": f"L'action '{tool_name}' nécessite la confirmation de l'utilisateur avant d'être exécutée.",
+                        }
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": json.dumps(pending_result, ensure_ascii=False),
+                        })
+                    else:
+                        # Read tool → exécuter normalement
+                        yield {
+                            "type": "tool_executing",
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                        }
+
+                        result = self._execute_tool(tool_name, tool_args)
+
+                        all_tool_calls.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "is_write": False,
+                        })
+                        all_tool_results.append({
+                            "tool": tool_name,
+                            "success": result.get("success", True),
+                            "data": result,
+                            "error": result.get("error"),
+                        })
+
+                        messages.append({
+                            "role": "tool",
+                            "tool_call_id": tc["id"],
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        })
+
+                # Envoyer les résultats des outils au frontend
+                if all_tool_results:
+                    yield {"type": "tools", "tool_calls": all_tool_calls, "tool_results": all_tool_results}
+
+                # La boucle continue → le prochain appel streaming génère la réponse finale
+                # (sans tools pour éviter une boucle infinie)
+
+            yield {"type": "done"}
+
+        except Exception as e:
+            logger.error(f"Streaming OpenAI error: {e}", exc_info=True)
+            yield {"type": "error", "error": str(e)}
+
+    def _chat_stream_anthropic(
+        self,
+        message: str,
+        conversation_history: List[Dict] = None,
+    ):
+        """
+        Version streaming pour Anthropic Claude avec vrai streaming token par token.
+
+        Architecture:
+        1. Premier appel EN STREAMING pour voir les tokens en temps réel
+        2. Si tools → exécute, puis re-streame la réponse finale
+        """
         try:
-            from inventory.models import Customer
-            
-            if not self.organization:
-                return ToolResult(success=False, data=None, error="Organisation non définie")
-            
-            customers = Customer.objects.filter(organization=self.organization)[:20]
-            
-            results = [
-                {
-                    "nom": c.name,
-                    "email": c.email,
-                    "telephone": c.phone,
+            system_prompt = self._build_system_prompt()
+
+            messages = []
+
+            if conversation_history:
+                for msg in conversation_history[-20:]:
+                    messages.append({
+                        "role": msg.get("role", "user"),
+                        "content": msg.get("content", ""),
+                    })
+
+            messages.append({"role": "user", "content": message})
+
+            tools = registry.get_anthropic_tools()
+            all_tool_calls = []
+            all_tool_results = []
+            max_iterations = ai_config.MAX_TOOL_CALLS
+            iteration = 0
+
+            while iteration <= max_iterations:
+                # Appel EN STREAMING depuis le début
+                # Construire les kwargs dynamiquement pour éviter tools=None
+                stream_kwargs = {
+                    "model": self.model,
+                    "system": system_prompt,
+                    "messages": messages,
+                    "temperature": ai_config.TEMPERATURE,
+                    "max_tokens": ai_config.MAX_TOKENS,
                 }
-                for c in customers
-            ]
-            
-            return ToolResult(success=True, data=results, execution_time_ms=int((time.time() - start) * 1000))
+
+                # Ajouter tools seulement si nécessaire (première itération et tools disponibles)
+                if tools and iteration == 0:
+                    stream_kwargs["tools"] = tools
+
+                with self.client.messages.stream(**stream_kwargs) as stream:
+                    # Accumuler le contenu et les tool_use
+                    accumulated_content = []
+                    tool_uses = []
+
+                    for event in stream:
+                        # Stream de texte → yield immédiat
+                        if event.type == "content_block_delta":
+                            if hasattr(event.delta, "text") and event.delta.text:
+                                yield {"type": "token", "content": event.delta.text}
+
+                        # Détecter les content blocks (texte et tool_use)
+                        if event.type == "content_block_start":
+                            if event.content_block.type == "text":
+                                accumulated_content.append({"type": "text", "text": ""})
+                            elif event.content_block.type == "tool_use":
+                                tool_uses.append({
+                                    "id": event.content_block.id,
+                                    "name": event.content_block.name,
+                                    "input": event.content_block.input,
+                                })
+                                accumulated_content.append(event.content_block)
+
+                        # Accumuler le texte
+                        if event.type == "content_block_delta":
+                            if hasattr(event.delta, "text"):
+                                if accumulated_content and accumulated_content[-1].get("type") == "text":
+                                    accumulated_content[-1]["text"] += event.delta.text
+
+                    # Récupérer le message final
+                    final_message = stream.get_final_message()
+
+                # Pas de tool_use → terminé
+                if not tool_uses:
+                    break
+
+                iteration += 1
+                if iteration > max_iterations:
+                    break
+
+                # Ajouter le message assistant avec les tool_use
+                messages.append({
+                    "role": "assistant",
+                    "content": final_message.content,
+                })
+
+                # Traiter chaque tool_use
+                tool_results_content = []
+                for tool_use in tool_uses:
+                    tool_name = tool_use["name"]
+                    tool_args = tool_use["input"]
+                    tool_id = tool_use["id"]
+
+                    tool_def = registry.get(tool_name)
+                    is_write = not (tool_def.is_read_only if tool_def else True)
+
+                    if is_write:
+                        # Write tool → demander confirmation
+                        yield {
+                            "type": "confirmation_required",
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                            "tool_call_id": tool_id,
+                            "description": tool_def.description if tool_def else tool_name,
+                        }
+
+                        all_tool_calls.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "is_write": True,
+                        })
+
+                        pending_result = json.dumps({
+                            "status": "PENDING_CONFIRMATION",
+                            "message": f"L'action '{tool_name}' nécessite la confirmation de l'utilisateur.",
+                        }, ensure_ascii=False)
+                        tool_results_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": pending_result,
+                        })
+                    else:
+                        # Read tool → exécuter normalement
+                        yield {
+                            "type": "tool_executing",
+                            "tool_name": tool_name,
+                            "tool_args": tool_args,
+                        }
+
+                        result = self._execute_tool(tool_name, tool_args)
+
+                        all_tool_calls.append({
+                            "tool": tool_name,
+                            "params": tool_args,
+                            "is_write": False,
+                        })
+                        all_tool_results.append({
+                            "tool": tool_name,
+                            "success": result.get("success", True),
+                            "data": result,
+                            "error": result.get("error"),
+                        })
+
+                        tool_results_content.append({
+                            "type": "tool_result",
+                            "tool_use_id": tool_id,
+                            "content": json.dumps(result, ensure_ascii=False, default=str),
+                        })
+
+                messages.append({
+                    "role": "user",
+                    "content": tool_results_content,
+                })
+
+                # Envoyer les résultats des outils au frontend
+                if all_tool_results:
+                    yield {"type": "tools", "tool_calls": all_tool_calls, "tool_results": all_tool_results}
+
+                # La boucle continue → le prochain appel streaming génère la réponse finale
+
+            yield {"type": "done"}
+
         except Exception as e:
-            return ToolResult(success=False, data=None, error=str(e))
+            logger.error(f"Streaming Anthropic error: {e}", exc_info=True)
+            yield {"type": "error", "error": str(e)}
+
+    def _execute_tool(self, tool_name: str, args: Dict) -> Dict:
+        """Exécute un outil enregistré."""
+        tool = registry.get(tool_name)
+
+        if not tool:
+            return {
+                "success": False,
+                "error": f"Outil '{tool_name}' inconnu. Outils disponibles: {list(registry.get_all().keys())}",
+            }
+
+        try:
+            # Tous les outils reçoivent organization en premier argument
+            result = tool.function(self.organization, **args)
+            return result
+        except Exception as e:
+            logger.error(f"Tool execution error {tool_name}: {e}", exc_info=True)
+            return {
+                "success": False,
+                "error": f"Erreur lors de l'exécution de '{tool_name}': {str(e)}",
+            }
+
+    def get_available_tools(self) -> List[Dict]:
+        """Retourne la liste des outils disponibles."""
+        return [
+            {
+                "name": tool.name,
+                "description": tool.description,
+                "category": tool.category,
+                "is_read_only": tool.is_read_only,
+                "parameters": list(tool.parameters.get("properties", {}).keys()),
+            }
+            for tool in registry.get_all().values()
+        ]
+
+    def get_provider_info(self) -> Dict:
+        """Get provider info."""
+        return {
+            "provider": self.provider,
+            "model": self.model,
+            "available": ai_config.is_configured(),
+            "tools_count": len(registry.get_all()),
+        }

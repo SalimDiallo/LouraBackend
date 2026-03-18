@@ -17,7 +17,7 @@ class MessageSerializer(serializers.ModelSerializer):
 class ConversationSerializer(serializers.ModelSerializer):
     messages = MessageSerializer(many=True, read_only=True)
     message_count = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Conversation
         fields = [
@@ -26,7 +26,7 @@ class ConversationSerializer(serializers.ModelSerializer):
             'created_at', 'updated_at'
         ]
         read_only_fields = ['id', 'created_at', 'updated_at']
-    
+
     def get_message_count(self, obj):
         return obj.messages.count()
 
@@ -34,11 +34,11 @@ class ConversationSerializer(serializers.ModelSerializer):
 class ConversationListSerializer(serializers.ModelSerializer):
     """Serializer léger pour la liste des conversations"""
     last_message = serializers.SerializerMethodField()
-    
+
     class Meta:
         model = Conversation
         fields = ['id', 'title', 'is_agent_mode', 'last_message', 'updated_at']
-    
+
     def get_last_message(self, obj):
         last = obj.messages.last()
         if last:
@@ -52,22 +52,10 @@ class ConversationListSerializer(serializers.ModelSerializer):
 
 class ChatRequestSerializer(serializers.Serializer):
     """Serializer pour les requêtes de chat"""
-    message = serializers.CharField(max_length=4000)
+    message = serializers.CharField(max_length=8000)
     conversation_id = serializers.UUIDField(required=False)
-    agent_mode = serializers.BooleanField(default=False)
+    agent_mode = serializers.BooleanField(default=True, required=False)  # Kept for compat, always True
     model = serializers.CharField(max_length=100, required=False)
-
-
-class ChatResponseSerializer(serializers.Serializer):
-    """Serializer pour les réponses de chat"""
-    success = serializers.BooleanField()
-    content = serializers.CharField()
-    conversation_id = serializers.UUIDField()
-    message_id = serializers.UUIDField()
-    tool_calls = serializers.ListField(required=False)
-    tool_results = serializers.ListField(required=False)
-    response_time_ms = serializers.IntegerField()
-    model = serializers.CharField()
 
 
 class FeedbackSerializer(serializers.Serializer):
