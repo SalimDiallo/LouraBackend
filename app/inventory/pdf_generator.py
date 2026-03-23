@@ -4,13 +4,15 @@ Design sobre, professionnel et compact
 """
 
 from io import BytesIO
+import os
 from decimal import Decimal
 from reportlab.lib import colors
 from reportlab.lib.pagesizes import A4
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
 from reportlab.lib.units import cm, mm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, PageBreak
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, PageBreak, Image
 from datetime import datetime
+from django.conf import settings
 
 
 # Couleurs professionnelles
@@ -78,17 +80,69 @@ def get_styles():
     }
 
 
-def create_header_table(title, org_name, doc_ref=None):
+def create_header_table(title, org_name, doc_ref=None, organization=None):
     """Crée un en-tête compact avec logo et infos"""
+    # Try to add logo if organization is provided
+    left_cell = None
+    colWidths = [5*cm, 8*cm, 4*cm]
+
+    if organization:
+        logo_img = None
+        has_logo = False
+
+        # Try uploaded logo
+        if hasattr(organization, 'logo') and organization.logo:
+            try:
+                logo_path = organization.logo.path if hasattr(organization.logo, 'path') else None
+                if logo_path and os.path.exists(logo_path):
+                    logo_img = Image(logo_path)
+                    has_logo = True
+            except:
+                pass
+
+        # Try logo URL
+        if not has_logo and hasattr(organization, 'logo_url') and organization.logo_url:
+            try:
+                logo_img = Image(organization.logo_url)
+                has_logo = True
+            except:
+                pass
+
+        if has_logo and logo_img:
+            # Resize logo
+            max_height = 2*cm
+            max_width = 3*cm
+            img_width, img_height = logo_img.imageWidth, logo_img.imageHeight
+            aspect = img_width / float(img_height)
+
+            if img_height > max_height:
+                new_height = max_height
+                new_width = new_height * aspect
+            else:
+                new_height = img_height
+                new_width = img_width
+
+            if new_width > max_width:
+                new_width = max_width
+                new_height = new_width / aspect
+
+            logo_img.drawHeight = new_height
+            logo_img.drawWidth = new_width
+            left_cell = logo_img
+        else:
+            left_cell = Paragraph(f"<b>{org_name}</b>", get_styles()['normal'])
+    else:
+        left_cell = Paragraph(f"<b>{org_name}</b>", get_styles()['normal'])
+
     header_data = [
         [
-            Paragraph(f"<b>{org_name}</b>", get_styles()['normal']),
+            left_cell,
             Paragraph(f"<b>{title}</b>", get_styles()['title']),
             Paragraph(doc_ref or datetime.now().strftime('%d/%m/%Y'), get_styles()['small']),
         ]
     ]
-    
-    header_table = Table(header_data, colWidths=[5*cm, 8*cm, 4*cm])
+
+    header_table = Table(header_data, colWidths=colWidths)
     header_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (0, 0), 'LEFT'),
         ('ALIGN', (1, 0), (1, 0), 'CENTER'),
@@ -145,7 +199,8 @@ def generate_order_pdf(order):
     elements.append(create_header_table(
         "BON DE COMMANDE",
         org.name,
-        f"N° {order.order_number}"
+        f"N° {order.order_number}",
+        organization=org
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 4*mm))
@@ -289,7 +344,8 @@ def generate_product_catalog_pdf(products, organization):
     elements.append(create_header_table(
         "CATALOGUE PRODUITS",
         organization.name,
-        datetime.now().strftime('%d/%m/%Y')
+        datetime.now().strftime('%d/%m/%Y'),
+        organization=organization
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 6*mm))
@@ -374,7 +430,8 @@ def generate_stock_report_pdf(stocks, organization, warehouse=None):
     elements.append(create_header_table(
         title,
         organization.name,
-        datetime.now().strftime('%d/%m/%Y')
+        datetime.now().strftime('%d/%m/%Y'),
+        organization=organization
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 6*mm))
@@ -521,7 +578,8 @@ def generate_stock_count_pdf(stock_count):
     elements.append(create_header_table(
         "RAPPORT D'INVENTAIRE",
         org.name,
-        f"N° {stock_count.count_number}"
+        f"N° {stock_count.count_number}",
+        organization=org
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 4*mm))
@@ -692,7 +750,8 @@ def generate_quote_pdf(quote_data, organization):
     elements.append(create_header_table(
         "DEVIS",
         organization.name,
-        f"N° {quote_data.get('quote_number', 'N/A')}"
+        f"N° {quote_data.get('quote_number', 'N/A')}",
+        organization=organization
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 6*mm))
@@ -861,7 +920,8 @@ def generate_invoice_pdf(invoice_data, organization):
     elements.append(create_header_table(
         "FACTURE",
         organization.name,
-        f"N° {invoice_data.get('invoice_number', 'N/A')}"
+        f"N° {invoice_data.get('invoice_number', 'N/A')}",
+        organization=organization
     ))
     elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
     elements.append(Spacer(1, 4*mm))

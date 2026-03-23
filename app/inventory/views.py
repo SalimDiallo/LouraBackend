@@ -3213,6 +3213,297 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
             except Exception:
                 pass
 
+    def perform_update(self, serializer):
+        """
+        Modifier une vente avec gestion des paiements et stocks.
+
+        Gère les modifications de ventes, y compris les ventes partiellement ou totalement payées.
+        - Ajuste les mouvements de stock selon les changements de quantités
+        - Recalcule les totaux et met à jour le statut de paiement
+        - Met à jour les crédits si applicable
+        - Conserve les paiements existants (pas de suppression automatique)
+
+        IMPORTANT: Les paiements existants ne sont pas modifiés automatiquement.
+        Si le total change, l'utilisateur doit gérer manuellement les paiements.
+        """
+        from django.db import transaction
+        from rest_framework.exceptions import ValidationError
+
+        sale = self.get_object()
+        old_items = {item.id: item for item in sale.items.all()}
+        old_total = sale.total_amount
+
+        # Récupérer les nouvelles données
+        items_data = serializer.validated_data.get('items', [])
+        warehouse = serializer.validated_data.get('warehouse', sale.warehouse)
+
+        # === VALIDATION: Vérifier le stock pour les modifications ===
+        stock_errors = []
+
+        # Créer un mapping des anciens items par produit pour faciliter la recherche
+        old_items_by_product = {}
+        for item_id, item in old_items.items():
+            old_items_by_product[item.product.id] = item
+
+        for item_data in items_data:
+            product = item_data.get('product')
+            new_quantity = Decimal(str(item_data.get('quantity', 0)))
+            item_id = item_data.get('id')
+
+            # Calculer la quantité déjà vendue pour ce produit
+            old_quantity = Decimal('0')
+
+            # Convertir item_id en UUID si c'est un string
+            if item_id:
+                from uuid import UUID
+                if isinstance(item_id, str):
+                    try:
+                        item_id = UUID(item_id)
+                    except (ValueError, TypeError):
+                        item_id = None
+
+            # Essayer d'abord par ID
+            if item_id and item_id in old_items:
+                old_quantity = old_items[item_id].quantity
+            # Sinon, chercher par produit (utile quand l'ID n'est pas passé)
+            elif product.id in old_items_by_product:
+                old_quantity = old_items_by_product[product.id].quantity
+
+
+            quantity_diff = new_quantity - old_quantity
+
+            # Récupérer le stock actuel
+            current_stock = Stock.objects.filter(
+                product=product,
+                warehouse=warehouse
+            ).first()
+
+            current_quantity = Decimal(str(current_stock.quantity)) if current_stock else Decimal('0')
+
+            # Stock disponible pour cette vente = stock actuel + quantité déjà vendue
+            # Car la quantité déjà vendue peut être "récupérée" si on diminue
+            available_for_sale = current_quantity + old_quantity
+            max_quantity = available_for_sale
+
+            # Vérifier si la nouvelle quantité dépasse le maximum possible
+            if new_quantity > max_quantity:
+                stock_errors.append(
+                    f"Stock insuffisant pour '{product.name}': "
+                    f"stock actuel {float(current_quantity)}, "
+                    f"déjà vendu dans cette vente {float(old_quantity)}, "
+                    f"maximum possible {float(max_quantity)}, "
+                    f"demandé {float(new_quantity)}"
+                )
+
+        if stock_errors:
+            raise ValidationError({
+                'items': stock_errors,
+                'detail': "Impossible de modifier la vente. Stock insuffisant."
+            })
+
+        with transaction.atomic():
+            # Sauvegarder l'ancienne vente pour comparaison
+            old_item_ids = set(old_items.keys())
+
+            # Mettre à jour la vente (le serializer gère les items)
+            sale = serializer.save()
+
+            # Récupérer les nouveaux items
+            new_items = {item.id: item for item in sale.items.all()}
+            new_item_ids = set(new_items.keys())
+
+            # Items supprimés (restaurer le stock)
+            deleted_item_ids = old_item_ids - new_item_ids
+            for item_id in deleted_item_ids:
+                old_item = old_items[item_id]
+
+                # Supprimer le mouvement correspondant
+                Movement.objects.filter(
+                    sale=sale,
+                    product=old_item.product
+                ).delete()
+
+                # Restaurer le stock
+                stock, _ = Stock.objects.get_or_create(
+                    product=old_item.product,
+                    warehouse=sale.warehouse,
+                    defaults={'quantity': Decimal('0')}
+                )
+                stock.quantity += old_item.quantity
+                stock.save()
+
+            # Items modifiés ou ajoutés
+            for item_id, new_item in new_items.items():
+                if item_id in old_items:
+                    # Item modifié
+                    old_item = old_items[item_id]
+                    quantity_diff = new_item.quantity - old_item.quantity
+
+                    if quantity_diff != 0:
+                        # Mettre à jour le mouvement
+                        movement = Movement.objects.filter(
+                            sale=sale,
+                            product=new_item.product
+                        ).first()
+
+                        if movement:
+                            movement.quantity = new_item.quantity
+                            movement.save()
+                        else:
+                            # Créer un nouveau mouvement si inexistant
+                            Movement.objects.create(
+                                organization=sale.organization,
+                                product=new_item.product,
+                                warehouse=sale.warehouse,
+                                movement_type='out',
+                                quantity=new_item.quantity,
+                                reference=f"Vente {sale.sale_number}",
+                                notes=f"Client: {sale.customer.name if sale.customer else 'Anonyme'} | Produit: {new_item.product.name}",
+                                movement_date=sale.sale_date,
+                                sale=sale
+                            )
+
+                        # Ajuster le stock
+                        stock, _ = Stock.objects.get_or_create(
+                            product=new_item.product,
+                            warehouse=sale.warehouse,
+                            defaults={'quantity': Decimal('0')}
+                        )
+                        stock.quantity -= quantity_diff
+                        stock.quantity = max(Decimal('0'), stock.quantity)
+                        stock.save()
+
+                        # Vérifier les alertes
+                        from .alert_utils import check_and_update_stock_alert
+                        check_and_update_stock_alert(new_item.product, sale.warehouse)
+
+                else:
+                    # Nouvel item ajouté
+                    # Créer un mouvement
+                    Movement.objects.create(
+                        organization=sale.organization,
+                        product=new_item.product,
+                        warehouse=sale.warehouse,
+                        movement_type='out',
+                        quantity=new_item.quantity,
+                        reference=f"Vente {sale.sale_number}",
+                        notes=f"Client: {sale.customer.name if sale.customer else 'Anonyme'} | Produit: {new_item.product.name}",
+                        movement_date=sale.sale_date,
+                        sale=sale
+                    )
+
+                    # Décrémenter le stock
+                    stock, _ = Stock.objects.get_or_create(
+                        product=new_item.product,
+                        warehouse=sale.warehouse,
+                        defaults={'quantity': Decimal('0')}
+                    )
+                    stock.quantity -= new_item.quantity
+                    stock.quantity = max(Decimal('0'), stock.quantity)
+                    stock.save()
+
+                    # Vérifier les alertes
+                    from .alert_utils import check_and_update_stock_alert
+                    check_and_update_stock_alert(new_item.product, sale.warehouse)
+
+            # Recalculer les totaux et le statut de paiement
+            sale.calculate_totals()
+            sale.save()
+
+            # === GESTION AUTOMATIQUE DES PAIEMENTS ===
+            new_total = sale.total_amount
+            payments_adjusted = []
+            payments_deleted = []
+
+            if new_total != old_total and sale.payments.exists():
+                # Calculer le total des paiements existants
+                total_payments = sum(p.amount for p in sale.payments.all())
+
+                # Si le nouveau total est inférieur aux paiements déjà effectués
+                if new_total < total_payments:
+                    excess_amount = total_payments - new_total
+
+                    # Supprimer les derniers paiements (LIFO) jusqu'à ce que ça rentre
+                    payments_to_process = list(sale.payments.all().order_by('-payment_date'))
+                    remaining_excess = excess_amount
+
+                    for payment in payments_to_process:
+                        if remaining_excess <= 0:
+                            break
+
+                        if payment.amount <= remaining_excess:
+                            # Supprimer complètement ce paiement
+                            payments_deleted.append({
+                                'receipt_number': payment.receipt_number,
+                                'amount': float(payment.amount),
+                                'date': payment.payment_date.isoformat() if payment.payment_date else None
+                            })
+                            remaining_excess -= payment.amount
+                            payment.delete()
+                        else:
+                            # Ajuster partiellement ce paiement
+                            old_amount = payment.amount
+                            payment.amount -= remaining_excess
+                            payment.notes = f"{payment.notes}\n[Ajusté automatiquement: {float(old_amount)} → {float(payment.amount)} suite à modification de vente]"
+                            payment.save()
+                            payments_adjusted.append({
+                                'receipt_number': payment.receipt_number,
+                                'old_amount': float(old_amount),
+                                'new_amount': float(payment.amount),
+                                'date': payment.payment_date.isoformat() if payment.payment_date else None
+                            })
+                            remaining_excess = 0
+
+                    # Recalculer le paid_amount
+                    sale.paid_amount = sum(p.amount for p in sale.payments.all())
+                    sale.calculate_totals()  # Recalculer le statut de paiement
+                    sale.save()
+
+            # Mettre à jour le crédit si applicable
+            if hasattr(sale, 'credit_info'):
+                sale.credit_info.sync_from_sale()
+                sale.credit_info.update_status()
+                sale.credit_info.save()
+
+            # Notification détaillée
+            if new_total != old_total or payments_adjusted or payments_deleted:
+                try:
+                    from notifications.notification_helpers import send_notification
+
+                    # Construire le message
+                    message_parts = [f"La vente {sale.sale_number} a été modifiée."]
+
+                    if new_total != old_total:
+                        message_parts.append(f"Total: {float(old_total)} → {float(new_total)}")
+
+                    if payments_deleted:
+                        message_parts.append(f"{len(payments_deleted)} paiement(s) supprimé(s) automatiquement:")
+                        for p in payments_deleted[:3]:  # Limiter à 3 pour le message
+                            message_parts.append(f"  • {p['receipt_number']}: {p['amount']}")
+
+                    if payments_adjusted:
+                        message_parts.append(f"{len(payments_adjusted)} paiement(s) ajusté(s) automatiquement:")
+                        for p in payments_adjusted[:3]:
+                            message_parts.append(f"  • {p['receipt_number']}: {p['old_amount']} → {p['new_amount']}")
+
+                    if new_total > old_total and not payments_adjusted and not payments_deleted:
+                        remaining = sale.get_remaining_amount()
+                        message_parts.append(f"Reste à payer: {float(remaining)}")
+
+                    send_notification(
+                        organization=sale.organization,
+                        recipient=self.request.user,
+                        title="Vente modifiée - Paiements ajustés" if (payments_adjusted or payments_deleted) else "Vente modifiée",
+                        message="\n".join(message_parts),
+                        notification_type='alert',
+                        priority='high' if (payments_adjusted or payments_deleted) else 'medium',
+                        entity_type='sale',
+                        entity_id=str(sale.id),
+                    )
+                except Exception as e:
+                    print(f"Erreur notification: {e}")
+                    pass
+
     @action(detail=True, methods=['post'])
     def add_payment(self, request, organization_slug=None, pk=None):
         """Add a payment to a sale"""

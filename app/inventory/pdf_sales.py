@@ -1,1124 +1,703 @@
 """
-PDF Generation for Sales & Commercial Documents
+Professional PDF Generation for Sales Documents
+==============================================
 
-Ce module contient les fonctions de génération PDF pour :
-- Reçus de vente
-- Reçus de paiement
-- Factures pro forma
-- Bons de commande
-- Bons de livraison
-- Export des dépenses
+This module generates professional, print-ready PDFs for:
+- Invoices (Factures)
+- Proforma Invoices (Devis)
+- Sale Receipts
+- Payment Receipts
+
+Design Principles:
+- Clean, minimalist layout
+- Professional typography
+- Subtle use of color
+- Clear hierarchy
+- Print-friendly
 """
 
 from io import BytesIO
-from reportlab.lib import colors
+import os
 from reportlab.lib.pagesizes import A4
+from reportlab.lib import colors
+from reportlab.lib.units import cm, mm
+from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, HRFlowable, Image
 from reportlab.lib.styles import getSampleStyleSheet, ParagraphStyle
-from reportlab.lib.units import mm, cm
-from reportlab.platypus import SimpleDocTemplate, Table, TableStyle, Paragraph, Spacer, Image
-from reportlab.lib.enums import TA_CENTER, TA_LEFT, TA_RIGHT
-from django.http import HttpResponse
+from reportlab.lib.enums import TA_LEFT, TA_RIGHT, TA_CENTER
 from decimal import Decimal
+from django.utils import timezone
+from django.conf import settings
 
 
-def get_styles():
-    """Get standard styles for PDF documents"""
+def get_professional_styles():
+    """
+    Create a professional style sheet for PDF documents.
+    Uses a modern, clean design with subtle colors.
+    """
     styles = getSampleStyleSheet()
-    
+
+    # Main title - Large, bold, professional
     styles.add(ParagraphStyle(
-        name='CustomTitle',
-        parent=styles['Title'],
-        fontSize=18,
-        textColor=colors.HexColor('#1a237e'),
-        spaceAfter=20
+        name='ProDocumentTitle',
+        parent=styles['Heading1'],
+        fontSize=28,
+        textColor=colors.HexColor('#1a1a1a'),
+        fontName='Helvetica-Bold',
+        alignment=TA_LEFT,
+        spaceAfter=3*mm,
+        spaceBefore=0,
+        leading=32
     ))
-    
+
+    # Section headers - Clean and organized
     styles.add(ParagraphStyle(
-        name='SectionHeader',
+        name='ProSectionHeader',
         parent=styles['Heading2'],
-        fontSize=12,
-        textColor=colors.HexColor('#37474f'),
-        spaceBefore=15,
-        spaceAfter=10
+        fontSize=11,
+        textColor=colors.HexColor('#2c3e50'),
+        fontName='Helvetica-Bold',
+        alignment=TA_LEFT,
+        spaceAfter=4*mm,
+        spaceBefore=6*mm,
+        leading=14,
     ))
-    
+
+    # Body text - Readable and clean
     styles.add(ParagraphStyle(
-        name='BodyTextRight',
+        name='ProBodyText',
         parent=styles['Normal'],
-        alignment=TA_RIGHT
+        fontSize=9,
+        textColor=colors.HexColor('#34495e'),
+        fontName='Helvetica',
+        alignment=TA_LEFT,
+        leading=12,
+        spaceAfter=2*mm,
     ))
-    
+
+    # Small text for metadata
     styles.add(ParagraphStyle(
-        name='BodyTextCenter',
+        name='ProSmallText',
         parent=styles['Normal'],
-        alignment=TA_CENTER
+        fontSize=7.5,
+        textColor=colors.HexColor('#7f8c8d'),
+        fontName='Helvetica',
+        alignment=TA_CENTER,
+        leading=10,
     ))
-    
+
+    # Right-aligned text
     styles.add(ParagraphStyle(
-        name='SmallText',
+        name='ProRightAlign',
         parent=styles['Normal'],
-        fontSize=8,
-        textColor=colors.grey
+        fontSize=9,
+        textColor=colors.HexColor('#34495e'),
+        fontName='Helvetica',
+        alignment=TA_RIGHT,
+        leading=12,
     ))
-    
+
+    # Bold body text
+    styles.add(ParagraphStyle(
+        name='ProBodyTextBold',
+        parent=styles['Normal'],
+        fontSize=9,
+        textColor=colors.HexColor('#34495e'),
+        fontName='Helvetica-Bold',
+        alignment=TA_LEFT,
+        leading=12,
+    ))
+
     return styles
 
 
-def format_currency(amount, currency="GNF"):
-    """Format amount as currency"""
+def format_currency(amount, currency='GNF'):
+    """Format currency with proper separators."""
     if amount is None:
-        amount = Decimal('0.00')
-    return f"{amount:,.0f} {currency}"
+        amount = 0
+    try:
+        amount = float(amount)
+        # Format with space thousands separator
+        formatted = f"{amount:,.0f}".replace(',', ' ')
+        return f"{formatted} {currency}"
+    except (ValueError, TypeError):
+        return f"0 {currency}"
 
 
 def format_date(date_obj, with_time=False):
-    """Format date for display"""
-    if date_obj is None:
-        return "-"
-    if with_time:
-        return date_obj.strftime("%d/%m/%Y %H:%M")
-    return date_obj.strftime("%d/%m/%Y")
+    """Format date in French format."""
+    if not date_obj:
+        return "N/A"
+    try:
+        if with_time:
+            return date_obj.strftime("%d/%m/%Y %H:%M")
+        return date_obj.strftime("%d/%m/%Y")
+    except:
+        return str(date_obj)
 
 
-def get_organization_header(organization):
-    """Generate organization header data"""
-    return [
-        organization.name if organization else "LouraTech",
-        f"Tél: {getattr(organization, 'phone', 'N/A')}",
-        f"Email: {getattr(organization, 'email', 'N/A')}",
-        f"Adresse: {getattr(organization, 'address', 'N/A')}"
-    ]
-
-
-def generate_sale_receipt_pdf(sale):
-    """Generate PDF receipt for a sale"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-    
-    styles = get_styles()
+def create_company_header(org, doc_type="FACTURE"):
+    """Create a professional company header section with optional logo."""
+    styles = get_professional_styles()
     elements = []
-    
-    # Header
-    elements.append(Paragraph("REÇU DE VENTE", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Sale info
-    info_data = [
-        ["N° de vente:", sale.sale_number],
-        ["Date:", format_date(sale.sale_date, with_time=True)],
-        ["Mode de paiement:", sale.get_payment_method_display()],
-        ["Statut:", sale.get_payment_status_display()],
-    ]
-    
-    if sale.customer:
-        info_data.extend([
-            ["Client:", sale.customer.name],
-            ["Téléphone:", sale.customer.phone or "-"],
-        ])
-    
-    info_table = Table(info_data, colWidths=[4*cm, 8*cm])
+
+    # Check if organization has a logo
+    logo_img = None
+    has_logo = False
+
+    if org and hasattr(org, 'logo') and org.logo:
+        # Try to use the uploaded logo file
+        try:
+            logo_path = org.logo.path if hasattr(org.logo, 'path') else None
+            if logo_path and os.path.exists(logo_path):
+                logo_img = Image(logo_path)
+                has_logo = True
+        except:
+            pass
+
+    # If no uploaded logo, try logo_url
+    if not has_logo and org and hasattr(org, 'logo_url') and org.logo_url:
+        try:
+            logo_img = Image(org.logo_url)
+            has_logo = True
+        except:
+            pass
+
+    # If logo exists, create header with logo + title side by side
+    if has_logo and logo_img:
+        # Resize logo to reasonable size (max 3cm height, keep aspect ratio)
+        max_height = 3*cm
+        max_width = 4*cm
+
+        # Get original dimensions
+        img_width, img_height = logo_img.imageWidth, logo_img.imageHeight
+        aspect = img_width / float(img_height)
+
+        # Calculate new dimensions keeping aspect ratio
+        if img_height > max_height:
+            new_height = max_height
+            new_width = new_height * aspect
+        else:
+            new_height = img_height
+            new_width = img_width
+
+        # Ensure width doesn't exceed max
+        if new_width > max_width:
+            new_width = max_width
+            new_height = new_width / aspect
+
+        logo_img.drawHeight = new_height
+        logo_img.drawWidth = new_width
+
+        # Create title paragraph
+        title = Paragraph(doc_type, styles['ProDocumentTitle'])
+
+        # Create table with logo and title
+        header_table = Table([[logo_img, title]], colWidths=[new_width + 1*cm, None])
+        header_table.setStyle(TableStyle([
+            ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+            ('ALIGN', (0, 0), (0, 0), 'LEFT'),
+            ('ALIGN', (1, 0), (1, 0), 'LEFT'),
+            ('LEFTPADDING', (0, 0), (-1, -1), 0),
+            ('RIGHTPADDING', (0, 0), (-1, -1), 0),
+            ('TOPPADDING', (0, 0), (-1, -1), 0),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 0),
+        ]))
+
+        elements.append(header_table)
+        elements.append(Spacer(1, 2*mm))
+    else:
+        # No logo: standard layout with just the title
+        title = Paragraph(doc_type, styles['ProDocumentTitle'])
+        elements.append(title)
+        elements.append(Spacer(1, 2*mm))
+
+    # Thin separator line
+    elements.append(HRFlowable(
+        width="100%",
+        thickness=0.5,
+        color=colors.HexColor('#e0e0e0'),
+        spaceBefore=0,
+        spaceAfter=8*mm
+    ))
+
+    return elements
+
+
+def create_info_section(org, document_info):
+    """Create document and company information section."""
+    styles = get_professional_styles()
+
+    # Two-column layout: Company info | Document info
+    company_text = f"""<b>{org.name if org else 'Votre Entreprise'}</b><br/>
+{getattr(org, 'address', 'Adresse') or ''}<br/>
+Tél: {getattr(org, 'phone', 'Téléphone') or ''}<br/>
+Email: {getattr(org, 'email', 'Email') or ''}"""
+
+    if hasattr(org, 'tax_id') and org.tax_id:
+        company_text += f"<br/>NIF: {org.tax_id}"
+    if hasattr(org, 'registry_number') and getattr(org, 'registry_number', None):
+        company_text += f"<br/>RCCM: {org.registry_number}"
+
+    company_para = Paragraph(company_text, styles['ProBodyText'])
+    doc_para = Paragraph(document_info, styles['ProRightAlign'])
+
+    info_table = Table([[company_para, doc_para]], colWidths=[9*cm, 8*cm])
     info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
         ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+        ('LEFTPADDING', (0, 0), (-1, -1), 0),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 0),
     ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 10*mm))
-    
-    # Items table
-    elements.append(Paragraph("Détails des produits", styles['SectionHeader']))
-    
-    items_data = [["Produit", "Qté", "Prix unit.", "Remise", "Total"]]
-    
-    for item in sale.items.all():
-        items_data.append([
-            item.product.name,
-            str(item.quantity),
-            format_currency(item.unit_price),
-            format_currency(item.discount_amount) if item.discount_amount > 0 else "-",
-            format_currency(item.total)
-        ])
-    
-    items_table = Table(items_data, colWidths=[6*cm, 2*cm, 3*cm, 2.5*cm, 3*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
+
+    return info_table
+
+
+def create_client_section(client_data):
+    """Create client information section."""
+    styles = get_professional_styles()
+    elements = []
+
+    # Section header
+    elements.append(Paragraph("FACTURER À", styles['ProSectionHeader']))
+
+    # Client details in a clean box
+    client_para = Paragraph(client_data, styles['ProBodyText'])
+
+    client_table = Table([[client_para]], colWidths=[17*cm])
+    client_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
+        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
         ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
     ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 5*mm))
-    
-    # Totals
-    totals_data = [
-        ["Sous-total:", format_currency(sale.subtotal)],
-    ]
-    
-    if sale.discount_amount > 0:
-        totals_data.append(["Remise:", f"-{format_currency(sale.discount_amount)}"])
-    
-    if sale.tax_amount > 0:
-        totals_data.append([f"TVA ({sale.tax_rate}%):", format_currency(sale.tax_amount)])
-    
-    totals_data.append(["TOTAL:", format_currency(sale.total_amount)])
-    totals_data.append(["Payé:", format_currency(sale.paid_amount)])
-    
-    remaining = sale.get_remaining_amount()
-    if remaining > 0:
-        totals_data.append(["Reste à payer:", format_currency(remaining)])
-    
-    totals_table = Table(totals_data, colWidths=[12*cm, 4.5*cm])
+
+    elements.append(client_table)
+    elements.append(Spacer(1, 8*mm))
+
+    return elements
+
+
+def create_items_table(items_data, currency='GNF'):
+    """Create a professional items table."""
+    # Table data with headers
+    table_data = [['DÉSIGNATION', 'QTÉ', 'PRIX UNITAIRE', 'REMISE', 'TOTAL']]
+
+    for item in items_data:
+        table_data.append([
+            item['description'],
+            str(item['quantity']),
+            format_currency(item['unit_price'], currency),
+            item['discount'] if item['discount'] != '-' else '-',
+            format_currency(item['total'], currency)
+        ])
+
+    items_table = Table(table_data, colWidths=[7.5*cm, 2*cm, 3*cm, 2.5*cm, 3*cm])
+    items_table.setStyle(TableStyle([
+        # Header row
+        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2c3e50')),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, 0), 9),
+        ('BOTTOMPADDING', (0, 0), (-1, 0), 8),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
+
+        # Body rows
+        ('FONTNAME', (0, 1), (-1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 1), (-1, -1), 8.5),
+        ('TEXTCOLOR', (0, 1), (-1, -1), colors.HexColor('#34495e')),
+        ('ALIGN', (1, 1), (-1, -1), 'RIGHT'),
+        ('ALIGN', (0, 1), (0, -1), 'LEFT'),
+
+        # Grid and padding
+        ('GRID', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
+        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#fafafa')]),
+        ('LEFTPADDING', (0, 0), (-1, -1), 6),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 6),
+        ('TOPPADDING', (0, 1), (-1, -1), 6),
+        ('BOTTOMPADDING', (0, 1), (-1, -1), 6),
+    ]))
+
+    return items_table
+
+
+def create_totals_section(totals_data, currency='GNF'):
+    """Create totals section with professional styling."""
+    totals_rows = []
+
+    # Subtotal
+    if 'subtotal' in totals_data:
+        totals_rows.append(['Sous-total HT:', format_currency(totals_data['subtotal'], currency)])
+
+    # Discount
+    if 'discount' in totals_data and totals_data['discount'] > 0:
+        totals_rows.append(['Remise:', f"- {format_currency(totals_data['discount'], currency)}"])
+
+    # Tax
+    if 'tax_rate' in totals_data and totals_data['tax'] > 0:
+        totals_rows.append([f"TVA ({totals_data['tax_rate']}%):", format_currency(totals_data['tax'], currency)])
+
+    # Total (prominent)
+    totals_rows.append(['', ''])  # Spacer
+    totals_rows.append(['TOTAL TTC:', format_currency(totals_data['total'], currency)])
+
+    totals_table = Table(totals_rows, colWidths=[11*cm, 6*cm])
     totals_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, -3), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('TEXTCOLOR', (0, -3), (0, -3), colors.HexColor('#1a237e')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LINEABOVE', (0, -3), (-1, -3), 1, colors.HexColor('#1a237e')),
+        ('FONTNAME', (0, 0), (-1, -2), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -2), 9),
+        ('TEXTCOLOR', (0, 0), (-1, -2), colors.HexColor('#34495e')),
+
+        # Total row - prominent
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 12),
+        ('TEXTCOLOR', (0, -1), (-1, -1), colors.white),
+        ('BACKGROUND', (0, -1), (-1, -1), colors.HexColor('#2c3e50')),
+        ('TOPPADDING', (0, -1), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, -1), (-1, -1), 8),
+        ('LEFTPADDING', (0, -1), (-1, -1), 8),
+        ('RIGHTPADDING', (0, -1), (-1, -1), 8),
+
+        # Line above total
+        ('LINEABOVE', (0, -1), (-1, -1), 1.5, colors.HexColor('#2c3e50')),
     ]))
-    elements.append(totals_table)
-    
-    # Footer
-    elements.append(Spacer(1, 15*mm))
-    elements.append(Paragraph("Merci pour votre achat!", styles['BodyTextCenter']))
-    elements.append(Spacer(1, 5*mm))
-    elements.append(Paragraph(
-        f"Document généré le {format_date(sale.created_at, with_time=True)}",
-        styles['SmallText']
+
+    return totals_table
+
+
+def create_footer(generation_date):
+    """Create document footer."""
+    styles = get_professional_styles()
+
+    elements = []
+
+    # Separator line
+    elements.append(Spacer(1, 10*mm))
+    elements.append(HRFlowable(
+        width="100%",
+        thickness=0.5,
+        color=colors.HexColor('#e0e0e0'),
+        spaceBefore=0,
+        spaceAfter=5*mm
     ))
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
+
+    # Footer text
+    footer_text = f"Document généré le {generation_date} | Valide sans signature"
+    elements.append(Paragraph(footer_text, styles['ProSmallText']))
+
+    return elements
 
 
-def generate_payment_receipt_pdf(payment):
-    """Generate PDF for payment receipt"""
+def generate_invoice_pdf(sale):
+    """Generate professional invoice PDF."""
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=2*cm,
         leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
     )
-    
-    styles = get_styles()
+
+    styles = get_professional_styles()
     elements = []
-    
-    # Header
-    elements.append(Paragraph("REÇU DE PAIEMENT", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Receipt info
-    info_data = [
-        ["N° de reçu:", payment.receipt_number],
-        ["Date:", format_date(payment.payment_date, with_time=True)],
-        ["Mode de paiement:", payment.get_payment_method_display()],
-    ]
-    
-    if payment.sale:
-        info_data.append(["N° de vente:", payment.sale.sale_number])
-    
-    if payment.customer_name:
-        info_data.append(["Client:", payment.customer_name])
-    
-    if payment.customer_phone:
-        info_data.append(["Téléphone:", payment.customer_phone])
-    
-    if payment.reference:
-        info_data.append(["Référence:", payment.reference])
-    
-    info_table = Table(info_data, colWidths=[4*cm, 8*cm])
-    info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 15*mm))
-    
-    # Amount
-    amount_data = [
-        ["Montant reçu:", format_currency(payment.amount)]
-    ]
-    
-    amount_table = Table(amount_data, colWidths=[8*cm, 8*cm])
-    amount_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 16),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#2e7d32')),
-        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#e8f5e9')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 15),
-        ('TOPPADDING', (0, 0), (-1, -1), 15),
-    ]))
-    elements.append(amount_table)
-    
-    # Notes
-    if payment.notes:
-        elements.append(Spacer(1, 10*mm))
-        elements.append(Paragraph("Notes:", styles['SectionHeader']))
-        elements.append(Paragraph(payment.notes, styles['Normal']))
-    
-    # Footer
-    elements.append(Spacer(1, 20*mm))
-    elements.append(Paragraph("Signature: ____________________", styles['BodyTextRight']))
-    
+    org = sale.organization
+    currency = getattr(org, 'currency', 'GNF')
+
+    # === HEADER ===
+    elements.extend(create_company_header(org, "FACTURE"))
+
+    # === DOCUMENT INFO ===
+    status_color = '#27ae60' if sale.payment_status == 'paid' else '#e74c3c' if sale.payment_status == 'pending' else '#f39c12'
+
+    doc_info = f"""<b>N° Facture:</b> {sale.sale_number}<br/>
+<b>Date d'émission:</b> {format_date(sale.sale_date)}<br/>
+<b>Statut:</b> <font color="{status_color}">{sale.get_payment_status_display()}</font>"""
+
+    elements.append(create_info_section(org, doc_info))
+    elements.append(Spacer(1, 8*mm))
+
+    # === CLIENT INFO ===
+    if sale.customer:
+        client_data = f"""<b>{sale.customer.name}</b><br/>
+{sale.customer.address or ''}<br/>
+Tél: {sale.customer.phone or '-'} | Email: {sale.customer.email or '-'}"""
+        if hasattr(sale.customer, 'tax_id') and sale.customer.tax_id:
+            client_data += f"<br/>NIF: {sale.customer.tax_id}"
+    else:
+        client_data = "<b>Client anonyme</b>"
+
+    elements.extend(create_client_section(client_data))
+
+    # === ITEMS TABLE ===
+    items_data = []
+    for item in sale.items.all():
+        discount_text = '-'
+        if item.discount_value > 0:
+            if item.discount_type == 'percentage':
+                discount_text = f"-{item.discount_value}%"
+            else:
+                discount_text = f"-{format_currency(item.discount_value, currency)}"
+
+        items_data.append({
+            'description': item.product.name,
+            'quantity': float(item.quantity),
+            'unit_price': float(item.unit_price),
+            'discount': discount_text,
+            'total': float(item.total)
+        })
+
+    elements.append(create_items_table(items_data, currency))
+    elements.append(Spacer(1, 6*mm))
+
+    # === TOTALS ===
+    totals_data = {
+        'subtotal': float(sale.subtotal),
+        'discount': float(sale.discount_amount) if sale.discount_amount > 0 else 0,
+        'tax_rate': float(sale.tax_rate) if sale.tax_rate > 0 else 0,
+        'tax': float(sale.tax_amount) if sale.tax_amount > 0 else 0,
+        'total': float(sale.total_amount)
+    }
+
+    elements.append(create_totals_section(totals_data, currency))
+    elements.append(Spacer(1, 8*mm))
+
+    # === PAYMENT INFO ===
+    if sale.payments.exists() or sale.payment_status != 'paid':
+        elements.append(Paragraph("INFORMATIONS DE PAIEMENT", styles['ProSectionHeader']))
+
+        payment_info = [
+            ['Montant payé:', format_currency(sale.paid_amount, currency)],
+            ['Reste à payer:', format_currency(sale.get_remaining_amount(), currency)],
+            ['Mode de paiement:', sale.get_payment_method_display()],
+        ]
+
+        payment_table = Table(payment_info, colWidths=[5*cm, 12*cm])
+        payment_table.setStyle(TableStyle([
+            ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+            ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+            ('FONTSIZE', (0, 0), (-1, -1), 8.5),
+            ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#34495e')),
+            ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+            ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ]))
+
+        elements.append(payment_table)
+        elements.append(Spacer(1, 8*mm))
+
+    # === NOTES ===
+    if sale.notes:
+        elements.append(Paragraph("NOTES", styles['ProSectionHeader']))
+        notes_para = Paragraph(sale.notes.replace('\n', '<br/>'), styles['ProBodyText'])
+        elements.append(notes_para)
+
+    # === FOOTER ===
+    elements.extend(create_footer(format_date(timezone.now(), with_time=True)))
+
     doc.build(elements)
     buffer.seek(0)
     return buffer
 
 
 def generate_proforma_pdf(proforma):
-    """Generate PDF for proforma invoice"""
+    """Generate professional proforma invoice PDF."""
     buffer = BytesIO()
     doc = SimpleDocTemplate(
         buffer,
         pagesize=A4,
         rightMargin=2*cm,
         leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
     )
-    
-    styles = get_styles()
+
+    styles = get_professional_styles()
     elements = []
-    
-    # Header
-    elements.append(Paragraph("FACTURE PRO FORMA", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Proforma info
-    info = [
-        ["N° Pro forma:", proforma.proforma_number],
-        ["Date d'émission:", format_date(proforma.issue_date)],
-        ["Valide jusqu'au:", format_date(proforma.validity_date)],
-        ["Statut:", proforma.get_status_display()],
-    ]
-    
-    info_table = Table(info, colWidths=[4*cm, 8*cm])
-    info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(info_table)
+    org = proforma.organization
+    currency = getattr(org, 'currency', 'GNF')
+
+    # === HEADER ===
+    elements.extend(create_company_header(org, "DEVIS / PRO FORMA"))
+
+    # === DOCUMENT INFO ===
+    is_expired = proforma.validity_date and proforma.validity_date < timezone.now().date()
+    status_color = '#e74c3c' if is_expired else '#27ae60' if proforma.status == 'accepted' else '#f39c12'
+
+    doc_info = f"""<b>N° Devis:</b> {proforma.proforma_number}<br/>
+<b>Date d'émission:</b> {format_date(proforma.issue_date)}<br/>
+<b>Valable jusqu'au:</b> {format_date(proforma.validity_date)}<br/>
+<b>Statut:</b> <font color="{status_color}">{proforma.get_status_display()}</font>"""
+
+    elements.append(create_info_section(org, doc_info))
     elements.append(Spacer(1, 8*mm))
-    
-    # Client info
-    elements.append(Paragraph("Client", styles['SectionHeader']))
-    
+
+    # === CLIENT INFO ===
     if proforma.customer:
-        client_info = f"""
-        <b>{proforma.customer.name}</b><br/>
-        {proforma.customer.address or ''}<br/>
-        Tél: {proforma.customer.phone or '-'}<br/>
-        Email: {proforma.customer.email or '-'}
-        """
+        client_data = f"""<b>{proforma.customer.name}</b><br/>
+{proforma.customer.address or ''}<br/>
+Tél: {proforma.customer.phone or '-'} | Email: {proforma.customer.email or '-'}"""
+        if hasattr(proforma.customer, 'tax_id') and proforma.customer.tax_id:
+            client_data += f"<br/>NIF: {proforma.customer.tax_id}"
     else:
-        client_info = f"""
-        <b>{proforma.client_name or 'N/A'}</b><br/>
-        {proforma.client_address or ''}<br/>
-        Tél: {proforma.client_phone or '-'}<br/>
-        Email: {proforma.client_email or '-'}
-        """
-    
-    elements.append(Paragraph(client_info, styles['Normal']))
-    elements.append(Spacer(1, 10*mm))
-    
-    # Items
-    elements.append(Paragraph("Détails", styles['SectionHeader']))
-    
-    items_data = [["Produit", "Description", "Qté", "Prix unit.", "Total"]]
-    
+        client_data = f"""<b>{proforma.client_name or 'Client'}</b><br/>
+{proforma.client_address or ''}<br/>
+Tél: {proforma.client_phone or '-'} | Email: {proforma.client_email or '-'}"""
+
+    elements.extend(create_client_section(client_data))
+
+    # === ITEMS TABLE ===
+    items_data = []
     for item in proforma.items.all():
-        items_data.append([
-            item.product.name,
-            item.description or "-",
-            str(item.quantity),
-            format_currency(item.unit_price),
-            format_currency(item.total)
-        ])
-    
-    items_table = Table(items_data, colWidths=[4*cm, 4*cm, 2*cm, 3*cm, 3*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (2, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 5*mm))
-    
-    # Totals
-    totals_data = [
-        ["Sous-total:", format_currency(proforma.subtotal)],
-    ]
-    
-    if proforma.discount_amount > 0:
-        totals_data.append(["Remise:", f"-{format_currency(proforma.discount_amount)}"])
-    
-    if proforma.tax_amount > 0:
-        totals_data.append(["TVA:", format_currency(proforma.tax_amount)])
-    
-    totals_data.append(["TOTAL:", format_currency(proforma.total_amount)])
-    
-    totals_table = Table(totals_data, colWidths=[12.5*cm, 4*cm])
-    totals_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#1a237e')),
-    ]))
-    elements.append(totals_table)
-    
-    # Conditions
+        items_data.append({
+            'description': f"{item.product.name}\n{item.description or ''}",
+            'quantity': float(item.quantity),
+            'unit_price': float(item.unit_price),
+            'discount': '-',
+            'total': float(item.total)
+        })
+
+    elements.append(create_items_table(items_data, currency))
+    elements.append(Spacer(1, 6*mm))
+
+    # === TOTALS ===
+    totals_data = {
+        'subtotal': float(proforma.subtotal),
+        'discount': float(proforma.discount_amount) if proforma.discount_amount > 0 else 0,
+        'tax_rate': 0,
+        'tax': float(proforma.tax_amount) if proforma.tax_amount > 0 else 0,
+        'total': float(proforma.total_amount)
+    }
+
+    elements.append(create_totals_section(totals_data, currency))
+    elements.append(Spacer(1, 10*mm))
+
+    # === CONDITIONS ===
+    elements.append(Paragraph("CONDITIONS GÉNÉRALES", styles['ProSectionHeader']))
+
     if proforma.conditions:
-        elements.append(Spacer(1, 10*mm))
-        elements.append(Paragraph("Conditions de vente", styles['SectionHeader']))
-        elements.append(Paragraph(proforma.conditions, styles['Normal']))
-    
-    # Footer
-    elements.append(Spacer(1, 15*mm))
-    elements.append(Paragraph(
-        "Ce document n'a pas valeur de facture définitive.",
-        styles['SmallText']
-    ))
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
+        conditions_para = Paragraph(proforma.conditions.replace('\n', '<br/>'), styles['ProBodyText'])
+    else:
+        default_conditions = f"""• Les prix sont exprimés en {currency} et valables jusqu'à la date indiquée.<br/>
+• Un acompte de 30% pourra être demandé à la commande.<br/>
+• Le solde est payable à la livraison ou selon accord préalable.<br/>
+• Les délais de livraison sont donnés à titre indicatif.<br/>
+• Toute commande implique l'acceptation de nos conditions générales de vente."""
+        conditions_para = Paragraph(default_conditions, styles['ProBodyText'])
 
-
-def generate_purchase_order_pdf(order):
-    """Generate PDF for purchase order"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-    
-    styles = get_styles()
-    elements = []
-    
-    # Header
-    elements.append(Paragraph("BON DE COMMANDE", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Order info
-    info = [
-        ["N° de commande:", order.order_number],
-        ["Date:", format_date(order.order_date)],
-        ["Livraison prévue:", format_date(order.expected_delivery_date) or "-"],
-        ["Statut:", order.get_status_display()],
-    ]
-    
-    info_table = Table(info, colWidths=[4*cm, 8*cm])
-    info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    conditions_table = Table([[conditions_para]], colWidths=[17*cm])
+    conditions_table.setStyle(TableStyle([
+        ('BACKGROUND', (0, 0), (-1, -1), colors.HexColor('#fafafa')),
+        ('BOX', (0, 0), (-1, -1), 0.5, colors.HexColor('#e0e0e0')),
+        ('LEFTPADDING', (0, 0), (-1, -1), 8),
+        ('RIGHTPADDING', (0, 0), (-1, -1), 8),
+        ('TOPPADDING', (0, 0), (-1, -1), 8),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
     ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 8*mm))
-    
-    # Supplier info
-    elements.append(Paragraph("Fournisseur", styles['SectionHeader']))
-    supplier_info = f"""
-    <b>{order.supplier.name}</b><br/>
-    {order.supplier.address or ''}<br/>
-    Tél: {order.supplier.phone or '-'}<br/>
-    Email: {order.supplier.email or '-'}
-    """
-    elements.append(Paragraph(supplier_info, styles['Normal']))
-    elements.append(Spacer(1, 8*mm))
-    
-    # Warehouse
-    elements.append(Paragraph("Livraison à", styles['SectionHeader']))
-    warehouse_info = f"""
-    <b>{order.warehouse.name}</b> ({order.warehouse.code})<br/>
-    {order.warehouse.address or ''}
-    """
-    elements.append(Paragraph(warehouse_info, styles['Normal']))
+
+    elements.append(conditions_table)
     elements.append(Spacer(1, 10*mm))
-    
-    # Items
-    elements.append(Paragraph("Articles commandés", styles['SectionHeader']))
-    
-    items_data = [["Produit", "Qté", "Prix unitaire", "Total"]]
-    
-    for item in order.items.all():
-        items_data.append([
-            item.product.name,
-            str(item.quantity),
-            format_currency(item.unit_price),
-            format_currency(item.total)
-        ])
-    
-    items_table = Table(items_data, colWidths=[6*cm, 2.5*cm, 4*cm, 4*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 5*mm))
-    
-    # Totals
-    totals_data = [
-        ["Sous-total:", format_currency(order.subtotal)],
-    ]
-    
-    if order.shipping_cost > 0:
-        totals_data.append(["Frais de livraison:", format_currency(order.shipping_cost)])
-    
-    if order.tax_amount > 0:
-        totals_data.append(["Taxes:", format_currency(order.tax_amount)])
-    
-    totals_data.append(["TOTAL:", format_currency(order.total_amount)])
-    
-    totals_table = Table(totals_data, colWidths=[12.5*cm, 4*cm])
-    totals_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#1a237e')),
-    ]))
-    elements.append(totals_table)
-    
-    # Payment terms
-    if order.payment_terms:
-        elements.append(Spacer(1, 10*mm))
-        elements.append(Paragraph("Conditions de paiement", styles['SectionHeader']))
-        elements.append(Paragraph(order.payment_terms, styles['Normal']))
-    
-    # Signatures
-    elements.append(Spacer(1, 20*mm))
-    sig_data = [["Signature Acheteur:", "", "Signature Fournisseur:"],
-                ["____________________", "", "____________________"]]
-    sig_table = Table(sig_data, colWidths=[6*cm, 4*cm, 6*cm])
-    elements.append(sig_table)
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
 
+    # === SIGNATURE SECTION ===
+    signature_data = [
+        ['Signature du client', 'Signature du fournisseur'],
+        ['Date: ___/___/______', 'Date: ___/___/______'],
+        ['', ''],
+        ['', ''],
+    ]
 
-def generate_delivery_note_pdf(note):
-    """Generate PDF for delivery note"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-    
-    styles = get_styles()
-    elements = []
-    
-    # Header
-    elements.append(Paragraph("BON DE LIVRAISON", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Delivery info
-    info = [
-        ["N° de livraison:", note.delivery_number],
-        ["N° de vente:", note.sale.sale_number],
-        ["Date de livraison:", format_date(note.delivery_date)],
-        ["Statut:", note.get_status_display()],
-    ]
-    
-    info_table = Table(info, colWidths=[4*cm, 8*cm])
-    info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 8*mm))
-    
-    # Recipient info
-    elements.append(Paragraph("Destinataire", styles['SectionHeader']))
-    recipient_info = f"""
-    <b>{note.recipient_name}</b><br/>
-    {note.delivery_address}<br/>
-    Tél: {note.recipient_phone or '-'}
-    """
-    elements.append(Paragraph(recipient_info, styles['Normal']))
-    elements.append(Spacer(1, 8*mm))
-    
-    # Transport info
-    if note.carrier_name or note.driver_name:
-        elements.append(Paragraph("Transport", styles['SectionHeader']))
-        transport_info = []
-        if note.carrier_name:
-            transport_info.append(f"Transporteur: {note.carrier_name}")
-        if note.driver_name:
-            transport_info.append(f"Chauffeur: {note.driver_name}")
-        if note.vehicle_info:
-            transport_info.append(f"Véhicule: {note.vehicle_info}")
-        elements.append(Paragraph("<br/>".join(transport_info), styles['Normal']))
-        elements.append(Spacer(1, 8*mm))
-    
-    # Items
-    elements.append(Paragraph("Articles à livrer", styles['SectionHeader']))
-    
-    items_data = [["Produit", "Qté commandée", "Qté livrée", "Observation"]]
-    
-    for item in note.items.all():
-        items_data.append([
-            item.product.name,
-            str(item.quantity),
-            str(item.delivered_quantity),
-            item.notes or "-"
-        ])
-    
-    items_table = Table(items_data, colWidths=[5*cm, 3*cm, 3*cm, 5*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 0), (2, -1), 'CENTER'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-    ]))
-    elements.append(items_table)
-    
-    # Notes
-    if note.notes:
-        elements.append(Spacer(1, 10*mm))
-        elements.append(Paragraph("Observations", styles['SectionHeader']))
-        elements.append(Paragraph(note.notes, styles['Normal']))
-    
-    # Signatures
-    elements.append(Spacer(1, 20*mm))
-    sig_data = [
-        ["Signature Expéditeur:", "", "Signature Destinataire:"],
-        ["Date: ___/___/______", "", "Date: ___/___/______"],
-        ["", "", ""],
-        ["____________________", "", "____________________"]
-    ]
-    sig_table = Table(sig_data, colWidths=[6*cm, 4*cm, 6*cm])
-    sig_table.setStyle(TableStyle([
+    signature_table = Table(signature_data, colWidths=[8.5*cm, 8.5*cm])
+    signature_table.setStyle(TableStyle([
         ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-    ]))
-    elements.append(sig_table)
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-
-def generate_credit_sale_statement_pdf(credit_sale):
-    """Generate PDF statement for a credit sale with payment history"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-    
-    styles = get_styles()
-    elements = []
-    
-    # Header
-    elements.append(Paragraph("RELEVÉ DE CRÉANCE", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Credit sale info
-    info_data = [
-        ["N° de vente:", credit_sale.sale.sale_number],
-        ["Date de vente:", format_date(credit_sale.sale.sale_date, with_time=True)],
-        ["Statut:", credit_sale.get_status_display()],
-    ]
-    
-    if credit_sale.due_date:
-        info_data.append(["Échéance:", format_date(credit_sale.due_date)])
-    else:
-        info_data.append(["Échéance:", "Sans échéance"])
-    
-    info_table = Table(info_data, colWidths=[4*cm, 8*cm])
-    info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(info_table)
-    elements.append(Spacer(1, 8*mm))
-    
-    # Customer info
-    elements.append(Paragraph("Client", styles['SectionHeader']))
-    customer = credit_sale.customer
-    if customer:
-        customer_info = f"""
-        <b>{customer.name}</b><br/>
-        {customer.address or ''}<br/>
-        Tél: {customer.phone or '-'}<br/>
-        Email: {customer.email or '-'}
-        """
-    else:
-        customer_info = "Client non renseigné"
-    
-    elements.append(Paragraph(customer_info, styles['Normal']))
-    elements.append(Spacer(1, 10*mm))
-    
-    # Items from sale
-    elements.append(Paragraph("Détails de la vente", styles['SectionHeader']))
-    
-    items_data = [["Produit", "Qté", "Prix unit.", "Remise", "Total"]]
-    
-    for item in credit_sale.sale.items.all():
-        items_data.append([
-            item.product.name,
-            str(item.quantity),
-            format_currency(item.unit_price),
-            format_currency(item.discount_amount) if item.discount_amount > 0 else "-",
-            format_currency(item.total)
-        ])
-    
-    items_table = Table(items_data, colWidths=[6*cm, 2*cm, 3*cm, 2.5*cm, 3*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 5*mm))
-    
-    # Totals
-    totals_data = [
-        ["Montant total:", format_currency(credit_sale.total_amount)],
-    ]
-    
-    totals_table = Table(totals_data, colWidths=[12*cm, 4.5*cm])
-    totals_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 12),
-        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#1a237e')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LINEABOVE', (0, 0), (-1, 0), 1, colors.HexColor('#1a237e')),
-    ]))
-    elements.append(totals_table)
-    elements.append(Spacer(1, 10*mm))
-    
-    # Payment history
-    elements.append(Paragraph("Historique des paiements", styles['SectionHeader']))
-    
-    payments = credit_sale.sale.payments.all().order_by('payment_date')
-    if payments.exists():
-        payments_data = [["Date", "Référence", "Mode", "Montant"]]
-        
-        for payment in payments:
-            payments_data.append([
-                format_date(payment.payment_date, with_time=True),
-                payment.receipt_number or "-",
-                payment.get_payment_method_display(),
-                format_currency(payment.amount)
-            ])
-        
-        payments_table = Table(payments_data, colWidths=[4*cm, 4*cm, 4*cm, 4.5*cm])
-        payments_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#2e7d32')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 9),
-            ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(payments_table)
-    else:
-        elements.append(Paragraph("Aucun paiement enregistré.", styles['Normal']))
-    
-    elements.append(Spacer(1, 10*mm))
-    
-    # Summary
-    elements.append(Paragraph("Récapitulatif", styles['SectionHeader']))
-    
-    summary_data = [
-        ["Total de la créance:", format_currency(credit_sale.total_amount)],
-        ["Montant payé:", format_currency(credit_sale.paid_amount)],
-        ["Reste à payer:", format_currency(credit_sale.remaining_amount)],
-    ]
-    
-    summary_table = Table(summary_data, colWidths=[12*cm, 4.5*cm])
-    summary_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('TEXTCOLOR', (0, -1), (-1, -1), colors.HexColor('#d32f2f') if credit_sale.remaining_amount > 0 else colors.HexColor('#2e7d32')),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#1a237e')),
-    ]))
-    elements.append(summary_table)
-    
-    # Status indicator
-    elements.append(Spacer(1, 10*mm))
-    if credit_sale.remaining_amount <= 0:
-        status_text = "✓ CRÉANCE SOLDÉE"
-        status_color = colors.HexColor('#2e7d32')
-        bg_color = colors.HexColor('#e8f5e9')
-    elif credit_sale.status == 'overdue':
-        status_text = "⚠ CRÉANCE EN RETARD"
-        status_color = colors.HexColor('#d32f2f')
-        bg_color = colors.HexColor('#ffebee')
-    else:
-        status_text = "◷ CRÉANCE EN COURS"
-        status_color = colors.HexColor('#f57c00')
-        bg_color = colors.HexColor('#fff3e0')
-    
-    status_data = [[status_text]]
-    status_table = Table(status_data, colWidths=[16.5*cm])
-    status_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 14),
-        ('TEXTCOLOR', (0, 0), (-1, -1), status_color),
-        ('BACKGROUND', (0, 0), (-1, -1), bg_color),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 12),
-        ('TOPPADDING', (0, 0), (-1, -1), 12),
-    ]))
-    elements.append(status_table)
-    
-    # Footer
-    elements.append(Spacer(1, 15*mm))
-    from django.utils import timezone
-    elements.append(Paragraph(
-        f"Document généré le {format_date(timezone.now(), with_time=True)}",
-        styles['SmallText']
-    ))
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-
-def generate_invoice_pdf(sale):
-    """Generate PDF invoice for a sale (more formal version of receipt)"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-    
-    styles = get_styles()
-    elements = []
-    
-    # Header
-    elements.append(Paragraph("FACTURE", styles['CustomTitle']))
-    elements.append(Spacer(1, 5*mm))
-    
-    # Invoice info (2 columns: company info + invoice details)
-    org = sale.organization
-    org_info = f"""
-    <b>{org.name if org else 'LouraTech'}</b><br/>
-    {getattr(org, 'address', 'N/A')}<br/>
-    Tél: {getattr(org, 'phone', 'N/A')}<br/>
-    Email: {getattr(org, 'email', 'N/A')}
-    """
-    
-    invoice_info = f"""
-    <b>Facture N°:</b> {sale.sale_number}<br/>
-    <b>Date:</b> {format_date(sale.sale_date, with_time=False)}<br/>
-    <b>Statut:</b> {sale.get_payment_status_display()}
-    """
-    
-    header_data = [[Paragraph(org_info, styles['Normal']), Paragraph(invoice_info, styles['BodyTextRight'])]]
-    header_table = Table(header_data, colWidths=[8.5*cm, 8*cm])
-    header_table.setStyle(TableStyle([
-        ('VALIGN', (0, 0), (-1, -1), 'TOP'),
-    ]))
-    elements.append(header_table)
-    elements.append(Spacer(1, 10*mm))
-    
-    # Customer info
-    elements.append(Paragraph("Facturé à:", styles['SectionHeader']))
-    if sale.customer:
-        customer_info = f"""
-        <b>{sale.customer.name}</b><br/>
-        {sale.customer.address or ''}<br/>
-        Tél: {sale.customer.phone or '-'}<br/>
-        Email: {sale.customer.email or '-'}
-        """
-    else:
-        customer_info = "<b>Client anonyme</b>"
-    
-    elements.append(Paragraph(customer_info, styles['Normal']))
-    elements.append(Spacer(1, 10*mm))
-    
-    # Items table
-    elements.append(Paragraph("Détails", styles['SectionHeader']))
-    
-    items_data = [["Description", "Qté", "Prix unitaire", "Remise", "Total HT"]]
-    
-    for item in sale.items.all():
-        items_data.append([
-            item.product.name,
-            str(item.quantity),
-            format_currency(item.unit_price),
-            format_currency(item.discount_amount) if item.discount_amount > 0 else "-",
-            format_currency(item.total)
-        ])
-    
-    items_table = Table(items_data, colWidths=[6*cm, 2*cm, 3*cm, 2.5*cm, 3*cm])
-    items_table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -1), 9),
-        ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 8),
-        ('TOPPADDING', (0, 0), (-1, -1), 8),
-        ('ROWBACKGROUNDS', (0, 1), (-1, -1), [colors.white, colors.HexColor('#f5f5f5')]),
-    ]))
-    elements.append(items_table)
-    elements.append(Spacer(1, 5*mm))
-    
-    # Totals
-    totals_data = [
-        ["Sous-total HT:", format_currency(sale.subtotal)],
-    ]
-    
-    if sale.discount_amount > 0:
-        totals_data.append(["Remise:", f"-{format_currency(sale.discount_amount)}"])
-    
-    if sale.tax_amount > 0:
-        totals_data.append([f"TVA ({sale.tax_rate}%):", format_currency(sale.tax_amount)])
-    
-    totals_data.append(["TOTAL TTC:", format_currency(sale.total_amount)])
-    
-    totals_table = Table(totals_data, colWidths=[12*cm, 4.5*cm])
-    totals_table.setStyle(TableStyle([
-        ('ALIGN', (0, 0), (-1, -1), 'RIGHT'),
-        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
-        ('FONTSIZE', (0, 0), (-1, -2), 10),
-        ('FONTSIZE', (0, -1), (-1, -1), 12),
-        ('TEXTCOLOR', (0, -1), (-1, -1), colors.HexColor('#1a237e')),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-        ('LINEABOVE', (0, -1), (-1, -1), 1, colors.HexColor('#1a237e')),
-    ]))
-    elements.append(totals_table)
-    elements.append(Spacer(1, 8*mm))
-    
-    # Payment info
-    elements.append(Paragraph("Informations de paiement", styles['SectionHeader']))
-    
-    payment_info_data = [
-        ["Montant payé:", format_currency(sale.paid_amount)],
-        ["Reste à payer:", format_currency(sale.get_remaining_amount())],
-        ["Mode de paiement:", sale.get_payment_method_display()],
-    ]
-    
-    payment_info_table = Table(payment_info_data, colWidths=[4*cm, 8*cm])
-    payment_info_table.setStyle(TableStyle([
-        ('TEXTCOLOR', (0, 0), (0, -1), colors.grey),
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica'),
-        ('FONTSIZE', (0, 0), (-1, -1), 10),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(payment_info_table)
-    
-    # Notes
-    if sale.notes:
-        elements.append(Spacer(1, 8*mm))
-        elements.append(Paragraph("Notes:", styles['SectionHeader']))
-        elements.append(Paragraph(sale.notes, styles['Normal']))
-    
-    # Footer
-    elements.append(Spacer(1, 15*mm))
-    elements.append(Paragraph(
-        "Merci pour votre confiance!",
-        styles['BodyTextCenter']
-    ))
-    elements.append(Spacer(1, 5*mm))
-    elements.append(Paragraph(
-        f"Document généré le {format_date(sale.created_at, with_time=True)}",
-        styles['SmallText']
-    ))
-    
-    doc.build(elements)
-    buffer.seek(0)
-    return buffer
-
-
-def export_expenses_pdf(queryset, organization, filters=None):
-    """Export expenses list to PDF with filters info"""
-    buffer = BytesIO()
-    doc = SimpleDocTemplate(
-        buffer,
-        pagesize=A4,
-        rightMargin=2*cm,
-        leftMargin=2*cm,
-        topMargin=2*cm,
-        bottomMargin=2*cm
-    )
-
-    styles = get_styles()
-    elements = []
-
-    # Header
-    elements.append(Paragraph("RAPPORT DES DÉPENSES", styles['CustomTitle']))
-    elements.append(Paragraph(f"Organisation: {organization.name}", styles['Normal']))
-
-    # Date de génération
-    from django.utils import timezone
-    elements.append(Paragraph(
-        f"Date de génération: {timezone.now().strftime('%d/%m/%Y %H:%M')}",
-        styles['Small']
-    ))
-
-    # Filtres appliqués
-    if filters:
-        filter_text = "Filtres: "
-        filter_parts = []
-        if filters.get('start_date'):
-            filter_parts.append(f"Du {filters['start_date']}")
-        if filters.get('end_date'):
-            filter_parts.append(f"Au {filters['end_date']}")
-        if filters.get('category_name'):
-            filter_parts.append(f"Catégorie: {filters['category_name']}")
-
-        if filter_parts:
-            filter_text += ", ".join(filter_parts)
-            elements.append(Paragraph(filter_text, styles['Small']))
-
-    elements.append(Spacer(1, 10*mm))
-
-    # Summary
-    from django.db.models import Sum, Count
-    total = queryset.aggregate(total=Sum('amount'))['total'] or 0
-
-    summary_data = [
-        ["Nombre de dépenses:", str(queryset.count())],
-        ["Total:", format_currency(total)],
-    ]
-
-    summary_table = Table(summary_data, colWidths=[4*cm, 8*cm])
-    summary_table.setStyle(TableStyle([
-        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
-    ]))
-    elements.append(summary_table)
-    elements.append(Spacer(1, 10*mm))
-
-    # Répartition par catégorie
-    by_category = queryset.values('category__name').annotate(
-        total=Sum('amount'),
-        count=Count('id')
-    ).order_by('-total')
-
-    if by_category:
-        elements.append(Paragraph("Répartition par catégorie:", styles['Heading2']))
-        category_data = [["Catégorie", "Nombre", "Total"]]
-        for cat in by_category:
-            category_data.append([
-                cat['category__name'] or "Sans catégorie",
-                str(cat['count']),
-                format_currency(cat['total'])
-            ])
-
-        cat_table = Table(category_data, colWidths=[6*cm, 3*cm, 4*cm])
-        cat_table.setStyle(TableStyle([
-            ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-            ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-            ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
-            ('FONTSIZE', (0, 0), (-1, -1), 8),
-            ('ALIGN', (1, 0), (-1, -1), 'RIGHT'),
-            ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-            ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-            ('TOPPADDING', (0, 0), (-1, -1), 6),
-        ]))
-        elements.append(cat_table)
-        elements.append(Spacer(1, 10*mm))
-
-    # Expenses table
-    elements.append(Paragraph("Liste détaillée des dépenses:", styles['Heading2']))
-    data = [["Date", "Description", "Catégorie", "Bénéficiaire", "Montant"]]
-
-    for expense in queryset:
-        data.append([
-            format_date(expense.expense_date),
-            expense.description[:30] + "..." if len(expense.description) > 30 else expense.description,
-            expense.category.name if expense.category else "-",
-            expense.beneficiary[:20] if expense.beneficiary else "-",
-            format_currency(expense.amount)
-        ])
-
-    table = Table(data, colWidths=[2.5*cm, 5*cm, 3*cm, 3*cm, 3*cm])
-    table.setStyle(TableStyle([
-        ('BACKGROUND', (0, 0), (-1, 0), colors.HexColor('#1a237e')),
-        ('TEXTCOLOR', (0, 0), (-1, 0), colors.whitesmoke),
-        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
         ('FONTSIZE', (0, 0), (-1, -1), 8),
-        ('ALIGN', (-1, 0), (-1, -1), 'RIGHT'),
-        ('GRID', (0, 0), (-1, -1), 0.5, colors.lightgrey),
-        ('BOTTOMPADDING', (0, 0), (-1, -1), 6),
-        ('TOPPADDING', (0, 0), (-1, -1), 6),
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#34495e')),
+        ('LINEBELOW', (0, -1), (-1, -1), 0.5, colors.HexColor('#34495e')),
+        ('TOPPADDING', (0, 0), (-1, 0), 8),
     ]))
-    elements.append(table)
+
+    elements.append(signature_table)
+
+    # === FOOTER ===
+    elements.extend(create_footer(format_date(timezone.now(), with_time=True)))
 
     doc.build(elements)
     buffer.seek(0)
+    return buffer
 
+
+def generate_sale_receipt_pdf(sale):
+    """Generate a simple sale receipt (lighter than invoice)."""
+    # For receipts, use the same invoice template
+    # but could be customized for a simpler layout
+    return generate_invoice_pdf(sale)
+
+
+def generate_payment_receipt_pdf(payment):
+    """Generate payment receipt PDF."""
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=2*cm,
+        leftMargin=2*cm,
+        topMargin=1.5*cm,
+        bottomMargin=1.5*cm
+    )
+
+    styles = get_professional_styles()
+    elements = []
+    org = payment.organization
+    currency = getattr(org, 'currency', 'GNF')
+
+    # === HEADER ===
+    elements.extend(create_company_header(org, "REÇU DE PAIEMENT"))
+
+    # === DOCUMENT INFO ===
+    doc_info = f"""<b>N° Reçu:</b> {payment.receipt_number}<br/>
+<b>Date:</b> {format_date(payment.payment_date)}<br/>
+<b>Méthode:</b> {payment.get_payment_method_display()}"""
+
+    elements.append(create_info_section(org, doc_info))
+    elements.append(Spacer(1, 10*mm))
+
+    # === PAYMENT DETAILS ===
+    elements.append(Paragraph("DÉTAILS DU PAIEMENT", styles['ProSectionHeader']))
+
+    payment_details = [
+        ['Montant payé:', format_currency(payment.amount, currency)],
+        ['Client:', payment.customer_name or (payment.sale.customer.name if payment.sale and payment.sale.customer else 'N/A')],
+        ['Téléphone:', payment.customer_phone or (payment.sale.customer.phone if payment.sale and payment.sale.customer else 'N/A')],
+    ]
+
+    if payment.sale:
+        payment_details.append(['Vente N°:', payment.sale.sale_number])
+
+    if payment.reference:
+        payment_details.append(['Référence:', payment.reference])
+
+    payment_table = Table(payment_details, colWidths=[5*cm, 12*cm])
+    payment_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, -1), 'Helvetica-Bold'),
+        ('FONTNAME', (1, 0), (1, -1), 'Helvetica'),
+        ('FONTSIZE', (0, 0), (-1, -1), 9),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.HexColor('#34495e')),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 4),
+        ('TOPPADDING', (0, 0), (-1, -1), 4),
+    ]))
+
+    elements.append(payment_table)
+
+    # === NOTES ===
+    if payment.notes:
+        elements.append(Spacer(1, 8*mm))
+        elements.append(Paragraph("NOTES", styles['ProSectionHeader']))
+        notes_para = Paragraph(payment.notes.replace('\n', '<br/>'), styles['ProBodyText'])
+        elements.append(notes_para)
+
+    # === FOOTER ===
+    elements.extend(create_footer(format_date(timezone.now(), with_time=True)))
+
+    doc.build(elements)
+    buffer.seek(0)
     return buffer

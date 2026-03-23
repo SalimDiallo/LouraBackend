@@ -602,25 +602,54 @@ class SaleItemSerializer(InventoryBaseSerializer):
     product = serializers.SerializerMethodField()
     product_name = serializers.CharField(source='product.name', read_only=True)
     product_sku = serializers.CharField(source='product.sku', read_only=True)
+    stock_available = serializers.SerializerMethodField()
 
     class Meta:
         model = SaleItem
         fields = [
             'id', 'sale', 'product', 'product_name', 'product_sku',
             'quantity', 'unit_price', 'discount_type', 'discount_value',
-            'discount_amount', 'total', 'created_at', 'updated_at'
+            'discount_amount', 'total', 'stock_available', 'created_at', 'updated_at'
         ]
-        read_only_fields = ['id', 'discount_amount', 'total', 'created_at', 'updated_at']
+        read_only_fields = ['id', 'discount_amount', 'total', 'stock_available', 'created_at', 'updated_at']
 
     # get_id, get_sale, get_product are inherited from InventoryBaseSerializer
 
+    def get_stock_available(self, obj):
+        """
+        Retourne le stock disponible pour cet item lors de la modification.
+        Stock disponible = stock actuel en entrepôt + quantité déjà vendue dans cet item.
+        """
+        try:
+            from .models import Stock
+            from decimal import Decimal
+
+            # Récupérer le stock actuel
+            current_stock = Stock.objects.filter(
+                product=obj.product,
+                warehouse=obj.sale.warehouse
+            ).first()
+
+            current_quantity = Decimal(str(current_stock.quantity)) if current_stock else Decimal('0')
+
+            # Stock disponible = stock actuel + quantité déjà vendue
+            # Car on peut "récupérer" la quantité déjà vendue en la diminuant
+            available = current_quantity + obj.quantity
+
+            return float(available)
+        except Exception:
+            return None
+
 
 class SaleItemCreateSerializer(serializers.ModelSerializer):
-    """Serializer for creating sale items"""
-    
+    """Serializer for creating and updating sale items"""
+
+    # Ajouter l'ID pour permettre l'identification lors de la mise à jour
+    id = serializers.UUIDField(required=False, allow_null=True)
+
     class Meta:
         model = SaleItem
-        fields = ['product', 'quantity', 'unit_price', 'discount_type', 'discount_value']
+        fields = ['id', 'product', 'quantity', 'unit_price', 'discount_type', 'discount_value']
 
 
 class SaleSerializer(InventoryBaseSerializer):

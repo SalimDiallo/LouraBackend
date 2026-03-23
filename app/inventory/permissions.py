@@ -79,6 +79,7 @@ PERMISSIONS = [
     {'code': 'inventory.view_sales', 'name': 'Voir les ventes', 'category': 'Ventes', 'description': 'Peut consulter les ventes'},
     {'code': 'inventory.create_sales', 'name': 'Créer des ventes', 'category': 'Ventes', 'description': 'Peut créer des ventes'},
     {'code': 'inventory.update_sales', 'name': 'Modifier des ventes', 'category': 'Ventes', 'description': 'Peut modifier des ventes'},
+    {'code': 'inventory.modify_paid_sales', 'name': 'Modifier des ventes payées', 'category': 'Ventes', 'description': 'Peut modifier des ventes déjà payées (partiellement ou totalement) et réaffecter les paiements'},
     {'code': 'inventory.delete_sales', 'name': 'Annuler des ventes', 'category': 'Ventes', 'description': 'Peut annuler des ventes'},
 
     # === CUSTOMERS ===
@@ -166,9 +167,44 @@ class StockCountPermission(BaseCRUDPermission):
 
 
 class SalePermission(BaseCRUDPermission):
-    """Permission CRUD pour les ventes."""
+    """Permission CRUD pour les ventes avec vérification spéciale pour les ventes payées."""
     permission_prefix = 'inventory'
     permission_resource = 'sales'
+
+    def has_permission(self, request, view):
+        # Vérification CRUD standard
+        if not super().has_permission(request, view):
+            return False
+
+        # Pour les modifications/suppressions, vérifier si c'est une vente payée
+        action = getattr(view, 'action', None)
+        if action in ('update', 'partial_update', 'destroy'):
+            # Si c'est une modification, on doit vérifier l'objet dans has_object_permission
+            # Donc on autorise ici et on vérifie plus tard
+            return True
+
+        return True
+
+    def has_object_permission(self, request, view, obj):
+        """Vérification au niveau objet pour les ventes payées."""
+        user = request.user
+        user_type = getattr(user, 'user_type', None)
+
+        # Admin = toujours autorisé
+        if user_type == 'admin':
+            return True
+
+        action = getattr(view, 'action', None)
+
+        # Si c'est une modification ou suppression d'une vente payée
+        if action in ('update', 'partial_update', 'destroy'):
+            # Vérifier si la vente a déjà été payée (partiellement ou totalement)
+            if obj.payment_status in ('partial', 'paid'):
+                # Nécessite la permission spéciale
+                return user.has_permission('inventory.modify_paid_sales')
+
+        # Pour les autres cas, autoriser si l'utilisateur a la permission de base
+        return True
 
 
 class CustomerPermission(BaseCRUDPermission):
