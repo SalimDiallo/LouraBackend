@@ -71,7 +71,7 @@ if ALLOWED_HOSTS_ENV:
             ALLOWED_HOSTS.append(host)
 else:
     # Fallback safe defaults (hosts only, no scheme/port)
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '72.60.92.105']
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '72.60.92.105','72-60-92-105.sslip.io']
 
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
