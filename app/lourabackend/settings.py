@@ -41,14 +41,14 @@ ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',')]
 else:
-    ALLOWED_HOSTS = ['*']  # Accepter tous les hosts (à restreindre en production avec ALLOWED_HOSTS env var)
+    ALLOWED_HOSTS = ['https://frontend-loura.vercel.app','http://72.60.92.105:8000']  # Accepter tous les hosts (à restreindre en production avec ALLOWED_HOSTS env var)
 
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
     CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()]
 else:
-    CSRF_TRUSTED_ORIGINS = ['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000']
+    CSRF_TRUSTED_ORIGINS = ['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000','http://localhost:3000','http://72.60.92.105:8000']
 
 # Configuration CSRF supplémentaire
 CSRF_COOKIE_HTTPONLY = False  # Permet l'accès JS au cookie CSRF (requis pour les SPAs)
@@ -58,7 +58,7 @@ CSRF_COOKIE_NAME = 'csrftoken'
 
 # En développement, autoriser CSRF depuis n'importe quelle origine
 if DEBUG:
-    CSRF_TRUSTED_ORIGINS.extend(['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000'])
+    CSRF_TRUSTED_ORIGINS.extend(['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000','http://localhost:3000','http://72.60.92.105:8000'])
     # Retirer les doublons
     CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS))
 
