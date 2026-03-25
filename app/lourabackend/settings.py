@@ -13,6 +13,7 @@ https://docs.djangoproject.com/en/5.2/ref/settings/
 from pathlib import Path
 from datetime import timedelta
 import os
+from urllib.parse import urlparse
 
 # Load environment variables from .env file
 from dotenv import load_dotenv
@@ -36,19 +37,53 @@ SECRET_KEY = os.getenv('SECRET_KEY', 'django-insecure-(0io1(8urv-qldqq2dh$!$*9-j
 # SECURITY WARNING: don't run with debug turned on in production!
 DEBUG = os.getenv('DEBUG', 'True') == 'True'
 
+# -----------------------------------------------------------------------------
+# Helpers: normalize env inputs (hosts/origins)
+# -----------------------------------------------------------------------------
+def _normalize_host(value: str) -> str:
+    """
+    Accepts either "example.com" or "https://example.com:8000/path"
+    and returns a host suitable for Django ALLOWED_HOSTS.
+    """
+    v = (value or "").strip()
+    if not v:
+        return ""
+    if "://" in v:
+        try:
+            parsed = urlparse(v)
+            v = parsed.hostname or ""
+        except Exception:
+            v = ""
+    if ":" in v:  # "example.com:8000" -> "example.com"
+        v = v.split(":", 1)[0].strip()
+    return v
+
+def _split_csv_env(value: str) -> list[str]:
+    return [item.strip() for item in (value or "").split(",") if item.strip()]
+
 # Allowed Hosts - supporte les variables d'environnement
 ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
 if ALLOWED_HOSTS_ENV:
-    ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',')]
+    ALLOWED_HOSTS = []
+    for raw in _split_csv_env(ALLOWED_HOSTS_ENV):
+        host = _normalize_host(raw)
+        if host:
+            ALLOWED_HOSTS.append(host)
 else:
-    ALLOWED_HOSTS = ['https://frontend-loura.vercel.app','http://72.60.92.105:8000']  # Accepter tous les hosts (à restreindre en production avec ALLOWED_HOSTS env var)
+    # Fallback safe defaults (hosts only, no scheme/port)
+    ALLOWED_HOSTS = ['localhost', '127.0.0.1', '72.60.92.105']
 
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
-    CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()]
+    CSRF_TRUSTED_ORIGINS = _split_csv_env(CSRF_TRUSTED_ORIGINS_ENV)
 else:
-    CSRF_TRUSTED_ORIGINS = ['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000','http://localhost:3000','http://72.60.92.105:8000']
+    CSRF_TRUSTED_ORIGINS = [
+        'https://frontend-loura.vercel.app',
+        'http://127.0.0.1:3000',
+        'http://localhost:3000',
+        'http://72.60.92.105:8000',
+    ]
 
 # Configuration CSRF supplémentaire
 CSRF_COOKIE_HTTPONLY = False  # Permet l'accès JS au cookie CSRF (requis pour les SPAs)
@@ -271,11 +306,12 @@ REST_FRAMEWORK = {
 # CORS Configuration - supporte les variables d'environnement
 CORS_ALLOWED_ORIGINS_ENV = os.getenv('CORS_ALLOWED_ORIGINS', '')
 if CORS_ALLOWED_ORIGINS_ENV:
-    CORS_ALLOWED_ORIGINS = [origin.strip() for origin in CORS_ALLOWED_ORIGINS_ENV.split(',') if origin.strip()]
+    CORS_ALLOWED_ORIGINS = _split_csv_env(CORS_ALLOWED_ORIGINS_ENV)
 else:
     CORS_ALLOWED_ORIGINS = [
         "http://localhost:3000",  # Next.js dev
         "http://127.0.0.1:3000",
+        "https://frontend-loura.vercel.app",  # Vercel prod
     ]
 
 # Autoriser cookies / authentification (si besoin) Si tu utilises JWT avec cookies, sessions ou authentification cross-domain :
@@ -314,7 +350,7 @@ SIMPLE_JWT = {
     # Cookie settings for HTTP-only cookies
     'AUTH_COOKIE': 'access_token',  # Cookie name for access token
     'AUTH_COOKIE_REFRESH': 'refresh_token',  # Cookie name for refresh token
-    'AUTH_COOKIE_SECURE': False,  # Set to True in production (HTTPS only)
+    'AUTH_COOKIE_SECURE': os.getenv('AUTH_COOKIE_SECURE', str(not DEBUG)) == 'True',
     'AUTH_COOKIE_HTTP_ONLY': True,  # Prevents JavaScript access
     'AUTH_COOKIE_SAMESITE': 'Lax',  # CSRF protection
     'AUTH_COOKIE_PATH': '/',
