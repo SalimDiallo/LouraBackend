@@ -1,36 +1,89 @@
 #!/bin/bash
 set -e
 
-echo "🔍 Waiting for PostgreSQL to be ready..."
+# Colors for output
+RED='\033[0;31m'
+GREEN='\033[0;32m'
+YELLOW='\033[1;33m'
+NC='\033[0m' # No Color
 
-# Wait for PostgreSQL to be ready
-while ! nc -z "${DB_HOST:-db}" "${DB_PORT:-5432}"; do
-  echo "⏳ PostgreSQL is unavailable - sleeping"
-  sleep 1
-done
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}   Loura Backend Startup Script${NC}"
+echo -e "${GREEN}========================================${NC}"
 
-echo "✅ PostgreSQL is up - continuing..."
+# Function to wait for a service
+wait_for_service() {
+    local host=$1
+    local port=$2
+    local service=$3
+    local max_attempts=30
+    local attempt=0
+
+    echo -e "${YELLOW}🔍 Waiting for ${service} to be ready...${NC}"
+
+    while ! nc -z "$host" "$port"; do
+        attempt=$((attempt + 1))
+        if [ $attempt -eq $max_attempts ]; then
+            echo -e "${RED}❌ ${service} is not available after ${max_attempts} attempts${NC}"
+            exit 1
+        fi
+        echo -e "${YELLOW}⏳ ${service} is unavailable - attempt ${attempt}/${max_attempts}${NC}"
+        sleep 2
+    done
+
+    echo -e "${GREEN}✅ ${service} is up and ready!${NC}"
+}
+
+# Wait for PostgreSQL
+wait_for_service "${DB_HOST:-db}" "${DB_PORT:-5432}" "PostgreSQL"
+
+# Wait for Redis if configured
+if [ -n "$CELERY_BROKER_URL" ] && [[ "$CELERY_BROKER_URL" == redis* ]]; then
+    REDIS_HOST=$(echo "$CELERY_BROKER_URL" | sed -E 's|redis://([^:]+):.*|\1|')
+    REDIS_PORT=$(echo "$CELERY_BROKER_URL" | sed -E 's|redis://[^:]+:([0-9]+).*|\1|')
+    wait_for_service "$REDIS_HOST" "$REDIS_PORT" "Redis"
+fi
 
 # Change to Django application directory
 cd /app/app
 
 # Collect static files
-echo "📦 Collecting static files..."
-python manage.py collectstatic --noinput --clear || true
+echo -e "${YELLOW}📦 Collecting static files...${NC}"
+python manage.py collectstatic --noinput --clear || {
+    echo -e "${RED}❌ Failed to collect static files${NC}"
+    exit 1
+}
+echo -e "${GREEN}✅ Static files collected${NC}"
 
 # Apply database migrations
-echo "🔄 Applying database migrations..."
-python manage.py migrate --noinput
-python manage.py sync_permissions
-python manage.py initialize_modules
-python manage.py create_sample_categories --with-modules
+echo -e "${YELLOW}🔄 Applying database migrations...${NC}"
+python manage.py migrate --noinput || {
+    echo -e "${RED}❌ Failed to apply migrations${NC}"
+    exit 1
+}
+echo -e "${GREEN}✅ Migrations applied${NC}"
 
- 
+# Sync permissions
+echo -e "${YELLOW}🔐 Syncing permissions...${NC}"
+python manage.py sync_permissions || {
+    echo -e "${YELLOW}⚠️  sync_permissions command not found or failed${NC}"
+}
 
+# Initialize modules
+echo -e "${YELLOW}📦 Initializing modules...${NC}"
+python manage.py initialize_modules || {
+    echo -e "${YELLOW}⚠️  initialize_modules command not found or failed${NC}"
+}
+
+# Create sample categories
+echo -e "${YELLOW}🗂️  Creating sample categories...${NC}"
+python manage.py create_sample_categories --with-modules || {
+    echo -e "${YELLOW}⚠️  create_sample_categories command not found or failed${NC}"
+}
 
 # Create a superuser if environment variables are set
-if [ "$DJANGO_SUPERUSER_EMAIL" ] && [ "$DJANGO_SUPERUSER_PASSWORD" ]; then
-    echo "👤 Creating superuser..."
+if [ -n "$DJANGO_SUPERUSER_EMAIL" ] && [ -n "$DJANGO_SUPERUSER_PASSWORD" ]; then
+    echo -e "${YELLOW}👤 Creating superuser...${NC}"
 
     # Detect primary field of user for login (username or email)
     python manage.py shell << 'END'
@@ -75,9 +128,20 @@ if not User.objects.filter(**exists_kwarg).exists():
 else:
     print(f'ℹ️  Superuser already exists with {login_field}: {email if login_field == "email" else username}')
 END
+    echo -e "${GREEN}✅ Superuser setup completed${NC}"
+else
+    echo -e "${YELLOW}ℹ️  Skipping superuser creation (credentials not provided)${NC}"
 fi
 
-echo "🚀 Starting application..."
+# Verify Django setup
+echo -e "${YELLOW}🔍 Verifying Django setup...${NC}"
+python manage.py check --deploy 2>/dev/null || {
+    echo -e "${YELLOW}⚠️  Django deployment check found some warnings${NC}"
+}
+
+echo -e "${GREEN}========================================${NC}"
+echo -e "${GREEN}🚀 Starting application...${NC}"
+echo -e "${GREEN}========================================${NC}"
 
 # Execute the CMD passed to the container
 exec "$@"

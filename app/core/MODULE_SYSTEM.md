@@ -229,7 +229,7 @@ def register_all_modules():
 ### 2. Initialiser dans la base de données
 
 ```bash
-python manage.py initialize_modules
+	python manage.py initialize_modules
 ```
 
 ### 3. Le module est maintenant disponible via l'API

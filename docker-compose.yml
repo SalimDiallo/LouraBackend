@@ -1,0 +1,190 @@
+version: '3.9'
+
+services:
+  # PostgreSQL Database
+  db:
+    image: postgres:16-alpine
+    container_name: loura_postgres
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${DB_NAME:-loura_db}
+      POSTGRES_USER: ${DB_USER:-loura_user}
+      POSTGRES_PASSWORD: ${DB_PASSWORD:-loura_password}
+      PGDATA: /var/lib/postgresql/data/pgdata
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    ports:
+      - "${DB_PORT:-5432}:5432"
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${DB_USER:-loura_user} -d ${DB_NAME:-loura_db}"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loura_network
+
+  # Redis (for Celery & Channels)
+  redis:
+    image: redis:7-alpine
+    container_name: loura_redis
+    restart: unless-stopped
+    command: redis-server --appendonly yes
+    volumes:
+      - redis_data:/data
+    ports:
+      - "${REDIS_PORT:-6379}:6379"
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 5s
+      retries: 5
+    networks:
+      - loura_network
+
+  # Django Web Application
+  web:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: loura_django
+    restart: unless-stopped
+    command: daphne -b 0.0.0.0 -p 8000 lourabackend.asgi:application
+    environment:
+      # Django Settings
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY}
+      ALLOWED_HOSTS: ${ALLOWED_HOSTS:-localhost,127.0.0.1}
+      CSRF_TRUSTED_ORIGINS: ${CSRF_TRUSTED_ORIGINS:-http://localhost:3000}
+      CORS_ALLOWED_ORIGINS: ${CORS_ALLOWED_ORIGINS:-http://localhost:3000}
+
+      # Database Configuration
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${DB_NAME:-loura_db}
+      DB_USER: ${DB_USER:-loura_user}
+      DB_PASSWORD: ${DB_PASSWORD:-loura_password}
+      DB_HOST: db
+      DB_PORT: 5432
+
+      # Redis Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+      CHANNEL_LAYERS_BACKEND: channels_redis.core.RedisChannelLayer
+      CHANNEL_LAYERS_HOST: redis://redis:6379/2
+
+      # Static & Media Files
+      STATIC_ROOT: /app/staticfiles
+      MEDIA_ROOT: /app/media
+
+      # Django Superuser (optional)
+      DJANGO_SUPERUSER_EMAIL: ${DJANGO_SUPERUSER_EMAIL:-}
+      DJANGO_SUPERUSER_PASSWORD: ${DJANGO_SUPERUSER_PASSWORD:-}
+      DJANGO_SUPERUSER_USERNAME: ${DJANGO_SUPERUSER_USERNAME:-admin}
+
+      # OpenAI Configuration
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+      AI_TEMPERATURE: ${AI_TEMPERATURE:-0.3}
+      AI_MAX_TOKENS: ${AI_MAX_TOKENS:-2048}
+      AI_TIMEOUT: ${AI_TIMEOUT:-60}
+      AI_ENABLE_TOOLS: ${AI_ENABLE_TOOLS:-true}
+      AI_MAX_TOOL_CALLS: ${AI_MAX_TOOL_CALLS:-10}
+    volumes:
+      - ./app:/app/app
+      - static_volume:/app/staticfiles
+      - media_volume:/app/media
+    ports:
+      - "${PORT:-8000}:8000"
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - loura_network
+
+  # Celery Worker
+  celery_worker:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: loura_celery_worker
+    restart: unless-stopped
+    command: celery -A lourabackend worker -l info
+    environment:
+      # Django Settings
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY}
+
+      # Database Configuration
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${DB_NAME:-loura_db}
+      DB_USER: ${DB_USER:-loura_user}
+      DB_PASSWORD: ${DB_PASSWORD:-loura_password}
+      DB_HOST: db
+      DB_PORT: 5432
+
+      # Redis Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+
+      # OpenAI Configuration
+      OPENAI_API_KEY: ${OPENAI_API_KEY}
+      AI_MODEL: ${AI_MODEL:-gpt-4o-mini}
+    volumes:
+      - ./app:/app/app
+      - media_volume:/app/media
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - loura_network
+
+  # Celery Beat (Scheduled Tasks)
+  celery_beat:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: loura_celery_beat
+    restart: unless-stopped
+    command: celery -A lourabackend beat -l info --scheduler django_celery_beat.schedulers:DatabaseScheduler
+    environment:
+      # Django Settings
+      DEBUG: ${DEBUG:-False}
+      SECRET_KEY: ${SECRET_KEY}
+
+      # Database Configuration
+      DB_ENGINE: django.db.backends.postgresql
+      DB_NAME: ${DB_NAME:-loura_db}
+      DB_USER: ${DB_USER:-loura_user}
+      DB_PASSWORD: ${DB_PASSWORD:-loura_password}
+      DB_HOST: db
+      DB_PORT: 5432
+
+      # Redis Configuration
+      CELERY_BROKER_URL: redis://redis:6379/0
+      CELERY_RESULT_BACKEND: redis://redis:6379/1
+    volumes:
+      - ./app:/app/app
+    depends_on:
+      db:
+        condition: service_healthy
+      redis:
+        condition: service_healthy
+    networks:
+      - loura_network
+
+volumes:
+  postgres_data:
+    driver: local
+  redis_data:
+    driver: local
+  static_volume:
+    driver: local
+  media_volume:
+    driver: local
+
+networks:
+  loura_network:
+    driver: bridge
