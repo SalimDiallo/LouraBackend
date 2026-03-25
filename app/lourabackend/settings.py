@@ -41,7 +41,7 @@ ALLOWED_HOSTS_ENV = os.getenv('ALLOWED_HOSTS', '')
 if ALLOWED_HOSTS_ENV:
     ALLOWED_HOSTS = [host.strip() for host in ALLOWED_HOSTS_ENV.split(',')]
 else:
-    ALLOWED_HOSTS = ['localhost', '127.0.0.1']
+    ALLOWED_HOSTS = ['*']  # Accepter tous les hosts (à restreindre en production avec ALLOWED_HOSTS env var)
 
 # CSRF Trusted Origins - important pour les requêtes POST en production
 CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
