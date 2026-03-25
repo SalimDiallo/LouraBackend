@@ -84,9 +84,8 @@ select_mode() {
     echo "9) Status check"
     echo "0) Exit"
     echo ""
-    read -p "Enter your choice [1-9]: " choice
+    read -p "Enter your choice [0-9]: " DEPLOY_CHOICE
     echo ""
-    return $choice
 }
 
 # Fresh deployment
@@ -275,9 +274,8 @@ status_check() {
 main_menu() {
     while true; do
         select_mode
-        choice=$?
 
-        case $choice in
+        case $DEPLOY_CHOICE in
             1) fresh_deployment ;;
             2) update_deployment ;;
             3) start_containers ;;
