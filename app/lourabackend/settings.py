@@ -48,7 +48,7 @@ CSRF_TRUSTED_ORIGINS_ENV = os.getenv('CSRF_TRUSTED_ORIGINS', '')
 if CSRF_TRUSTED_ORIGINS_ENV:
     CSRF_TRUSTED_ORIGINS = [origin.strip() for origin in CSRF_TRUSTED_ORIGINS_ENV.split(',') if origin.strip()]
 else:
-    CSRF_TRUSTED_ORIGINS = ['http://localhost:3000', 'http://127.0.0.1:3000']
+    CSRF_TRUSTED_ORIGINS = ['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000']
 
 # Configuration CSRF supplémentaire
 CSRF_COOKIE_HTTPONLY = False  # Permet l'accès JS au cookie CSRF (requis pour les SPAs)
@@ -58,7 +58,7 @@ CSRF_COOKIE_NAME = 'csrftoken'
 
 # En développement, autoriser CSRF depuis n'importe quelle origine
 if DEBUG:
-    CSRF_TRUSTED_ORIGINS.extend(['http://localhost:3000', 'http://127.0.0.1:3000'])
+    CSRF_TRUSTED_ORIGINS.extend(['https://frontend-loura.vercel.app', 'http://127.0.0.1:3000'])
     # Retirer les doublons
     CSRF_TRUSTED_ORIGINS = list(set(CSRF_TRUSTED_ORIGINS))
 
