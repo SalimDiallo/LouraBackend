@@ -197,6 +197,7 @@ python manage.py test          # Sans Docker
 ### Reverse Proxy
 
 Utiliser Nginx ou Caddy en production pour :
+
 - HTTPS/SSL
 - Servir les fichiers statiques
 - Load balancing
@@ -264,6 +265,7 @@ Propriétaire - Loura
 ## Support
 
 Pour des questions ou problèmes :
+
 1. Consulter la documentation
 2. Vérifier les logs : `make logs`
 3. Vérifier le status : `make status`
@@ -271,3 +273,7 @@ Pour des questions ou problèmes :
 ---
 
 **Dernière mise à jour**: 2026-03-25
+
+On va utiliser Caddy + un hostname gratuit qui pointe sur ton IP: 72-60-92-105.sslip.io
+
+# → backend final: **https://72-60-92-105.sslip.io**

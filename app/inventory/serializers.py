@@ -222,19 +222,30 @@ class ProductListSerializer(InventoryBaseSerializer):
     organization = serializers.SerializerMethodField()
     category_name = serializers.CharField(source='category.name', read_only=True)
     total_stock = serializers.SerializerMethodField()
+    warehouse_stock = serializers.SerializerMethodField()
 
     class Meta:
         model = Product
         fields = [
             'id', 'organization', 'name', 'sku', 'category_name',
             'purchase_price', 'selling_price', 'unit', 'total_stock',
-            'is_active'
+            'warehouse_stock', 'is_active'
         ]
 
     # get_id, get_organization are inherited from InventoryBaseSerializer
 
     def get_total_stock(self, obj):
+        """Return total stock across all warehouses."""
         return float(obj.get_total_stock())
+
+    def get_warehouse_stock(self, obj):
+        """Return stock for a specific warehouse if warehouse_id is in context.
+        Returns None if no warehouse filter is applied."""
+        warehouse_id = self.context.get('warehouse_id')
+        if not warehouse_id:
+            return None
+        stock = obj.stocks.filter(warehouse_id=warehouse_id).first()
+        return float(stock.quantity) if stock else 0.0
 
 
 # ===============================

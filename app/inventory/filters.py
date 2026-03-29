@@ -241,7 +241,7 @@ class QueryFilterExtractor:
         """
         return {
             'page': self.get_int('page', 1),
-            'page_size': self.get_int('page_size', 20),
+            'page_size': self.get_int('page_size', 10),
         }
 
     def has_param(self, key):

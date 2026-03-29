@@ -237,6 +237,8 @@ class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
     queryset = Module.objects.filter(is_active=True)
     serializer_class = ModuleSerializer
 
+    
+
     @action(detail=False, methods=['get'])
     def defaults(self, request):
         """

@@ -259,12 +259,23 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
             return ProductListSerializer
         return ProductSerializer
 
+    def get_serializer_context(self):
+        """Pass warehouse_id to serializer context for per-warehouse stock calculation."""
+        context = super().get_serializer_context()
+        warehouse_id = self.request.query_params.get('warehouse')
+        if warehouse_id:
+            context['warehouse_id'] = warehouse_id
+        return context
+
     def get_queryset(self):
         """
         Get filtered queryset using ProductRepository.
 
         REFACTORED: Now uses QueryFilterExtractor and ProductRepository
         to eliminate duplicate filtering logic.
+        
+        When 'warehouse' query param is provided, filters products to only those
+        with stock in the specified warehouse.
         """
         organization = self.get_organization_from_request()
         extractor = QueryFilterExtractor(self.request.query_params)
@@ -280,7 +291,16 @@ class ProductViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 total_stock=Sum('stocks__quantity')
             ).filter(total_stock__lte=F('min_stock_level'))
         
-        return ProductRepository.get_filtered(organization, filters)
+        queryset = ProductRepository.get_filtered(organization, filters)
+        
+        # Filter by warehouse: only return products that have stock in this warehouse
+        warehouse_id = self.request.query_params.get('warehouse')
+        if warehouse_id:
+            queryset = queryset.filter(
+                stocks__warehouse_id=warehouse_id
+            ).distinct()
+        
+        return queryset
 
     @action(detail=True, methods=['get'], permission_classes=[IsAuthenticated])
     def stock_by_warehouse(self, request, organization_slug=None, pk=None):
@@ -2962,6 +2982,120 @@ class InventoryStatsViewSet(PDFGeneratorMixin, OrganizationResolverMixin, viewse
             request=request
         )
 
+    @action(detail=False, methods=['get'])
+    def filterable_sales(self, request, organization_slug=None):
+        """
+        Retourne les ventes filtrables pour la génération de factures groupées.
+        
+        Query params:
+        - customer: ID du client
+        - start_date: date début (YYYY-MM-DD)
+        - end_date: date fin (YYYY-MM-DD)
+        - department: ID du département (filtre via le client/employé)
+        - position: ID du poste (filtre via le client/employé)
+        """
+        organization = self.get_organization_from_request()
+        
+        sales = Sale.objects.filter(
+            organization=organization
+        ).exclude(
+            payment_status='cancelled'
+        ).select_related('customer', 'warehouse').prefetch_related('items', 'items__product')
+        
+        # Filtre par client
+        customer_id = request.query_params.get('customer')
+        if customer_id:
+            sales = sales.filter(customer_id=customer_id)
+        
+        # Filtre par dates
+        start_date = request.query_params.get('start_date')
+        end_date = request.query_params.get('end_date')
+        if start_date:
+            sales = sales.filter(sale_date__gte=start_date)
+        if end_date:
+            sales = sales.filter(sale_date__lte=end_date)
+        
+        sales = sales.order_by('-sale_date')[:100]
+        
+        result = []
+        for sale in sales:
+            items = []
+            for item in sale.items.all():
+                items.append({
+                    'id': str(item.id),
+                    'product_name': item.product.name if item.product else 'N/A',
+                    'quantity': float(item.quantity),
+                    'unit_price': float(item.unit_price),
+                    'total': float(item.total),
+                })
+            
+            result.append({
+                'id': str(sale.id),
+                'sale_number': sale.sale_number,
+                'sale_date': sale.sale_date.isoformat() if sale.sale_date else None,
+                'customer_name': sale.customer.name if sale.customer else 'Anonyme',
+                'customer_id': str(sale.customer.id) if sale.customer else None,
+                'total_amount': float(sale.total_amount),
+                'payment_status': sale.payment_status,
+                'items': items,
+            })
+        
+        return Response(result)
+
+    @action(detail=False, methods=['post'])
+    def generate_grouped_invoice_pdf(self, request, organization_slug=None):
+        """
+        Generate a grouped invoice PDF from selected sales/items.
+
+        Expected body:
+        {
+            "invoice_number": "FG-001",
+            "title": "Facture Groupée - Janvier 2024",
+            "client_name": "Client Name",
+            "client_department": "Département Ventes",
+            "client_position": "Directeur",
+            "date_from": "2024-01-01",
+            "date_to": "2024-01-31",
+            "filters_summary": "Client: X, Dates: Jan 2024",
+            "items": [
+                {
+                    "product_name": "Product 1",
+                    "quantity": 10,
+                    "unit_price": 50000,
+                    "sale_number": "VTE-001",
+                    "sale_date": "2024-01-15"
+                }
+            ],
+            "notes": "Optional notes"
+        }
+        """
+        from django.http import HttpResponse
+        from .pdf_generator import generate_grouped_invoice_pdf
+        from datetime import datetime
+        
+        organization = self.get_organization_from_request()
+        invoice_data = request.data
+        
+        # Validation
+        if not invoice_data.get('items'):
+            return Response({'error': 'items est requis'}, status=status.HTTP_400_BAD_REQUEST)
+        
+        # Parse date
+        if isinstance(invoice_data.get('date'), str):
+            try:
+                invoice_data['date'] = datetime.strptime(invoice_data['date'], '%Y-%m-%d').date()
+            except ValueError:
+                invoice_data['date'] = datetime.now().date()
+
+        invoice_number = invoice_data.get('invoice_number', 'FG')
+        filename = f"Facture_Groupee_{invoice_number}.pdf"
+
+        return self.generate_and_respond(
+            generator_func=generate_grouped_invoice_pdf,
+            generator_args=(invoice_data, organization),
+            filename=filename,
+            request=request
+        )
 
 
 class CustomerViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
@@ -3079,6 +3213,7 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
         # Récupérer les données des items avant la création
         items_data = serializer.validated_data.get('items', [])
         warehouse = serializer.validated_data.get('warehouse')
+        print("warehouse", warehouse)
         
         # === VALIDATION: Client obligatoire pour vente à crédit ===
         is_credit_sale = serializer.validated_data.get('is_credit_sale', False)
@@ -3094,15 +3229,27 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
         for item_data in items_data:
             product = item_data.get('product')
             quantity_requested = Decimal(str(item_data.get('quantity', 0)))
+
+
             
             # Récupérer le stock actuel
             current_stock = Stock.objects.filter(
-                product=product,
-                warehouse=warehouse
-            ).first()
+                    product=product
+                )
+            if warehouse:
+                current_stock = current_stock.filter(
+                    warehouse=warehouse
+                )
+            current_quantity = Decimal('0')
+            for stock_obj in current_stock:
+                current_quantity += Decimal(str(stock_obj.quantity))
             
-            current_quantity = Decimal(str(current_stock.quantity)) if current_stock else Decimal('0')
-            
+            print("********************************************************")
+            print("product", product)
+            print("current_quantity", current_quantity)
+            print("quantity_requested", quantity_requested)
+            print("********************************************************")
+         
             if current_quantity < quantity_requested:
                 stock_errors.append(
                     f"Stock insuffisant pour '{product.name}': disponible {float(current_quantity)}, demandé {float(quantity_requested)}"

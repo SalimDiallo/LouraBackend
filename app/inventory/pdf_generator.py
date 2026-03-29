@@ -1057,3 +1057,179 @@ def generate_invoice_pdf(invoice_data, organization):
     doc.build(elements)
     buffer.seek(0)
     return buffer
+
+
+def generate_grouped_invoice_pdf(invoice_data, organization):
+    """
+    Génère un PDF pour une facture groupée.
+
+    invoice_data: dict avec les clés:
+    - invoice_number: str
+    - date: date
+    - title: str (ex: "Facture Groupée")
+    - filters_summary: str (résumé des filtres utilisés)
+    - client_name: str (optional, nom de la personne ou générique)
+    - date_from: str (optional)
+    - date_to: str (optional)
+    - items: list[dict] avec product_name, quantity, unit_price, sale_number, sale_date
+    - notes: str (optional)
+    """
+    buffer = BytesIO()
+    doc = SimpleDocTemplate(
+        buffer,
+        pagesize=A4,
+        rightMargin=1.5*cm,
+        leftMargin=1.5*cm,
+        topMargin=1*cm,
+        bottomMargin=1*cm
+    )
+
+    elements = []
+    styles = get_styles()
+
+    # En-tête
+    elements.append(create_header_table(
+        "FACTURE GROUPÉE",
+        organization.name,
+        f"N° {invoice_data.get('invoice_number', 'N/A')}",
+        organization=organization
+    ))
+    elements.append(HRFlowable(width="100%", thickness=1, color=BORDER_COLOR))
+    elements.append(Spacer(1, 4*mm))
+
+    # Bandeau titre
+    title = invoice_data.get('title', 'Facture Groupée')
+    title_data = [[title]]
+    title_table = Table(title_data, colWidths=[17*cm])
+    title_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 10),
+        ('BACKGROUND', (0, 0), (-1, -1), ACCENT_COLOR),
+        ('TEXTCOLOR', (0, 0), (-1, -1), colors.white),
+        ('ALIGN', (0, 0), (-1, -1), 'CENTER'),
+        ('TOPPADDING', (0, 0), (-1, -1), 5),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 5),
+    ]))
+    elements.append(title_table)
+    elements.append(Spacer(1, 4*mm))
+
+    # Infos filtres et destinataire
+    invoice_date = invoice_data.get('date', datetime.now().date())
+    
+    info_rows = [["DÉTAILS DE LA FACTURE", "", "DESTINATAIRE", ""]]
+    
+    info_rows.append([
+        "Date:",
+        invoice_date.strftime('%d/%m/%Y') if hasattr(invoice_date, 'strftime') else str(invoice_date),
+        "Nom / Entité:",
+        invoice_data.get('client_name', 'N/A')
+    ])
+    
+    date_from = invoice_data.get('date_from')
+    date_to = invoice_data.get('date_to')
+    period_str = "Toutes les dates"
+    if date_from and date_to:
+        period_str = f"Du {date_from} au {date_to}"
+    elif date_from:
+        period_str = f"À partir du {date_from}"
+    elif date_to:
+        period_str = f"Jusqu'au {date_to}"
+    
+    info_rows.append([
+        "Période:",
+        period_str,
+        "Filtres:",
+        invoice_data.get('filters_summary', 'Aucun filtre')
+    ])
+
+    info_table = Table(info_rows, colWidths=[2.5*cm, 5*cm, 3*cm, 5.5*cm])
+    info_table.setStyle(TableStyle([
+        ('FONTNAME', (0, 0), (0, 0), 'Helvetica-Bold'),
+        ('FONTNAME', (2, 0), (2, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('TEXTCOLOR', (0, 0), (-1, 0), PRIMARY_COLOR),
+        ('TEXTCOLOR', (0, 1), (0, -1), SECONDARY_COLOR),
+        ('TEXTCOLOR', (2, 1), (2, -1), SECONDARY_COLOR),
+        ('BACKGROUND', (0, 0), (-1, 0), LIGHT_BG),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('GRID', (0, 0), (-1, -1), 0.5, BORDER_COLOR),
+    ]))
+    elements.append(info_table)
+    elements.append(Spacer(1, 6*mm))
+
+    # Articles
+    items_data = [["#", "DÉSIGNATION", "RÉF. VENTE", "DATE", "QTÉ", "PRIX UNIT.", "TOTAL"]]
+    
+    subtotal = Decimal('0')
+    for idx, item in enumerate(invoice_data.get('items', []), 1):
+        qty = Decimal(str(item.get('quantity', 0)))
+        unit_price = Decimal(str(item.get('unit_price', 0)))
+        total = qty * unit_price
+        subtotal += total
+        
+        sale_date = item.get('sale_date', '')
+        if hasattr(sale_date, 'strftime'):
+            sale_date = sale_date.strftime('%d/%m/%Y')
+        
+        items_data.append([
+            str(idx),
+            Paragraph(str(item.get('product_name', 'N/A'))[:35], styles['small']),
+            str(item.get('sale_number', '—'))[:12],
+            str(sale_date)[:10],
+            str(qty),
+            format_currency(unit_price),
+            format_currency(total),
+        ])
+    
+    # Total
+    items_data.append(["", "", "", "", "Total :", "", format_currency(subtotal)])
+
+    items_table = Table(items_data, colWidths=[0.8*cm, 4.5*cm, 2.5*cm, 2*cm, 1.5*cm, 3*cm, 2.7*cm])
+    
+    num_items = len(invoice_data.get('items', []))
+    table_style = [
+        ('FONTNAME', (0, 0), (-1, 0), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, 0), (-1, -1), 8),
+        ('BACKGROUND', (0, 0), (-1, 0), PRIMARY_COLOR),
+        ('TEXTCOLOR', (0, 0), (-1, 0), colors.white),
+        ('ALIGN', (4, 0), (-1, -1), 'RIGHT'),
+        ('GRID', (0, 0), (-1, num_items), 0.5, BORDER_COLOR),
+        ('TOPPADDING', (0, 0), (-1, -1), 3),
+        ('BOTTOMPADDING', (0, 0), (-1, -1), 3),
+        ('VALIGN', (0, 0), (-1, -1), 'MIDDLE'),
+        # Ligne total
+        ('FONTNAME', (0, -1), (-1, -1), 'Helvetica-Bold'),
+        ('FONTSIZE', (0, -1), (-1, -1), 10),
+        ('BACKGROUND', (5, -1), (-1, -1), ACCENT_COLOR),
+        ('TEXTCOLOR', (5, -1), (-1, -1), colors.white),
+    ]
+    
+    items_table.setStyle(TableStyle(table_style))
+    elements.append(items_table)
+    elements.append(Spacer(1, 8*mm))
+
+    # Notes
+    if invoice_data.get('notes'):
+        notes_text = f"""
+        <b>NOTES</b><br/><br/>
+        {invoice_data['notes']}
+        """
+        elements.append(Paragraph(notes_text, styles['small']))
+        elements.append(Spacer(1, 4*mm))
+
+    # Infos paiement
+    payment_info = f"""
+    <b>INFORMATIONS DE PAIEMENT</b><br/><br/>
+    Cette facture regroupe {num_items} élément(s) selon les critères de filtrage appliqués.<br/>
+    """
+    elements.append(Paragraph(payment_info, styles['small']))
+
+    # Footer
+    elements.append(Spacer(1, 8*mm))
+    elements.append(Paragraph(f"Document généré le {datetime.now().strftime('%d/%m/%Y à %H:%M')}", styles['footer']))
+
+    doc.build(elements)
+    buffer.seek(0)
+    return buffer
+    
