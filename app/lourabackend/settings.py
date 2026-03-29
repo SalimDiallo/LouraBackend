@@ -393,3 +393,12 @@ CHANNEL_LAYERS = {
     },
 }
 
+# ==============================================================================
+# Novu — Notifications multi-canaux (Email, SMS, Push)
+# ==============================================================================
+# Activé uniquement si NOVU_ENABLED=True et NOVU_API_KEY est défini.
+# Quand désactivé, seules les notifications in-app locales fonctionnent.
+NOVU_ENABLED = os.getenv('NOVU_ENABLED', 'False') == 'True'
+NOVU_API_KEY = os.getenv('NOVU_API_KEY', '')
+NOVU_APPLICATION_IDENTIFIER = os.getenv('NOVU_APPLICATION_IDENTIFIER', '')
+

@@ -3,6 +3,11 @@ Notification Helpers
 ====================
 Fonctions utilitaires pour créer, envoyer et gérer les notifications.
 
+Intégration Novu :
+    Chaque envoi de notification déclenche également un workflow Novu
+    (si NOVU_ENABLED=True) pour la livraison multi-canal (email, SMS, push).
+    Le canal in-app local reste actif indépendamment de Novu.
+
 Usage typique :
     from notifications.notification_helpers import send_notification, send_alert_notification
 
@@ -124,6 +129,45 @@ def _push_sse_unread_update(organization: Organization, user: BaseUser):
 
 
 # ---------------------------------------------------------------------------
+# Novu — dispatch multi-canal
+# ---------------------------------------------------------------------------
+
+def _trigger_novu(
+    workflow_id: str,
+    recipient: BaseUser,
+    payload: dict,
+    organization: Optional[Organization] = None,
+):
+    """
+    Déclenche un workflow Novu en background (via Celery).
+
+    Fail-safe : ne lève jamais d'exception, le canal in-app local
+    fonctionne indépendamment.
+    """
+    try:
+        from .novu_tasks import novu_trigger_workflow_task
+
+        tenant_id = str(organization.id) if organization else None
+
+        novu_trigger_workflow_task.delay(
+            workflow_id=workflow_id,
+            subscriber_id=str(recipient.id),
+            payload=payload,
+            tenant_id=tenant_id,
+        )
+    except Exception as e:
+        logger.debug("Novu trigger ignoré (%s) : %s", workflow_id, e)
+
+
+# Mapping notification_type → workflow Novu
+_NOVU_WORKFLOW_MAP = {
+    'alert': 'stock-alert',
+    'system': 'system-announcement',
+    'user': 'user-action',
+}
+
+
+# ---------------------------------------------------------------------------
 # Création de notification de base
 # ---------------------------------------------------------------------------
 
@@ -143,6 +187,9 @@ def send_notification(
     Crée une notification en vérifiant les préférences du destinataire.
 
     Retourne l'instance Notification créée, ou None si filtrée par les préférences.
+
+    Déclenche également un workflow Novu pour la livraison multi-canal
+    (email, SMS, push) si NOVU_ENABLED=True.
     """
     # Vérification des préférences
     if not _should_deliver(organization, recipient, notification_type, priority):
@@ -152,6 +199,26 @@ def send_notification(
         )
         return None
 
+    # --- Canal Novu (multi-canal : email, SMS, push) ----------------------
+    novu_workflow = _NOVU_WORKFLOW_MAP.get(notification_type)
+    if novu_workflow:
+        _trigger_novu(
+            workflow_id=novu_workflow,
+            recipient=recipient,
+            payload={
+                'title': title,
+                'message': message,
+                'priority': priority,
+                'entity_type': entity_type,
+                'entity_id': str(entity_id) if entity_id else '',
+                'action_url': action_url,
+                'organization_name': organization.name if organization else '',
+                'sender_name': sender.get_full_name() if sender else '',
+            },
+            organization=organization,
+        )
+
+    # --- Canal in-app local (existant) ------------------------------------
     # Dispatch via Celery (ou sync si ALWAYS_EAGER)
     from .tasks import create_notification_task
 
@@ -217,6 +284,8 @@ def send_alert_notification(
 ) -> list:
     """
     Envoie une notification d'alerte à tous les administrateurs de l'organisation.
+
+    Déclenche aussi le workflow Novu 'stock-alert' pour chaque admin.
     """
     TITLE_MAP = {
         'low_stock': 'Stock bas',
@@ -238,6 +307,36 @@ def send_alert_notification(
 
     created = []
     for user in admin_users:
+        # --- Novu multi-canal avec payload enrichi pour le template ---
+        from django.db.models import Sum
+        current_stock = 0
+        threshold = 0
+        try:
+            total = product.stocks.aggregate(total=Sum('quantity'))['total']
+            current_stock = float(total) if total else 0
+            threshold = float(product.min_stock_level) if product.min_stock_level else 0
+        except Exception:
+            pass
+
+        _trigger_novu(
+            workflow_id='stock-alert',
+            recipient=user,
+            payload={
+                'product_name': product.name,
+                'product_sku': getattr(product, 'sku', ''),
+                'alert_type': alert_type,
+                'severity': severity,
+                'current_stock': current_stock,
+                'threshold': threshold,
+                'warehouse_name': warehouse.name if warehouse else '',
+                'organization_name': organization.name,
+                'title': title,
+                'message': message,
+            },
+            organization=organization,
+        )
+
+        # --- Canal in-app local ---
         notif = send_notification(
             organization=organization,
             recipient=user,

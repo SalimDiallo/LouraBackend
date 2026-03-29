@@ -207,6 +207,30 @@ class NotificationPreference(TimeStampedModel):
         help_text="Les notifications en dessous de cette priorité ne seront pas affichées"
     )
 
+    # --- Canaux de livraison (Novu multi-canal) ---
+    email_enabled = models.BooleanField(
+        default=True,
+        verbose_name="Recevoir par email",
+        help_text="Activer les notifications par email (nécessite Novu)"
+    )
+    sms_enabled = models.BooleanField(
+        default=False,
+        verbose_name="Recevoir par SMS",
+        help_text="Activer les notifications par SMS (nécessite Novu + crédits SMS)"
+    )
+    push_enabled = models.BooleanField(
+        default=True,
+        verbose_name="Recevoir les push",
+        help_text="Activer les notifications push navigateur/mobile"
+    )
+    phone_number = models.CharField(
+        max_length=20,
+        blank=True,
+        default='',
+        verbose_name="Numéro de téléphone SMS",
+        help_text="Numéro de téléphone pour les notifications SMS (format international : +224...)"
+    )
+
     class Meta:
         db_table = 'notification_preferences'
         verbose_name = "Préférences de notification"
@@ -215,3 +239,4 @@ class NotificationPreference(TimeStampedModel):
 
     def __str__(self):
         return f"Préférences de {self.user.get_full_name()} ({self.organization.name})"
+

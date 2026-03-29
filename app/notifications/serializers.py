@@ -137,6 +137,10 @@ class NotificationPreferenceSerializer(serializers.ModelSerializer):
             'receive_system',
             'receive_user',
             'min_priority',
+            'email_enabled',
+            'sms_enabled',
+            'push_enabled',
+            'phone_number',
             'created_at',
             'updated_at',
         ]
@@ -162,6 +166,10 @@ class NotificationPreferenceUpdateSerializer(serializers.ModelSerializer):
             'receive_system',
             'receive_user',
             'min_priority',
+            'email_enabled',
+            'sms_enabled',
+            'push_enabled',
+            'phone_number',
         ]
 
     def validate_min_priority(self, value):
