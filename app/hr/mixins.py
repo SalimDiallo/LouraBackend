@@ -37,9 +37,9 @@ class EmployeeRelatedMixin:
     """
     Mixin pour les modèles liés à Employee (LeaveRequest, Payslip, etc.)
     
-    Implémente le filtrage par employee__organization au lieu de organization.
+    Implémente le filtrage par employee__memberships__organization au lieu de organization.
     """
-    organization_field = 'employee__organization'
+    organization_field = 'employee__memberships__organization'
     
     def _filter_for_employee(self, user, queryset):
         """
@@ -48,10 +48,10 @@ class EmployeeRelatedMixin:
         - Manager voit ses subordonnés
         - Employé normal voit seulement ses propres données
         """
-        if self.view_permission and user.has_permission(self.view_permission):
+        if self.view_permission and user.has_permission(self.view_permission, request=request):
             # HR Admin ou gestionnaire avec permission - voit tout dans l'org
             if user.is_hr_admin() or (user.assigned_role and user.assigned_role.code == 'manager'):
-                return queryset.filter(employee__organization=user.organization)
+                return queryset.filter(employee__memberships__organization=user.primary_organization).distinct()
         
         # Manager voit ses subordonnés
         if hasattr(user, 'subordinates') and user.subordinates.exists():
@@ -85,7 +85,7 @@ class ApprovableMixin:
         
         if getattr(user, 'user_type', None) == 'employee':
             # Vérifier la permission
-            if self.approval_permission and user.has_permission(self.approval_permission):
+            if self.approval_permission and user.has_permission(self.approval_permission, request=self.request):
                 return True
             
             # Manager peut approuver ses subordonnés

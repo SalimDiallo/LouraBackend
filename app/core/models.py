@@ -70,6 +70,18 @@ class BaseUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
     language = models.CharField(max_length=5, default='fr')
     timezone = models.CharField(max_length=50, default='Africa/Conakry')
 
+    # Informations personnelles (ajoutées pour tous les utilisateurs)
+    date_of_birth = models.DateField(null=True, blank=True)
+    address = models.TextField(blank=True)
+    city = models.CharField(max_length=100, blank=True)
+    country = models.CharField(max_length=100, blank=True)
+    emergency_contact = models.JSONField(
+        null=True,
+        blank=True,
+        default=dict,
+        help_text="Contact d'urgence (name, phone, relationship)"
+    )
+
     # Statut
     is_active = models.BooleanField(default=True)
     is_staff = models.BooleanField(default=False)
@@ -129,13 +141,13 @@ class BaseUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
                 return self
         return self
 
-    def has_org_permission(self, permission_code):
+    def has_org_permission(self, permission_code, organization=None, request=None):
         """Vérifie les permissions organisationnelles"""
         if self.user_type == self.UserType.ADMIN:
             return True
         concrete = self.get_concrete_user()
         if hasattr(concrete, 'has_permission'):
-            return concrete.has_permission(permission_code)
+            return concrete.has_permission(permission_code, organization=organization, request=request)
         return False
 
     def get_organization(self):
@@ -144,7 +156,7 @@ class BaseUser(AbstractBaseUser, PermissionsMixin, TimeStampedModel):
         if hasattr(concrete, 'organization'):
             return concrete.organization
         if hasattr(concrete, 'organizations'):
-            return concrete.organizations.first()
+            return concrete.organizations.all()
         return None
 
 

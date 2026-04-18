@@ -27,7 +27,7 @@ SALES & COMMERCIAL:
 from datetime import timedelta
 from decimal import Decimal
 from django.db.models import Sum, F, Q, Count, Max, Func, Avg
-from django.db.models.functions import TruncDate, TruncMonth, TruncYear, ExtractWeekDay, ExtractHour
+from django.db.models.functions import TruncDate, TruncMonth, TruncYear, ExtractWeekDay, ExtractHour, ExtractMonth
 from django.utils import timezone
 from django.http import HttpResponse
 from rest_framework import status, viewsets
@@ -438,7 +438,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
         # INSERT_YOUR_CODE
         # Vérifie si l'utilisateur est un employé
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock', request=self.request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -530,7 +530,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def perform_update(self, serializer):
         user = self.request.user
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock', request=self.request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -542,7 +542,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def perform_partial_update(self, serializer):
         user = self.request.user
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock', request=self.request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -560,7 +560,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
 
         user = self.request.user
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.manage_stock', request=self.request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -665,7 +665,7 @@ class MovementViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     def get_queryset(self):
         user = self.request.user
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.view_stock')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.view_stock', request=self.request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -737,7 +737,7 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
         user = self.request.user
 
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_orders')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_orders', request=request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -781,7 +781,7 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
         user = self.request.user
 
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.receive_orders')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.receive_orders', request=request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -852,7 +852,7 @@ class OrderViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mod
         user = self.request.user
         
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.delete_orders')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.delete_orders', request=request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -2706,6 +2706,217 @@ class InventoryStatsViewSet(PDFGeneratorMixin, OrganizationResolverMixin, viewse
         })
 
     @action(detail=False, methods=['get'])
+    def sales_analytics(self, request, organization_slug=None):
+        """
+        Sales analytics with time-based aggregation:
+        - Hourly analysis: weekly average sales distribution over 24h
+        - Daily analysis: monthly average sales by day of week
+        - Monthly analysis: yearly average sales by month
+        """
+        organization = self.get_organization_from_request()
+
+        # --- Hourly Sales Analysis (Weekly Average) ---
+        # Use last 8 weeks of data for averaging
+        hourly_end = timezone.now()
+        hourly_start = hourly_end - timedelta(weeks=8)
+        hourly_sales = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=hourly_start,
+            sale_date__lte=hourly_end
+        ).exclude(payment_status='cancelled')
+
+        # Count distinct weeks in data
+        weeks_in_period = max(
+            hourly_sales.annotate(week=TruncDate('sale_date'))
+            .values('week').distinct().count() / 7, 1
+        )
+
+        hourly_data = list(
+            hourly_sales.annotate(
+                hour=ExtractHour('sale_date')
+            ).values('hour').annotate(
+                total_revenue=Sum('total_amount'),
+                total_count=Count('id')
+            ).order_by('hour')
+        )
+
+        hourly_result = []
+        for h in range(24):
+            match = next((d for d in hourly_data if d['hour'] == h), None)
+            if match:
+                hourly_result.append({
+                    'hour': h,
+                    'label': f"{h:02d}:00",
+                    'avg_revenue': round(float(match['total_revenue'] or 0) / weeks_in_period, 2),
+                    'avg_count': round(float(match['total_count'] or 0) / weeks_in_period, 2),
+                    'total_revenue': float(match['total_revenue'] or 0),
+                    'total_count': match['total_count'] or 0,
+                })
+            else:
+                hourly_result.append({
+                    'hour': h,
+                    'label': f"{h:02d}:00",
+                    'avg_revenue': 0,
+                    'avg_count': 0,
+                    'total_revenue': 0,
+                    'total_count': 0,
+                })
+
+        # Peak hour
+        peak_hour = max(hourly_result, key=lambda x: x['avg_revenue']) if hourly_result else None
+
+        # --- Daily Sales Analysis (Monthly Average) ---
+        # Use last 16 weeks of data (4 months) for averaging
+        daily_end = timezone.now()
+        daily_start = daily_end - timedelta(weeks=16)
+        daily_sales = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=daily_start,
+            sale_date__lte=daily_end
+        ).exclude(payment_status='cancelled')
+
+        # Count number of complete weeks
+        total_days = (daily_end - daily_start).days
+        num_weeks = max(total_days / 7, 1)
+
+        weekday_names = ['Lundi', 'Mardi', 'Mercredi', 'Jeudi', 'Vendredi', 'Samedi', 'Dimanche']
+        daily_data = list(
+            daily_sales.annotate(
+                weekday=ExtractWeekDay('sale_date')
+            ).values('weekday').annotate(
+                total_revenue=Sum('total_amount'),
+                total_count=Count('id')
+            ).order_by('weekday')
+        )
+
+        daily_result = []
+        for i, name in enumerate(weekday_names):
+            # ExtractWeekDay: 1=Sunday, 2=Monday, ..., 7=Saturday
+            # We want: 0=Monday, 1=Tuesday, ..., 6=Sunday
+            db_weekday = ((i + 1) % 7) + 1  # Convert Monday=0 -> 2, ..., Sunday=6 -> 1
+            match = next((d for d in daily_data if d['weekday'] == db_weekday), None)
+            if match:
+                daily_result.append({
+                    'day_index': i,
+                    'day_name': name,
+                    'avg_revenue': round(float(match['total_revenue'] or 0) / num_weeks, 2),
+                    'avg_count': round(float(match['total_count'] or 0) / num_weeks, 2),
+                    'total_revenue': float(match['total_revenue'] or 0),
+                    'total_count': match['total_count'] or 0,
+                })
+            else:
+                daily_result.append({
+                    'day_index': i,
+                    'day_name': name,
+                    'avg_revenue': 0,
+                    'avg_count': 0,
+                    'total_revenue': 0,
+                    'total_count': 0,
+                })
+
+        peak_day = max(daily_result, key=lambda x: x['avg_revenue']) if daily_result else None
+
+        # --- Monthly Sales Analysis (Yearly Average) ---
+        # Use all available data (up to 3 years) for monthly averaging
+        monthly_end = timezone.now()
+        monthly_start = monthly_end - timedelta(days=365 * 3)
+        monthly_sales = Sale.objects.filter(
+            organization=organization,
+            sale_date__gte=monthly_start,
+            sale_date__lte=monthly_end
+        ).exclude(payment_status='cancelled')
+
+        # Count distinct years in data
+        years_data = monthly_sales.annotate(
+            year=TruncYear('sale_date')
+        ).values('year').distinct().count()
+        num_years = max(years_data, 1)
+
+        monthly_data = list(
+            monthly_sales.annotate(
+                month_num=ExtractMonth('sale_date')
+            ).values('month_num').annotate(
+                total_revenue=Sum('total_amount'),
+                total_count=Count('id')
+            ).order_by('month_num')
+        )
+
+        month_names = [
+            'Janvier', 'Février', 'Mars', 'Avril', 'Mai', 'Juin',
+            'Juillet', 'Août', 'Septembre', 'Octobre', 'Novembre', 'Décembre'
+        ]
+        month_short = [
+            'Jan', 'Fév', 'Mar', 'Avr', 'Mai', 'Jun',
+            'Jul', 'Aoû', 'Sep', 'Oct', 'Nov', 'Déc'
+        ]
+
+        monthly_result = []
+        for m in range(1, 13):
+            match = next((d for d in monthly_data if d['month_num'] == m), None)
+            if match:
+                monthly_result.append({
+                    'month': m,
+                    'month_name': month_names[m - 1],
+                    'month_short': month_short[m - 1],
+                    'avg_revenue': round(float(match['total_revenue'] or 0) / num_years, 2),
+                    'avg_count': round(float(match['total_count'] or 0) / num_years, 2),
+                    'total_revenue': float(match['total_revenue'] or 0),
+                    'total_count': match['total_count'] or 0,
+                })
+            else:
+                monthly_result.append({
+                    'month': m,
+                    'month_name': month_names[m - 1],
+                    'month_short': month_short[m - 1],
+                    'avg_revenue': 0,
+                    'avg_count': 0,
+                    'total_revenue': 0,
+                    'total_count': 0,
+                })
+
+        peak_month = max(monthly_result, key=lambda x: x['avg_revenue']) if monthly_result else None
+
+        # Global summary
+        total_revenue_all = float(
+            Sale.objects.filter(
+                organization=organization
+            ).exclude(payment_status='cancelled').aggregate(
+                total=Sum('total_amount')
+            )['total'] or 0
+        )
+
+        return Response({
+            'hourly_analysis': {
+                'data': hourly_result,
+                'weeks_analyzed': round(weeks_in_period, 1),
+                'peak_hour': peak_hour,
+                'period': {
+                    'start': hourly_start.date().isoformat(),
+                    'end': hourly_end.date().isoformat(),
+                }
+            },
+            'daily_analysis': {
+                'data': daily_result,
+                'weeks_analyzed': round(num_weeks, 1),
+                'peak_day': peak_day,
+                'period': {
+                    'start': daily_start.date().isoformat(),
+                    'end': daily_end.date().isoformat(),
+                }
+            },
+            'monthly_analysis': {
+                'data': monthly_result,
+                'years_analyzed': num_years,
+                'peak_month': peak_month,
+                'period': {
+                    'start': monthly_start.date().isoformat(),
+                    'end': monthly_end.date().isoformat(),
+                }
+            },
+            'total_revenue': total_revenue_all,
+        })
+
+    @action(detail=False, methods=['get'])
     def export_stock_list(self, request, organization_slug=None):
         """Export complete stock list as CSV"""
         import csv
@@ -3657,7 +3868,7 @@ class SaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.Mode
         # Vérifier si l'utilisateur est un employé et a la permission "create_sales"
         user = request.user
         admin = getattr(user, 'user_type', None) == 'admin' 
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales', request=request)
         if not (admin or is_employee_with_permission):
             return Response(
                 {'error': "Vous n'avez pas la permission de créer des paiements."},
@@ -4438,7 +4649,7 @@ class CreditSaleViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewset
 
         user = request.user
         admin = getattr(user, 'user_type', None) == 'admin' 
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('inventory.update_sales', request=request)
         if not (admin or is_employee_with_permission):
             return Response(
                 {'error': "Vous n'avez pas la permission de créer des paiements."},

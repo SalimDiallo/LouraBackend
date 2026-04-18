@@ -6,7 +6,7 @@ from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveRequest, LeaveBalance,
     PayrollPeriod, Payslip, PayslipItem, PayrollAdvance,
-    Attendance, QRCodeSession
+    Attendance, QRCodeSession, EmployeeInvitation
 )
 
 
@@ -474,7 +474,7 @@ class DepartmentSerializer(serializers.ModelSerializer):
         return obj.parent_department.name if obj.parent_department else None
 
     def get_employee_count(self, obj):
-        return obj.employees.filter(employment_status='active').count()
+        return obj.employeemembership_set.filter(employment_status='active').count()
 
     def create(self, validated_data):
         """Gère la création avec le head (accepte head ou manager)"""
@@ -511,7 +511,7 @@ class PositionSerializer(serializers.ModelSerializer):
         read_only_fields = ['id', 'organization', 'created_at', 'updated_at']
 
     def get_employee_count(self, obj):
-        return obj.employees.filter(employment_status='active').count()
+        return obj.employeemembership_set.filter(employment_status='active').count()
 
 
 class ContractSerializer(serializers.ModelSerializer):
@@ -1629,3 +1629,168 @@ class PayrollAdvanceListSerializer(serializers.ModelSerializer):
             'amount', 'reason', 'request_date', 'status', 'status_display','rejection_reason',
             'approved_by_name', 'approved_date', 'payment_date', 'payslip', 'created_at'
         ]
+
+
+# ===============================
+# EMPLOYEE INVITATION SERIALIZERS
+# ===============================
+
+class EmployeeInvitationSerializer(serializers.ModelSerializer):
+    """Serializer for Employee Invitation listing"""
+
+    id = serializers.SerializerMethodField()
+    organization = serializers.SerializerMethodField()
+    invited_by_name = serializers.CharField(source='invited_by.get_full_name', read_only=True)
+    role_name = serializers.CharField(source='assigned_role.name', read_only=True, allow_null=True)
+    status_display = serializers.CharField(source='get_status_display', read_only=True)
+    is_expired = serializers.ReadOnlyField()
+    is_valid = serializers.ReadOnlyField()
+
+    class Meta:
+        model = EmployeeInvitation
+        fields = [
+            'id', 'organization', 'email', 'first_name', 'last_name',
+            'assigned_role', 'role_name', 'department', 'position',
+            'status', 'status_display', 'invited_by_name',
+            'sent_at', 'expires_at', 'accepted_at',
+            'invitation_message', 'resent_count', 'last_resent_at',
+            'is_expired', 'is_valid'
+        ]
+        read_only_fields = ['id', 'sent_at', 'accepted_at', 'resent_count', 'last_resent_at']
+
+    def get_id(self, obj):
+        """Convert UUID to string"""
+        return str(obj.id) if obj.id else None
+
+    def get_organization(self, obj):
+        """Convert UUID to string"""
+        return str(obj.organization.id) if obj.organization else None
+
+
+class EmployeeInvitationCreateSerializer(serializers.ModelSerializer):
+    """Serializer for creating a new Employee Invitation"""
+
+    role_id = serializers.PrimaryKeyRelatedField(
+        queryset=Role.objects.all(),
+        source='assigned_role',
+        required=True,
+        help_text="Rôle à attribuer à l'employé"
+    )
+    department_id = serializers.PrimaryKeyRelatedField(
+        queryset=Department.objects.all(),
+        source='department',
+        required=False,
+        allow_null=True
+    )
+    position_id = serializers.PrimaryKeyRelatedField(
+        queryset=Position.objects.all(),
+        source='position',
+        required=False,
+        allow_null=True
+    )
+    custom_permission_codes = serializers.ListField(
+        child=serializers.CharField(),
+        write_only=True,
+        required=False,
+        help_text="Liste des codes de permissions personnalisées"
+    )
+
+    class Meta:
+        model = EmployeeInvitation
+        fields = [
+            'email', 'role_id', 'first_name', 'last_name',
+            'department_id', 'position_id', 'invitation_message',
+            'custom_permission_codes'
+        ]
+
+    def validate_email(self, value):
+        """Validate that email is not already used in this organization"""
+        organization = self.context.get('organization')
+        if not organization:
+            raise serializers.ValidationError("Organization context is required")
+
+        # Check if employee already exists
+        if Employee.objects.filter(email=value, organization=organization).exists():
+            raise serializers.ValidationError(
+                "Un employé avec cet email existe déjà dans votre organisation"
+            )
+
+        # Check if there's already a pending invitation
+        if EmployeeInvitation.objects.filter(
+            email=value,
+            organization=organization,
+            status=EmployeeInvitation.InvitationStatus.PENDING
+        ).exists():
+            raise serializers.ValidationError(
+                "Une invitation est déjà en attente pour cet email"
+            )
+
+        return value
+
+    def validate_role_id(self, value):
+        """Validate that role belongs to the organization or is a system role"""
+        organization = self.context.get('organization')
+        # Allow system roles (organization is None) or roles belonging to the same organization
+        if value and value.organization_id is not None and value.organization_id != organization.id:
+            raise serializers.ValidationError("Le rôle sélectionné n'appartient pas à votre organisation")
+        return value
+
+    def validate_department_id(self, value):
+        """Validate that department belongs to the organization"""
+        organization = self.context.get('organization')
+        if value and value.organization_id != organization.id:
+            raise serializers.ValidationError("Le département sélectionné n'appartient pas à votre organization")
+        return value
+
+    def validate_position_id(self, value):
+        """Validate that position belongs to the organization"""
+        organization = self.context.get('organization')
+        if value and value.organization_id != organization.id:
+            raise serializers.ValidationError("Le poste sélectionné n'appartient pas à votre organisation")
+        return value
+
+
+class EmployeeAcceptInvitationSerializer(serializers.Serializer):
+    """Serializer for accepting an invitation"""
+
+    password = serializers.CharField(
+        write_only=True,
+        required=True,
+        validators=[validate_password],
+        help_text="Mot de passe pour le nouveau compte"
+    )
+    password_confirm = serializers.CharField(
+        write_only=True,
+        required=True,
+        help_text="Confirmation du mot de passe"
+    )
+
+    # Personal information
+    first_name = serializers.CharField(required=True, max_length=100)
+    last_name = serializers.CharField(required=True, max_length=100)
+    phone = serializers.CharField(required=False, allow_blank=True, max_length=20)
+    date_of_birth = serializers.DateField(required=False, allow_null=True)
+    address = serializers.CharField(required=False, allow_blank=True)
+    city = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    country = serializers.CharField(required=False, allow_blank=True, max_length=100)
+    emergency_contact = serializers.CharField(required=False, allow_blank=True)
+
+    def validate(self, attrs):
+        """Validate that passwords match"""
+        if attrs.get('password') != attrs.get('password_confirm'):
+            raise serializers.ValidationError({
+                'password_confirm': "Les mots de passe ne correspondent pas"
+            })
+        return attrs
+
+
+class EmployeeInvitationVerifySerializer(serializers.Serializer):
+    """Serializer for verifying an invitation token"""
+
+    valid = serializers.BooleanField(read_only=True)
+    email = serializers.EmailField(read_only=True)
+    organization_name = serializers.CharField(read_only=True)
+    role_name = serializers.CharField(read_only=True, allow_null=True)
+    first_name = serializers.CharField(read_only=True, allow_blank=True)
+    last_name = serializers.CharField(read_only=True, allow_blank=True)
+    expires_at = serializers.DateTimeField(read_only=True)

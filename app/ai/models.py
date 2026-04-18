@@ -16,14 +16,14 @@ class Conversation(models.Model):
     user = models.ForeignKey(
         settings.AUTH_USER_MODEL,
         on_delete=models.CASCADE,
-        related_name='ai_conversations',
+        related_name='ai_user_conversations',
         null=True,
         blank=True
     )
     employee = models.ForeignKey(
         'hr.Employee',
         on_delete=models.CASCADE,
-        related_name='ai_conversations',
+        related_name='ai_employee_conversations',
         null=True,
         blank=True
     )

@@ -36,6 +36,36 @@
 
 ---
 
+## [2026-04-15] Utiliser TokenService, pas AuthenticationService pour la génération de tokens
+
+### Ce qui s'est mal passé
+- Erreur `AttributeError: type object 'AuthenticationService' has no attribute 'generate_tokens_for_user'`
+- Le code appelait `AuthenticationService.generate_tokens_for_user()` dans `hr/views.py:3609`
+- Échec de l'acceptation d'invitation employé avec 500 Internal Server Error
+
+### Cause racine
+- La méthode `generate_tokens_for_user` appartient à la classe `TokenService` (ligne 293 dans `authentication/services.py`)
+- L'architecture sépare les services en trois classes distinctes :
+  - `AuthenticationService` : authentification, login, logout
+  - `TokenService` : génération et gestion des tokens JWT
+  - `ProfileService` : gestion du profil utilisateur
+- Le code utilisait la mauvaise classe de service
+
+### Règle pour l'éviter
+1. **TOUJOURS utiliser `TokenService.generate_tokens_for_user()`** pour générer des tokens JWT
+2. Vérifier l'architecture des services dans `authentication/services.py` :
+   - `AuthenticationService` → login/logout/register
+   - `TokenService` → tokens JWT
+   - `ProfileService` → profil utilisateur
+3. Ne jamais supposer qu'une méthode existe sans vérifier le code source
+4. Import correct :
+   ```python
+   from authentication.services import TokenService
+   tokens = TokenService.generate_tokens_for_user(user, user_type='employee')
+   ```
+
+---
+
 ## Template pour futures leçons
 
 ```

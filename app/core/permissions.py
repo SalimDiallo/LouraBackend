@@ -98,9 +98,12 @@ class BaseHasPermission(BasePermission):
         if user_type == 'admin':
             return True
 
-        # Employee = vérifier via has_permission()
+        # Employee = vérifier via has_permission() avec context de la requête
         if user_type == 'employee':
-            return user.has_permission(permission_code)
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            if hasattr(employee, 'has_permission'):
+                return employee.has_permission(permission_code, request=request)
+            return False
 
         return False
 
@@ -135,9 +138,11 @@ class BaseHasAnyPermission(BasePermission):
             return True
 
         if user_type == 'employee':
-            for code in permission_codes:
-                if user.has_permission(code):
-                    return True
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            if hasattr(employee, 'has_permission'):
+                for code in permission_codes:
+                    if employee.has_permission(code, request=request):
+                        return True
             return False
 
         return False
@@ -208,21 +213,26 @@ class BaseCRUDPermission(BasePermission):
             return True
 
         action = getattr(view, 'action', None)
-        
+
         # Si allow_list_without_permission et action list, permettre
         allow_list = getattr(view, 'allow_list_without_permission', False)
         if allow_list and action == 'list':
             return True
 
+        # Récupérer l'employé concret
+        employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+        if not hasattr(employee, 'has_permission'):
+            return False
+
         # Générer et vérifier la permission
         if action in self.ACTION_MAPPING:
             permission_code = self.get_permission_code(view, action)
-            return user.has_permission(permission_code)
+            return employee.has_permission(permission_code, request=request)
 
         # Actions personnalisées : vérifier required_permission sur l'action
         action_func = getattr(view, action, None) if action else None
         if action_func and hasattr(action_func, 'required_permission'):
-            return user.has_permission(action_func.required_permission)
+            return employee.has_permission(action_func.required_permission, request=request)
 
         return True
 
@@ -234,22 +244,22 @@ class BaseCRUDPermission(BasePermission):
 class IsOrganizationMember(BasePermission):
     """
     Vérifie que l'utilisateur appartient à l'organisation demandée.
-    
+
     - AdminUser : doit être admin de l'organisation
-    - Employee : doit appartenir à l'organisation
+    - Employee : doit avoir un membership actif dans l'organisation
     """
-    
+
     def has_permission(self, request, view):
         if not request.user or not request.user.is_authenticated:
             return False
 
         user = request.user
         user_type = getattr(user, 'user_type', None)
-        
+
         # Récupérer l'ID ou subdomain de l'organisation depuis la requête
         org_id = request.query_params.get('organization') or request.data.get('organization')
         org_subdomain = (
-            request.query_params.get('organization_subdomain') or 
+            request.query_params.get('organization_subdomain') or
             request.headers.get('X-Organization-Subdomain')
         )
 
@@ -264,10 +274,26 @@ class IsOrganizationMember(BasePermission):
             return True
 
         if user_type == 'employee':
+            # Récupérer l'employé concret pour accéder aux memberships
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+
+            if not hasattr(employee, 'memberships'):
+                return False
+
             if org_id:
-                return str(user.organization_id) == str(org_id)
+                # Vérifier membership actif pour cette organisation
+                return employee.memberships.filter(
+                    organization_id=org_id,
+                    employment_status='active'
+                ).exists()
+
             if org_subdomain:
-                return user.organization.subdomain == org_subdomain
+                # Vérifier membership actif pour ce subdomain
+                return employee.memberships.filter(
+                    organization__subdomain=org_subdomain,
+                    employment_status='active'
+                ).exists()
+
             return True
 
         return False

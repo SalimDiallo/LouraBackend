@@ -26,25 +26,14 @@ class MultiUserJWTAuthentication(JWTAuthentication):
             user_id = validated_token.get('user_id')
             user_type = validated_token.get('user_type', 'admin')
 
-            if user_type == 'employee':
-                # Chercher un Employee
-                try:
-                    user = Employee.objects.get(id=user_id)
-                    # Ajouter un attribut pour identifier le type
-                    user.is_employee = True
-                    return user
-                except Employee.DoesNotExist:
-                    raise InvalidToken('Employee not found')
-            else:
-                # Chercher un AdminUser (comportement par défaut)
-                AdminUser = get_user_model()
-                try:
-                    user = AdminUser.objects.get(id=user_id)
-                    # Ajouter un attribut pour identifier le type
-                    user.is_employee = False
-                    return user
-                except AdminUser.DoesNotExist:
-                    raise InvalidToken('AdminUser not found')
+            # Charger le BaseUser pour éviter les conflits de types avec OutstandingToken
+            from core.models import BaseUser
+            try:
+                user = BaseUser.objects.get(id=user_id)
+                user.is_employee = (user_type == 'employee')
+                return user
+            except BaseUser.DoesNotExist:
+                raise InvalidToken(f'{user_type.capitalize()} not found')
 
         except KeyError:
             raise InvalidToken('Token contained no recognizable user identification')

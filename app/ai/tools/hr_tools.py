@@ -52,7 +52,7 @@ def list_employees(organization, search: str = None, status: str = None,
     from hr.models import Employee
     from django.db.models import Q
 
-    qs = Employee.objects.filter(organization=organization)
+    qs = Employee.objects.filter(memberships__organization=organization).distinct()
 
     if search:
         qs = qs.filter(
@@ -103,7 +103,7 @@ def get_hr_stats(organization) -> dict:
     from hr.models import Employee, Department, LeaveRequest
     from django.utils import timezone
 
-    employees = Employee.objects.filter(organization=organization)
+    employees = Employee.objects.filter(memberships__organization=organization).distinct()
     now = timezone.now()
 
     total = employees.count()
@@ -116,11 +116,11 @@ def get_hr_stats(organization) -> dict:
     # Congés en cours
     try:
         pending_leaves = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='pending',
         ).count()
         approved_leaves = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='approved',
             start_date__lte=now.date(),
             end_date__gte=now.date(),
@@ -159,7 +159,7 @@ def list_departments(organization) -> dict:
 
     results = []
     for d in departments:
-        employee_count = Employee.objects.filter(department=d, organization=organization).count()
+        employee_count = Employee.objects.filter(memberships__department=d, memberships__organization=organization).distinct().count()
         results.append({
             "id": str(d.id),
             "nom": d.name,
@@ -197,7 +197,7 @@ def list_leave_requests(organization, status: str = "pending") -> dict:
     from hr.models import LeaveRequest
 
     qs = LeaveRequest.objects.filter(
-        employee__organization=organization,
+        employee__memberships__organization=organization,
         status=status,
     ).select_related('employee', 'leave_type').order_by('-created_at')[:20]
 
@@ -273,7 +273,7 @@ def create_employee(organization, first_name: str, last_name: str, email: str,
     from hr.models import Employee, Department, Position
 
     # Vérifier que l'email n'existe pas déjà
-    if Employee.objects.filter(email=email, organization=organization).exists():
+    if Employee.objects.filter(email=email, memberships__organization=organization).exists():
         return {
             "success": False,
             "error": f"Un employé avec l'email '{email}' existe déjà dans cette organisation.",

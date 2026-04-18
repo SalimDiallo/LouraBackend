@@ -44,17 +44,94 @@ class EmployeeManager(models.Manager):
         return user
 
 
+class EmployeeMembership(TimeStampedModel):
+    """
+    Appartenance d'un employé à une organisation.
+    Permet à un employé d'être dans plusieurs organisations.
+    """
+    employee = models.ForeignKey(
+        'Employee',
+        on_delete=models.CASCADE,
+        related_name='memberships'
+    )
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='employee_memberships'
+    )
+    department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    position = models.ForeignKey(
+        'Position',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    assigned_role = models.ForeignKey(
+        Role,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Rôle dans cette organisation"
+    )
+    employment_status = models.CharField(
+        max_length=20,
+        choices=[
+            ('active', 'Actif'),
+            ('on_leave', 'En congé'),
+            ('suspended', 'Suspendu'),
+            ('terminated', 'Terminé'),
+        ],
+        default='active'
+    )
+    hire_date = models.DateField(null=True, blank=True)
+    termination_date = models.DateField(null=True, blank=True)
+    is_primary = models.BooleanField(
+        default=False,
+        help_text="Organisation principale de l'employé"
+    )
+
+    class Meta:
+        db_table = 'hr_employee_memberships'
+        unique_together = [['employee', 'organization']]
+        verbose_name = "Appartenance employé"
+        verbose_name_plural = "Appartenances employés"
+        indexes = [
+            models.Index(fields=['employee', 'organization']),
+            models.Index(fields=['organization', 'employment_status']),
+        ]
+
+    def __str__(self):
+        return f"{self.employee.get_full_name()} @ {self.organization.name}"
+
+
 class Employee(BaseUser):
     """
     Employé d'une organisation.
     Hérite de BaseUser pour le polymorphisme avec AdminUser.
+    Peut appartenir à plusieurs organisations via EmployeeMembership.
     """
 
+    # Champ legacy - déprécié, gardé pour compatibilité
     organization = models.ForeignKey(
         Organization,
         on_delete=models.CASCADE,
+        related_name='employees_legacy',
+        help_text="Organisation de l'employé (legacy)",
+        null=True,
+        blank=True
+    )
+
+    # Nouveau champ pour multi-organisations
+    organizations = models.ManyToManyField(
+        Organization,
+        through='EmployeeMembership',
         related_name='employees',
-        help_text="Organisation de l'employé"
+        help_text="Organisations de l'employé"
     )
 
     employee_id = models.CharField(
@@ -63,7 +140,8 @@ class Employee(BaseUser):
         help_text="Matricule de l'employé"
     )
 
-    date_of_birth = models.DateField(null=True, blank=True)
+    # Note: date_of_birth, address, city, country, department, position, role, status
+    # sont maintenant dans EmployeeMembership (par organisation)
 
     GENDER_CHOICES = [
         ('male', 'Homme'),
@@ -72,26 +150,6 @@ class Employee(BaseUser):
     ]
     gender = models.CharField(max_length=10, choices=GENDER_CHOICES, blank=True)
 
-    address = models.TextField(blank=True)
-    city = models.CharField(max_length=100, blank=True)
-    country = models.CharField(max_length=100, blank=True)
-
-    department = models.ForeignKey(
-        'Department',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='employees'
-    )
-
-    position = models.ForeignKey(
-        'Position',
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='employees'
-    )
-
     contract = models.ForeignKey(
         'Contract',
         on_delete=models.SET_NULL,
@@ -99,9 +157,6 @@ class Employee(BaseUser):
         blank=True,
         related_name='employees'
     )
-
-    hire_date = models.DateField(null=True, blank=True)
-    termination_date = models.DateField(null=True, blank=True)
 
     # Manager peut être Employee ou AdminUser
     manager = models.ForeignKey(
@@ -112,34 +167,7 @@ class Employee(BaseUser):
         related_name='subordinates'
     )
 
-    assigned_role = models.ForeignKey(
-        Role,
-        on_delete=models.SET_NULL,
-        null=True,
-        blank=True,
-        related_name='employees',
-        help_text="Rôle attribué à l'employé"
-    )
-
-    STATUS_CHOICES = [
-        ('active', 'Actif'),
-        ('on_leave', 'En congé'),
-        ('suspended', 'Suspendu'),
-        ('terminated', 'Terminé'),
-    ]
-
-    employment_status = models.CharField(
-        max_length=20,
-        choices=STATUS_CHOICES,
-        default='active'
-    )
-
-    emergency_contact = models.JSONField(
-        null=True,
-        blank=True,
-        default=dict,
-        help_text="Contact d'urgence (name, phone, relationship)"
-    )
+    # Note: emergency_contact est maintenant hérité de BaseUser
 
     custom_permissions = models.ManyToManyField(
         Permission,
@@ -156,7 +184,6 @@ class Employee(BaseUser):
         verbose_name_plural = "Employés"
         ordering = ['last_name', 'first_name']
         indexes = [
-            models.Index(fields=['organization', 'employment_status']),
             models.Index(fields=['employee_id']),
         ]
 
@@ -165,13 +192,77 @@ class Employee(BaseUser):
         super().save(*args, **kwargs)
 
     def __str__(self):
-        return f"{self.get_full_name()} ({self.organization.name})"
+        primary_org = self.get_primary_membership()
+        if primary_org:
+            return f"{self.get_full_name()} ({primary_org.organization.name})"
+        return f"{self.get_full_name()}"
 
-    def has_permission(self, permission_code):
+    def get_primary_membership(self):
+        """Retourne le membership primaire ou le premier membership"""
+        return self.memberships.filter(is_primary=True).first() or self.memberships.first()
+
+    def get_membership_for_org(self, organization):
+        """Retourne le membership pour une organisation donnée"""
+        return self.memberships.filter(organization=organization).first()
+
+    # Propriétés de compatibilité - utilisent le membership primaire
+    @property
+    def primary_organization(self):
+        """Organisation primaire de l'employé"""
+        membership = self.get_primary_membership()
+        return membership.organization if membership else self.organization
+
+    @property
+    def department(self):
+        """Department depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.department if membership else None
+
+    @property
+    def position(self):
+        """Position depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.position if membership else None
+
+    @property
+    def assigned_role(self):
+        """Role depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.assigned_role if membership else None
+
+    @property
+    def employment_status(self):
+        """Status depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.employment_status if membership else 'active'
+
+    @property
+    def hire_date(self):
+        """Date d'embauche depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.hire_date if membership else None
+
+    @property
+    def termination_date(self):
+        """Date de fin depuis le membership primaire"""
+        membership = self.get_primary_membership()
+        return membership.termination_date if membership else None
+
+    def has_permission(self, permission_code, organization=None, request=None):
         """
         Vérifie si l'employé a une permission.
         Supporte les anciens formats (can_view_employee) et les convertit
         vers le nouveau format (hr.view_employees).
+
+        Args:
+            permission_code: Code de la permission à vérifier
+            organization: Organisation spécifique (optionnel)
+            request: Request Django/DRF pour extraire org du JWT (optionnel)
+
+        Priority:
+            1. Si organization fourni → utiliser ce membership
+            2. Si request fourni → extraire org du JWT
+            3. Sinon → utiliser le membership primaire (backward compat)
         """
         # Mapping des anciens codes vers les nouveaux
         LEGACY_MAPPING = {
@@ -220,14 +311,40 @@ class Employee(BaseUser):
             'can_manual_checkin': 'hr.manual_checkin',
             'can_create_qr_session': 'hr.create_qr_session',
         }
-        
+
         # Normaliser le code de permission
         normalized_code = LEGACY_MAPPING.get(permission_code, permission_code)
-        
+
+        # Déterminer l'organisation à utiliser
+        target_org = organization
+
+        if not target_org and request:
+            # Extraire org_id du JWT
+            if hasattr(request, 'auth') and request.auth:
+                org_id = request.auth.get('organization_id')
+                if org_id:
+                    from core.models import Organization
+                    try:
+                        target_org = Organization.objects.get(id=org_id)
+                    except Organization.DoesNotExist:
+                        pass
+
+        # Récupérer le rôle approprié
+        if target_org:
+            membership = self.memberships.filter(organization=target_org).first()
+            role = membership.assigned_role if membership else None
+        else:
+            # Fallback : membership primaire (backward compatibility)
+            role = self.assigned_role
+
+        # Vérifier permissions custom (globales à l'employé)
         if self.custom_permissions.filter(code=normalized_code).exists():
             return True
-        if self.assigned_role:
-            return self.assigned_role.permissions.filter(code=normalized_code).exists()
+
+        # Vérifier permissions du rôle
+        if role:
+            return role.permissions.filter(code=normalized_code).exists()
+
         return False
 
     def get_all_permissions(self):
@@ -252,6 +369,210 @@ class Employee(BaseUser):
         if self.first_name and self.last_name:
             return f"{self.first_name} {self.last_name}"
         return self.first_name or self.last_name or self.email
+
+
+# ===============================
+# EMPLOYEE INVITATION SYSTEM
+# ===============================
+
+class EmployeeInvitation(TimeStampedModel):
+    """
+    Invitation pour un nouvel employee.
+    Permet de gérer le processus d'onboarding de manière sécurisée.
+    """
+
+    class InvitationStatus(models.TextChoices):
+        PENDING = 'pending', 'En attente'
+        ACCEPTED = 'accepted', 'Acceptée'
+        EXPIRED = 'expired', 'Expirée'
+        CANCELLED = 'cancelled', 'Annulée'
+
+    # Relations
+    organization = models.ForeignKey(
+        Organization,
+        on_delete=models.CASCADE,
+        related_name='employee_invitations'
+    )
+
+    invited_by = models.ForeignKey(
+        BaseUser,
+        on_delete=models.SET_NULL,
+        null=True,
+        related_name='sent_invitations',
+        help_text="Administrateur qui a envoyé l'invitation"
+    )
+
+    employee = models.ForeignKey(
+        'Employee',
+        on_delete=models.CASCADE,
+        null=True,
+        blank=True,
+        related_name='invitations',
+        help_text="Employee créé suite à l'acceptation (null si pas encore acceptée)"
+    )
+
+    # Données d'invitation
+    email = models.EmailField(
+        help_text="Email de l'employee invité"
+    )
+
+    assigned_role = models.ForeignKey(
+        Role,
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True,
+        help_text="Rôle qui sera attribué à l'employee"
+    )
+
+    # Données optionnelles pré-remplies
+    first_name = models.CharField(max_length=100, blank=True)
+    last_name = models.CharField(max_length=100, blank=True)
+    department = models.ForeignKey(
+        'Department',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+    position = models.ForeignKey(
+        'Position',
+        on_delete=models.SET_NULL,
+        null=True,
+        blank=True
+    )
+
+    custom_permissions = models.ManyToManyField(
+        Permission,
+        blank=True,
+        related_name='invited_employees',
+        help_text="Permissions personnalisées supplémentaires"
+    )
+
+    # Token et sécurité
+    token = models.CharField(
+        max_length=64,
+        unique=True,
+        editable=False,
+        help_text="Token sécurisé pour l'activation"
+    )
+
+    status = models.CharField(
+        max_length=20,
+        choices=InvitationStatus.choices,
+        default=InvitationStatus.PENDING
+    )
+
+    # Dates
+    sent_at = models.DateTimeField(auto_now_add=True)
+    expires_at = models.DateTimeField(
+        help_text="Date d'expiration de l'invitation"
+    )
+    accepted_at = models.DateTimeField(null=True, blank=True)
+
+    # Métadonnées
+    invitation_message = models.TextField(
+        blank=True,
+        help_text="Message personnalisé de l'administrateur"
+    )
+
+    resent_count = models.IntegerField(
+        default=0,
+        help_text="Nombre de fois que l'invitation a été renvoyée"
+    )
+
+    last_resent_at = models.DateTimeField(null=True, blank=True)
+
+    class Meta:
+        db_table = 'employee_invitations'
+        verbose_name = "Invitation Employee"
+        verbose_name_plural = "Invitations Employee"
+        ordering = ['-sent_at']
+        indexes = [
+            models.Index(fields=['organization', 'status']),
+            models.Index(fields=['email']),
+            models.Index(fields=['token']),
+            models.Index(fields=['expires_at']),
+        ]
+        constraints = [
+            # Un seul invitation PENDING par email et organisation
+            models.UniqueConstraint(
+                fields=['organization', 'email'],
+                condition=models.Q(status='pending'),
+                name='unique_pending_invitation_per_email'
+            )
+        ]
+
+    def save(self, *args, **kwargs):
+        # Générer token si nouveau
+        if not self.token:
+            import secrets
+            self.token = secrets.token_urlsafe(48)
+
+        # Définir date d'expiration si nouvelle invitation
+        if not self.expires_at:
+            from datetime import timedelta
+            from django.utils import timezone
+            self.expires_at = timezone.now() + timedelta(days=7)
+
+        super().save(*args, **kwargs)
+
+    def __str__(self):
+        return f"Invitation pour {self.email} - {self.get_status_display()}"
+
+    @property
+    def is_expired(self):
+        """Vérifie si l'invitation est expirée"""
+        from django.utils import timezone
+        return timezone.now() > self.expires_at and self.status == self.InvitationStatus.PENDING
+
+    @property
+    def is_valid(self):
+        """Vérifie si l'invitation est valide (pending et non expirée)"""
+        return self.status == self.InvitationStatus.PENDING and not self.is_expired
+
+    def mark_as_expired(self):
+        """Marque l'invitation comme expirée"""
+        self.status = self.InvitationStatus.EXPIRED
+        self.save(update_fields=['status'])
+
+    def mark_as_accepted(self, employee):
+        """Marque l'invitation comme acceptée"""
+        from django.utils import timezone
+        self.status = self.InvitationStatus.ACCEPTED
+        self.accepted_at = timezone.now()
+        self.employee = employee
+        self.save(update_fields=['status', 'accepted_at', 'employee'])
+
+    def mark_as_cancelled(self):
+        """Annule l'invitation"""
+        self.status = self.InvitationStatus.CANCELLED
+        self.save(update_fields=['status'])
+
+    def resend(self):
+        """
+        Régénère le token et prolonge l'expiration.
+        Utilisé pour renvoyer une invitation.
+        """
+        import secrets
+        from datetime import timedelta
+        from django.utils import timezone
+
+        self.token = secrets.token_urlsafe(48)
+        self.expires_at = timezone.now() + timedelta(days=7)
+        self.resent_count += 1
+        self.last_resent_at = timezone.now()
+        self.status = self.InvitationStatus.PENDING
+        self.save(update_fields=['token', 'expires_at', 'resent_count', 'last_resent_at', 'status'])
+
+    def get_invitation_url(self, request=None):
+        """Génère l'URL d'invitation complète"""
+        from django.conf import settings
+
+        if request:
+            base_url = request.build_absolute_uri('/')[:-1]
+        else:
+            base_url = getattr(settings, 'FRONTEND_URL', 'http://localhost:3000')
+
+        return f"{base_url}/invite/accept/{self.token}"
 
 
 # ===============================

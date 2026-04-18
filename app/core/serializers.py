@@ -26,15 +26,30 @@ class OrganizationSerializer(serializers.ModelSerializer):
     category_details = CategorySerializer(source='category', read_only=True)
     admin_email = serializers.EmailField(source='admin.email', read_only=True)
     modules = serializers.SerializerMethodField()
+    role = serializers.SerializerMethodField()
 
     class Meta:
         model = Organization
         fields = [
             'id', 'name', 'subdomain', 'logo_url', 'logo', 'category',
             'category_details', 'admin', 'admin_email', 'is_active',
-            'created_at', 'updated_at', 'settings', 'modules'
+            'created_at', 'updated_at', 'settings', 'modules', 'role'
         ]
         read_only_fields = ['id', 'admin', 'created_at', 'updated_at']
+
+    def get_role(self, obj):
+        """Return the role of the current user in this organization"""
+        request = self.context.get('request')
+        if not request or not hasattr(request, 'user') or not request.user:
+            return None
+            
+        concrete = request.user.get_concrete_user() if hasattr(request.user, 'get_concrete_user') else request.user
+        
+        # Check if user is the admin (owner) of the organization
+        if getattr(obj, 'admin_id', None) == getattr(concrete, 'id', request.user.id) or getattr(obj, 'admin_id', None) == request.user.id:
+            return 'admin'
+            
+        return 'employee'
 
     def get_modules(self, obj):
         """Return enabled modules for this organization"""

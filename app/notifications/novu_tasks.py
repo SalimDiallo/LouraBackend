@@ -122,7 +122,7 @@ def novu_sync_all_subscribers_task(organization_id: str | None = None):
             from django.db.models import Q
             qs = qs.filter(
                 Q(adminuser__organizations=org) |
-                Q(employee__organization=org)
+                Q(employee__memberships__organization=org)
             ).distinct()
         except Organization.DoesNotExist:
             logger.warning("Organisation %s non trouvée pour sync Novu", organization_id)

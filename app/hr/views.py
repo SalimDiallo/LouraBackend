@@ -33,7 +33,8 @@ from core.models import Organization, AdminUser
 from .models import (
     Employee, Department, Position, Contract,
     LeaveType, LeaveRequest, LeaveBalance,
-    PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role, Attendance
+    PayrollPeriod, Payslip, PayslipItem, PayrollAdvance, Permission, Role, Attendance,
+    EmployeeInvitation
 )
 
 # Serializers
@@ -48,7 +49,9 @@ from .serializers import (
     PayrollAdvanceApprovalSerializer,
     PermissionSerializer, RoleSerializer, RoleListSerializer, RoleCreateSerializer,
     AttendanceSerializer, AttendanceCreateSerializer, AttendanceCheckInSerializer,
-    AttendanceCheckOutSerializer, AttendanceApprovalSerializer, AttendanceStatsSerializer
+    AttendanceCheckOutSerializer, AttendanceApprovalSerializer, AttendanceStatsSerializer,
+    EmployeeInvitationSerializer, EmployeeInvitationCreateSerializer,
+    EmployeeAcceptInvitationSerializer, EmployeeInvitationVerifySerializer
 )
 
 # Permissions (depuis le nouveau fichier unifié)
@@ -124,54 +127,125 @@ class EmployeeViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
     """
     ViewSet pour la gestion des employés.
     
-    Utilise BaseOrganizationViewSetMixin pour:
-    - Filtrage automatique par organisation
-    - Création avec organisation automatique
-    - Actions activate/deactivate
+    Utilise un filtrage basé sur EmployeeMembership pour le multi-org.
+    Le champ legacy 'organization' FK n'est plus fiable — les employés
+    sont maintenant liés aux organisations via EmployeeMembership.
     """
     queryset = Employee.objects.all()
     permission_classes = [IsAdminUserOrEmployee, RequiresEmployeePermission]
     
-    # Configuration du mixin
+    # Configuration du mixin (pour perform_create et activate/deactivate)
     organization_field = 'organization'
     view_permission = 'hr.view_employees'
     create_permission = 'hr.create_employees'
     activation_permission = 'hr.activate_employees'
     
     # Filtres et recherche (pour référence, filtrage manuel dans get_queryset)
-    filterset_fields = ['department', 'position', 'employment_status', 'is_active']
+    filterset_fields = ['is_active']
     search_fields = ['first_name', 'last_name', 'email', 'employee_id']
 
     allow_list_without_permission = True  # Permet de lister pour les dropdowns
 
+    def _get_membership_queryset(self):
+        """
+        Filtre les employés par organisation via EmployeeMembership.
+        Remplace le filtrage legacy basé sur le champ FK 'organization'.
+        Supporte admin (multi-org) et employee (single-org).
+        """
+        user = self.request.user
+        user_type = getattr(user, 'user_type', None)
+        base_queryset = Employee.objects.all()
+
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+
+        if user_type == 'admin':
+            admin = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            if org_subdomain:
+                # Filtrer par organisation spécifique via memberships
+                try:
+                    from core.models import Organization as Org
+                    organization = Org.objects.get(subdomain=org_subdomain, admin=admin)
+                    return base_queryset.filter(
+                        memberships__organization=organization
+                    ).distinct()
+                except Org.DoesNotExist:
+                    return base_queryset.none()
+            else:
+                # Toutes les organisations de l'admin
+                org_ids = admin.organizations.values_list('id', flat=True)
+                return base_queryset.filter(
+                    memberships__organization_id__in=org_ids
+                ).distinct()
+
+        elif user_type == 'employee':
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+
+            # Vérifier permission (sauf pour list si allow_list_without_permission)
+            action = getattr(self, 'action', None)
+            skip_permission = self.allow_list_without_permission and action == 'list'
+            if self.view_permission and not skip_permission:
+                if not employee.has_permission(self.view_permission, request=self.request):
+                    return base_queryset.none()
+
+            # Utiliser l'org du subdomain si fourni, sinon l'org primaire de l'employé
+            if org_subdomain:
+                return base_queryset.filter(
+                    memberships__organization__subdomain=org_subdomain
+                ).distinct()
+            else:
+                org = getattr(employee, 'organization', None) or employee.primary_organization
+                if org:
+                    return base_queryset.filter(
+                        memberships__organization=org
+                    ).distinct()
+
+        return base_queryset.none()
 
     def get_queryset(self):
         """
-        Retourne le queryset avec filtrage par organisation et filtres supplémentaires.
+        Retourne le queryset avec filtrage par organisation via memberships
+        et filtres supplémentaires.
         """
-        queryset = super().get_queryset()
-        
-        # Filtrage par département
+        # Utiliser le filtrage basé sur les memberships au lieu du mixin parent
+        queryset = self._get_membership_queryset()
+
+        # Prefetch memberships pour optimisation
+        queryset = queryset.prefetch_related(
+            'memberships__department',
+            'memberships__position',
+            'memberships__assigned_role'
+        )
+
+        # Résoudre l'organisation pour les filtres scoped
+        org_subdomain = self.request.query_params.get('organization_subdomain')
+        membership_filters = {}
+        if org_subdomain:
+            membership_filters['memberships__organization__subdomain'] = org_subdomain
+
+        # Filtrage par département (via memberships, scoped à l'org)
         department = self.request.query_params.get('department')
         if department:
-            queryset = queryset.filter(department_id=department)
-        
-        # Filtrage par position
+            filters = {'memberships__department_id': department, **membership_filters}
+            queryset = queryset.filter(**filters).distinct()
+
+        # Filtrage par position (via memberships, scoped à l'org)
         position = self.request.query_params.get('position')
         if position:
-            queryset = queryset.filter(position_id=position)
-        
-        # Filtrage par statut d'emploi
+            filters = {'memberships__position_id': position, **membership_filters}
+            queryset = queryset.filter(**filters).distinct()
+
+        # Filtrage par statut d'emploi (via memberships, scoped à l'org)
         employment_status = self.request.query_params.get('employment_status')
         if employment_status:
-            queryset = queryset.filter(employment_status=employment_status)
-        
-        # Filtrage par is_active
+            filters = {'memberships__employment_status': employment_status, **membership_filters}
+            queryset = queryset.filter(**filters).distinct()
+
+        # Filtrage par is_active (champ direct sur Employee)
         is_active = self.request.query_params.get('is_active')
         if is_active is not None and is_active != '':
             is_active_bool = is_active.lower() in ('true', '1', 'yes')
             queryset = queryset.filter(is_active=is_active_bool)
-        
+
         # Recherche
         search = self.request.query_params.get('search')
         if search:
@@ -182,7 +256,7 @@ class EmployeeViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
                 Q(email__icontains=search) |
                 Q(employee_id__icontains=search)
             )
-        
+
         return queryset
 
     def get_serializer_class(self):
@@ -292,7 +366,7 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
     permission_classes = [IsAdminUserOrEmployee, RequiresContractPermission]
     
     # Configuration du mixin - les contrats sont liés à employee.organization
-    organization_field = 'employee__organization'
+    organization_field = 'employee__memberships__organization'
     view_permission = 'hr.view_contracts'
     create_permission = 'hr.create_contracts'
     allow_list_without_permission = True  # Permet de lister pour les dropdowns
@@ -310,19 +384,28 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
         
         # Vérifier la permission pour Employee
         if user_type == 'employee' and self.create_permission:
-            if not user.has_permission(self.create_permission):
+            if not user.has_permission(self.create_permission, request=self.request):
                 raise drf_serializers.ValidationError({'permission': 'Permission refusée'})
         
         # Valider que l'employé appartient à l'organisation de l'utilisateur
         employee = serializer.validated_data.get('employee')
         if employee:
+            # We must use employee.memberships or primary_organization because legacy organization is null
+            primary_org = employee.primary_organization
+            if not primary_org:
+                raise drf_serializers.ValidationError({
+                    'employee': "Cet employé n'est lié à aucune organisation"
+                })
+                
             if user_type == 'admin':
-                if not user.organizations.filter(id=employee.organization_id).exists():
+                admin_user = user.get_concrete_user()
+                if not admin_user.organizations.filter(id=primary_org.id).exists():
                     raise drf_serializers.ValidationError({
                         'employee': "Cet employé n'appartient pas à vos organisations"
                     })
             elif user_type == 'employee':
-                if user.organization != employee.organization:
+                employee_user = user.get_concrete_user()
+                if employee_user.primary_organization != primary_org:
                     raise drf_serializers.ValidationError({
                         'employee': "Cet employé n'appartient pas à votre organisation"
                     })
@@ -333,20 +416,27 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
     def get_queryset(self):
         user = self.request.user
         employee_id = self.request.query_params.get('employee')
-        
+
         # Filtrer par subdomain d'organisation si fourni en paramètre de requête
         org_subdomain = self.request.query_params.get('organization_subdomain')
+        
+        # Use employee__memberships__organization instead of legacy employee__organization
+        queryset = Contract.objects.all()
+        
         if org_subdomain:
-            queryset = Contract.objects.filter(employee__organization__subdomain=org_subdomain)
+            queryset = queryset.filter(employee__memberships__organization__subdomain=org_subdomain).distinct()
         elif getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
-            queryset = Contract.objects.filter(employee__organization_id__in=org_ids)
+            admin_user = user.get_concrete_user()
+            org_ids = admin_user.organizations.values_list('id', flat=True)
+            queryset = queryset.filter(employee__memberships__organization_id__in=org_ids).distinct()
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("can_view_contract"):
-                if user.is_hr_admin():
-                    queryset = Contract.objects.filter(employee__organization=user.organization)
+            employee_user = user.get_concrete_user()
+            if employee_user.has_permission("hr.view_contracts", request=request):
+                if employee_user.is_hr_admin():
+                    org = employee_user.primary_organization
+                    queryset = queryset.filter(employee__memberships__organization=org).distinct()
                 else:
-                    queryset = Contract.objects.filter(employee=user)
+                    queryset = queryset.filter(employee=employee_user)
             else:
                 queryset = Contract.objects.none()
         else:
@@ -375,7 +465,7 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
         user = request.user
 
         # Vérification de permission : doit pouvoir CRÉER un contrat
-        if not user.has_permission('hr.update_contracts'):
+        if not user.has_permission('hr.update_contracts', request=request):
             return Response(
                 {'error': "Vous n'avez pas la permission d'activer ce contrat."},
                 status=status.HTTP_403_FORBIDDEN
@@ -427,7 +517,7 @@ class ContractViewSet(PDFGeneratorMixin, BaseOrganizationViewSetMixin, viewsets.
         user = request.user
 
         # Vérification de permission : doit pouvoir CRÉER un contrat
-        if not user.has_permission('hr.update_contracts'):
+        if not user.has_permission('hr.update_contracts', request=request):
             return Response(
                 {'error': "Vous n'avez pas la permission de désactiver ce contrat."},
                 status=status.HTTP_403_FORBIDDEN
@@ -520,16 +610,18 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
 
     def get_queryset(self):
         user = self.request.user
-        
+
         # Accès selon le type d'utilisateur
         if getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
+            admin_user = user.get_concrete_user()
+            org_ids = admin_user.organizations.values_list('id', flat=True)
             queryset = LeaveType.objects.filter(organization_id__in=org_ids)
         elif getattr(user, 'user_type', None) == 'employee':
-            queryset = LeaveType.objects.filter(organization=user.organization)
+            employee_user = user.get_concrete_user()
+            queryset = LeaveType.objects.filter(organization=employee_user.organization)
         else:
             queryset = LeaveType.objects.none()
-        
+
         org_subdomain = self.request.query_params.get('organization_subdomain') or self.request.data.get('organization_subdomain')
 
         # Si le subdomain d'organisation est fourni en paramètre de requête
@@ -545,11 +637,12 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
         user = self.request.user
 
         if getattr(user, 'user_type', None) == 'admin':
+            admin_user = user.get_concrete_user()
             org_subdomain = self.request.query_params.get('organization_subdomain')
 
             if org_subdomain:
                 try:
-                    organization = Organization.objects.get(subdomain=org_subdomain, admin=user)
+                    organization = Organization.objects.get(subdomain=org_subdomain, admin=admin_user)
                 except Organization.DoesNotExist:
                     raise serializers.ValidationError({
                         'organization': f'Organisation "{org_subdomain}" non trouvée'
@@ -560,15 +653,16 @@ class LeaveTypeViewSet(viewsets.ModelViewSet):
                     raise serializers.ValidationError({
                         'organization': 'Organisation requise'
                     })
-                organization = Organization.objects.filter(id=org_id, admin=user).first()
+                organization = Organization.objects.filter(id=org_id, admin=admin_user).first()
                 if not organization:
                     raise serializers.ValidationError({
                         'organization': 'Organisation non trouvée ou accès refusé'
                     })
         elif getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission("hr.manage_leave_types"):
+            employee_user = user.get_concrete_user()
+            if not employee_user.has_permission("hr.manage_leave_types", request=self.request):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
-            organization = user.organization
+            organization = employee_user.organization
         else:
             raise serializers.ValidationError({'user': 'Non autorisé'})
 
@@ -595,33 +689,38 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
           - Par défaut, DRF appelle get_queryset() même pour les endpoints retrieve (détail: /pk/).
           - Si le queryset exclut l'objet demandé (ex: simple employé ne voit pas ses propres demandes dans la liste),
             alors une requête GET /leave-requests/{id}/ retournera 404: No LeaveRequest matches the given query.
-        
+
         Ce comportement arrive car DRF fait un filter(pk=...) sur le queryset retourné ici.
         """
         user = self.request.user
         org_subdomain = self.request.query_params.get('organization_subdomain')
-        
+
         if getattr(user, 'user_type', None) == 'admin':
-            org_ids = user.organizations.values_list('id', flat=True)
-            queryset = LeaveRequest.objects.filter(employee__organization_id__in=org_ids)
-            
+            # Obtenir l'objet AdminUser concret pour accéder à la relation organizations
+            admin_user = user.get_concrete_user()
+            org_ids = admin_user.organizations.values_list('id', flat=True)
+            queryset = LeaveRequest.objects.filter(employee__memberships__organization_id__in=org_ids).distinct()
+
             # Filter by specific organization if subdomain provided
             if org_subdomain:
-                queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
-            
+                queryset = queryset.filter(employee__memberships__organization__subdomain=org_subdomain).distinct()
+
             return queryset
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("hr.view_leave_requests"):
+            # Obtenir l'objet Employee concret pour accéder à la relation organization
+            employee = user.get_concrete_user()
+            if employee.has_permission("hr.view_leave_requests", request=self.request):
                 # L'employé a la permission de voir toutes les demandes de l'organisation
                 exclude = self.request.query_params.get('exclude')
-                queryset = LeaveRequest.objects.filter(employee__organization=user.organization)
+                org = employee.primary_organization
+                queryset = LeaveRequest.objects.filter(employee__memberships__organization=org).distinct()
                 if exclude:
-                    queryset = queryset.exclude(employee=user)
+                    queryset = queryset.exclude(employee=employee)
                 return queryset
 
             # L'employé n'a pas la permission spéciale, mais peut toujours voir SES PROPRES demandes
             # Ceci permet à l'employé de lister, voir, créer et supprimer ses propres demandes
-            return LeaveRequest.objects.filter(employee=user)
+            return LeaveRequest.objects.filter(employee=employee)
         return LeaveRequest.objects.none()
 
     def perform_create(self, serializer):
@@ -631,7 +730,8 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         employee = None
 
         if getattr(user, 'user_type', None) == 'employee':
-            employee = user
+            # Obtenir l'objet Employee concret
+            employee = user.get_concrete_user()
         elif getattr(user, 'user_type', None) == 'admin':
             # AdminUser créant une demande pour un employé spécifique
             employee_id = self.request.data.get('employee')
@@ -641,7 +741,9 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                 })
             try:
                 employee = Employee.objects.get(id=employee_id)
-                if not self.request.user.organizations.filter(id=employee.organization_id).exists():
+                # Obtenir l'objet AdminUser concret pour vérifier l'accès
+                admin_user = user.get_concrete_user()
+                if not admin_user.organizations.filter(id=employee.organization_id).exists():
                     raise serializers.ValidationError({
                         'employee': 'Vous n\'avez pas accès à cet employé'
                     })
@@ -687,7 +789,7 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     def approve(self, request, pk=None):
         user = request.user
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission("hr.approve_leave_requests"):
+            if not user.has_permission("hr.approve_leave_requests", request=request):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
         leave_request = self.get_object()
         serializer = LeaveRequestApprovalSerializer(data=request.data)
@@ -741,7 +843,7 @@ class LeaveRequestViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
     def reject(self, request, pk=None):
         user = request.user
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission("hr.approve_leave_requests"):
+            if not user.has_permission("hr.approve_leave_requests", request=request):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
         leave_request = self.get_object()
         serializer = LeaveRequestApprovalSerializer(data=request.data)
@@ -896,10 +998,10 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
         if getattr(user, 'user_type', None) == 'admin':
             # Admin: accès à tous les soldes de ses organisations
             org_ids = user.organizations.values_list('id', flat=True)
-            queryset = LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
+            queryset = LeaveBalance.objects.filter(employee__memberships__organization_id__in=org_ids).distinct()
 
             if org_subdomain:
-                queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
+                queryset = queryset.filter(employee__memberships__organization__subdomain=org_subdomain).distinct()
 
             # Filtrer par employé si spécifié
             employee_id = self.request.query_params.get('employee')
@@ -915,14 +1017,11 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
 
         elif getattr(user, 'user_type', None) == 'employee':
             # Si l'employé a la permission d'approuver les congés, il peut voir tous les soldes de congés de son organisation
-            if user.has_permission('hr.approve_leave_requests'):
+            if user.has_permission('hr.approve_leave_requests', request=self.request):
                 # Accès à tous les employés de son organisation
-                org_ids = []
-                if hasattr(user, 'organizations'):
-                    org_ids = list(user.organizations.values_list('id', flat=True))
-                elif hasattr(user, 'organization_id') and user.organization_id is not None:
-                    org_ids = [user.organization_id]
-                queryset = LeaveBalance.objects.filter(employee__organization_id__in=org_ids)
+                emp_user = user.get_concrete_user()
+                org = emp_user.primary_organization
+                queryset = LeaveBalance.objects.filter(employee__memberships__organization=org).distinct()
 
                 # Filtrer par employé si spécifié
                 employee_id = self.request.query_params.get('employee')
@@ -936,7 +1035,7 @@ class LeaveBalanceViewSet(viewsets.ModelViewSet):
 
                 # Filtrer par sous-domaine si précisé
                 if org_subdomain:
-                    queryset = queryset.filter(employee__organization__subdomain=org_subdomain)
+                    queryset = queryset.filter(employee__memberships__organization__subdomain=org_subdomain).distinct()
 
                 return queryset.select_related('employee')
             else:
@@ -1041,7 +1140,7 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
 
         elif getattr(user, 'user_type', None) == 'employee':
             # L'employé doit avoir la permission et ne peut voir que son organisation
-            if not user.has_permission("can_view_payroll"):
+            if not user.has_permission("can_view_payroll", request=self.request):
                 return PayrollPeriod.objects.none()
             return PayrollPeriod.objects.filter(organization=user.organization)
 
@@ -1082,7 +1181,7 @@ class PayrollPeriodViewSet(viewsets.ModelViewSet):
                     })
 
         elif getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission("can_create_payroll"):
+            if not user.has_permission("can_create_payroll", request=self.request):
                 logger.warning(f"Employee {user.email} lacks permission to create payroll")
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
             organization = user.organization
@@ -1121,17 +1220,20 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
         if not org_subdomain:
             raise serializers.ValidationError({'permission': "Subdomain d'organisation requis"})
         
+        queryset = Payslip.objects.all()
+        
         if getattr(user, 'user_type', None) == 'admin':
-            queryset = Payslip.objects.filter(employee__organization__subdomain=org_subdomain)
+            queryset = queryset.filter(employee__memberships__organization__subdomain=org_subdomain).distinct()
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission("hr.view_payroll") or user.is_hr_admin():
-                queryset = Payslip.objects.filter(employee__organization=user.organization)
+            if user.has_permission("hr.view_payroll", request=self.request) or user.is_hr_admin():
+                org = user.get_concrete_user().primary_organization
+                queryset = queryset.filter(employee__memberships__organization=org).distinct()
                 # Optionnel: exclure ses propres fiches de la liste globale
                 if exclude_own and exclude_own.lower() == 'true':
                     queryset = queryset.exclude(employee=user)
             else:
                 # Utilisateur sans permission: uniquement ses propres fiches
-                queryset = Payslip.objects.filter(employee=user)
+                queryset = queryset.filter(employee=user)
         else:
             queryset = Payslip.objects.none()
 
@@ -1207,7 +1309,7 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
                     {'error': 'Vous ne pouvez pas marquer votre propre paie comme payée'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            if not (user.has_permission("hr.update_payroll") or user.is_hr_admin()):
+            if not (user.has_permission("hr.update_payroll", request=request) or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de traiter les paies'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1280,7 +1382,7 @@ class PayslipViewSet(PDFGeneratorMixin, viewsets.ModelViewSet):
             )
 
         # Ici, on suppose que has_permission vérifie les permissions personnalisées du système
-        if not user.has_permission(permission_codename):
+        if not user.has_permission(permission_codename, request=request):
             return Response(
                 {"error": "Permission refusée : vous n'avez pas le droit de générer des fiches de paie"},
                 status=status.HTTP_403_FORBIDDEN
@@ -1565,7 +1667,7 @@ class PayrollStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.organization != organization or not user.has_permission("can_view_payroll"):
+            if user.organization != organization or not user.has_permission("can_view_payroll", request=self.request):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1576,7 +1678,7 @@ class PayrollStatsView(APIView):
                 status=status.HTTP_403_FORBIDDEN
             )
 
-        queryset = Payslip.objects.filter(employee__organization=organization)
+        queryset = Payslip.objects.filter(employee__memberships__organization=organization)
         year = request.query_params.get('year')
         month = request.query_params.get('month')
         if year:
@@ -1642,7 +1744,7 @@ class HROverviewStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.organization != organization or not user.has_permission("hr.view_employees"):
+            if user.organization != organization or not user.has_permission("hr.view_employees", request=self.request):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
@@ -1699,12 +1801,12 @@ class HROverviewStatsView(APIView):
         # 3. LEAVE REQUESTS
         # ──────────────────────────────────────────────────────
         pending_leave_requests = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='pending'
         ).count()
         start_of_month = now.replace(day=1, hour=0, minute=0, second=0, microsecond=0)
         approved_leave_requests_this_month = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='approved',
             approval_date__gte=start_of_month
         ).count()
@@ -1712,7 +1814,7 @@ class HROverviewStatsView(APIView):
         # Leave utilization: total approved leave days this year vs total possible
         year_start = today.replace(month=1, day=1)
         approved_leaves_this_year = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='approved',
             start_date__gte=year_start,
         )
@@ -1722,7 +1824,7 @@ class HROverviewStatsView(APIView):
 
         # Pending leave details (with employee info)
         pending_leaves_detail = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='pending'
         ).select_related('employee', 'leave_type').order_by('created_at')[:5]
         pending_leaves_data = LeaveRequestSerializer(pending_leaves_detail, many=True).data
@@ -1731,7 +1833,7 @@ class HROverviewStatsView(APIView):
         # 4. PAYROLL — Current month & previous month comparison
         # ──────────────────────────────────────────────────────
         current_month_payrolls = Payslip.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             payroll_period__start_date__year=now.year,
             payroll_period__start_date__month=now.month
         )
@@ -1750,7 +1852,7 @@ class HROverviewStatsView(APIView):
             prev_year, prev_month = now.year, now.month - 1
 
         prev_payroll_agg = Payslip.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             payroll_period__start_date__year=prev_year,
             payroll_period__start_date__month=prev_month
         ).aggregate(
@@ -1763,7 +1865,7 @@ class HROverviewStatsView(APIView):
 
         # Average salary from active contracts (more reliable than payslips)
         avg_contract_salary_agg = Contract.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             is_active=True,
         ).aggregate(
             avg=models.Avg('base_salary'),
@@ -1785,7 +1887,7 @@ class HROverviewStatsView(APIView):
             target_month = month_date.month
 
             month_payrolls = Payslip.objects.filter(
-                employee__organization=organization,
+                employee__memberships__organization=organization,
                 payroll_period__start_date__year=target_year,
                 payroll_period__start_date__month=target_month
             )
@@ -1805,7 +1907,7 @@ class HROverviewStatsView(APIView):
         # ──────────────────────────────────────────────────────
         # 6. CONTRACTS — detailed health
         # ──────────────────────────────────────────────────────
-        contracts = Contract.objects.filter(employee__organization=organization)
+        contracts = Contract.objects.filter(employee__memberships__organization=organization)
         total_contracts = contracts.count()
         active_contracts = contracts.filter(is_active=True).count()
         
@@ -1868,7 +1970,7 @@ class HROverviewStatsView(APIView):
         # 8. UPCOMING LEAVES
         # ──────────────────────────────────────────────────────
         upcoming_leaves = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='approved',
             start_date__gte=now
         ).select_related('employee', 'leave_type').order_by('start_date')[:10]
@@ -1876,7 +1978,7 @@ class HROverviewStatsView(APIView):
 
         # People on leave right now
         on_leave_now = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='approved',
             start_date__lte=today,
             end_date__gte=today,
@@ -1913,12 +2015,12 @@ class HROverviewStatsView(APIView):
         # 10. PAYROLL ADVANCE STATS
         # ──────────────────────────────────────────────────────
         pending_advances = PayrollAdvance.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             status='pending'
         ).count()
         pending_advances_amount = float(
             PayrollAdvance.objects.filter(
-                employee__organization=organization,
+                employee__memberships__organization=organization,
                 status='pending'
             ).aggregate(
                 total=Coalesce(models.Sum('amount'), Value(0, output_field=DecimalField()))
@@ -2016,7 +2118,7 @@ class DepartmentStatsView(APIView):
                     status=status.HTTP_403_FORBIDDEN
                 )
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.organization != organization or not user.has_permission("hr.view_departments"):
+            if user.organization != organization or not user.has_permission("hr.view_departments", request=self.request):
                 return Response(
                     {'error': 'Accès non autorisé à cette organisation'},
                     status=status.HTTP_403_FORBIDDEN
@@ -2093,16 +2195,17 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                         subdomain=org_subdomain,
                         admin=user
                     )
-                    queryset = queryset.filter(employee__organization=organization)
+                    queryset = queryset.filter(employee__memberships__organization=organization).distinct()
                 except Organization.DoesNotExist:
                     queryset = PayrollAdvance.objects.none()
             else:
                 org_ids = user.organizations.values_list('id', flat=True)
-                queryset = queryset.filter(employee__organization_id__in=org_ids)
+                queryset = queryset.filter(employee__memberships__organization_id__in=org_ids).distinct()
         elif getattr(user, 'user_type', None) == 'employee':
             # Utilisateur avec permission view_payroll voit toutes les avances de l'organisation
-            if user.has_permission("hr.view_payroll") or user.is_hr_admin():
-                queryset = queryset.filter(employee__organization=user.organization)
+            if user.has_permission("hr.view_payroll", request=self.request) or user.is_hr_admin():
+                org = user.get_concrete_user().primary_organization
+                queryset = queryset.filter(employee__memberships__organization=org).distinct()
                 # Optionnel: exclure ses propres demandes de la liste globale
                 if exclude_own and exclude_own.lower() == 'true':
                     queryset = queryset.exclude(employee=user)
@@ -2133,15 +2236,16 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
         employee_id = self.request.data.get('employee')
         
         if getattr(user, 'user_type', None) == 'employee':
+            emp_user = user.get_concrete_user()
             if employee_id and str(employee_id) != str(user.id):
                 # L'employé veut créer une demande pour quelqu'un d'autre
-                if not (user.has_permission("hr.create_payroll") or user.is_hr_admin()):
+                if not (user.has_permission("hr.create_payroll", request=self.request) or user.is_hr_admin()):
                     raise serializers.ValidationError({
                         'employee': 'Vous ne pouvez créer des demandes que pour vous-même'
                     })
                 # Vérifier que l'employé cible est dans la même organisation
                 try:
-                    target_employee = Employee.objects.get(id=employee_id, organization=user.organization)
+                    target_employee = Employee.objects.get(id=employee_id, memberships__organization=emp_user.primary_organization)
                     serializer.save(employee=target_employee)
                 except Employee.DoesNotExist:
                     raise serializers.ValidationError({
@@ -2149,7 +2253,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                     })
             else:
                 # Demande pour soi-même
-                serializer.save(employee=user)
+                serializer.save(employee=emp_user)
         elif getattr(user, 'user_type', None) == 'admin':
             if not employee_id:
                 raise serializers.ValidationError({
@@ -2157,7 +2261,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                 })
             try:
                 org_ids = user.organizations.values_list('id', flat=True)
-                target_employee = Employee.objects.get(id=employee_id, organization_id__in=org_ids)
+                target_employee = Employee.objects.get(id=employee_id, memberships__organization_id__in=org_ids)
                 serializer.save(employee=target_employee)
             except Employee.DoesNotExist:
                 raise serializers.ValidationError({
@@ -2208,7 +2312,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                     raise serializers.ValidationError({
                         'detail': 'Vous ne pouvez supprimer que vos demandes en attente'
                     })
-            elif not (user.has_permission("hr.delete_payroll") or user.is_hr_admin()):
+            elif not (user.has_permission("hr.delete_payroll", request=self.request) or user.is_hr_admin()):
                 raise serializers.ValidationError({
                     'detail': 'Vous n\'avez pas la permission de supprimer cette demande'
                 })
@@ -2280,7 +2384,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                     {'error': 'Vous ne pouvez pas approuver votre propre demande d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            if not (user.has_permission("hr.approve_payroll") or user.is_hr_admin()):
+            if not (user.has_permission("hr.approve_payroll", request=request) or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission d\'approuver des demandes d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
@@ -2346,7 +2450,7 @@ class PayrollAdvanceViewSet(viewsets.ModelViewSet):
                     {'error': 'Vous ne pouvez pas rejeter votre propre demande d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
                 )
-            if not (user.has_permission("hr.approve_payroll") or user.is_hr_admin()):
+            if not (user.has_permission("hr.approve_payroll", request=request) or user.is_hr_admin()):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de rejeter des demandes d\'avance'},
                     status=status.HTTP_403_FORBIDDEN
@@ -2569,7 +2673,9 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         if getattr(user, 'user_type', None) == 'admin':
             pass
         elif getattr(user, 'user_type', None) == 'employee':
-            if user.has_permission('can_view_all_attendance'):
+            # Obtenir l'employé concret pour accéder aux méthodes has_permission
+            employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
+            if hasattr(employee, 'has_permission') and employee.has_permission('can_view_all_attendance', request=self.request):
                 pass
             else:
                 queryset = queryset.filter(user_email=user.email)
@@ -2615,7 +2721,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def perform_destroy(self, instance):
         user = self.request.user
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('can_delete_attendance'):
+            if not user.has_permission('can_delete_attendance', request=self.request):
                 from rest_framework.exceptions import PermissionDenied
                 raise PermissionDenied('Vous n\'avez pas la permission de supprimer des pointages')
         instance.delete()
@@ -2628,7 +2734,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('hr.manual_checkin'):
+            if not user.has_permission('hr.manual_checkin', request=request):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
@@ -2737,7 +2843,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         if getattr(user, 'user_type', None) == 'employee':
-            if not user.has_permission('hr.manual_checkin'):
+            if not user.has_permission('hr.manual_checkin', request=request):
                 return Response(
                     {'error': "Vous devez utiliser le système de pointage par QR code. Seuls les administrateurs autorisés peuvent effectuer un pointage manuel."},
                     status=status.HTTP_403_FORBIDDEN
@@ -2874,7 +2980,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         user = request.user
 
         is_admin = getattr(user, 'user_type', None) == 'admin'
-        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('hr.approve_attendance')
+        is_employee_with_permission = getattr(user, 'user_type', None) == 'employee' and user.has_permission('hr.approve_attendance', request=request)
 
         if not (is_admin or is_employee_with_permission):
             return Response(
@@ -3053,7 +3159,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
         employee_id = request.query_params.get('employee_id', None)
 
         if employee_id:
-            if getattr(user, 'user_type', None) == 'employee' and not user.has_permission('hr.view_all_attendance'):
+            if getattr(user, 'user_type', None) == 'employee' and not user.has_permission('hr.view_all_attendance', request=request):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de voir les stats pointage de cet employé'},
                     status=status.HTTP_403_FORBIDDEN
@@ -3122,7 +3228,7 @@ class AttendanceViewSet(viewsets.ModelViewSet):
     def create_qr_session(self, request):
 
         if getattr(request.user, 'user_type', None) == 'employee':
-            if not request.user.has_permission('hr.create_qr_session'):
+            if not request.user.has_permission('hr.create_qr_session', request=request):
                 return Response(
                     {'error': 'Vous n\'avez pas la permission de créer des sessions QR'},
                     status=status.HTTP_403_FORBIDDEN
@@ -3239,4 +3345,435 @@ class AttendanceViewSet(viewsets.ModelViewSet):
             return Response(response_data, status=status.HTTP_200_OK)
 
         return Response(serializer.errors, status=status.HTTP_400_BAD_REQUEST)
+
+
+# ===============================
+# EMPLOYEE INVITATION VIEWS
+# ===============================
+
+class EmployeeInvitationViewSet(BaseOrganizationViewSetMixin, viewsets.ModelViewSet):
+    """
+    ViewSet pour gérer les invitations d'employees.
+
+    Permet aux admins HR de:
+    - Créer des invitations (avec email automatique)
+    - Lister les invitations (avec filtres par statut)
+    - Renvoyer une invitation (régénère le token)
+    - Annuler une invitation
+    - [Public] Vérifier un token d'invitation
+    - [Public] Accepter une invitation et créer le compte employee
+    """
+
+    queryset = EmployeeInvitation.objects.all()
+    serializer_class = EmployeeInvitationSerializer
+    permission_classes = [IsHRAdmin]
+    filterset_fields = ['status', 'assigned_role']
+    search_fields = ['email', 'first_name', 'last_name']
+    ordering_fields = ['sent_at', 'expires_at', 'status']
+    ordering = ['-sent_at']
+
+    def get_queryset(self):
+        """Filter by organization"""
+        queryset = super().get_queryset()
+         # Récupère l'organisation depuis le paramètre de requête 'organization_subdomain'
+        organization_subdomain = self.request.query_params.get('organization_subdomain')
+        organization = None
+        if organization_subdomain:
+            from core.models import Organization  # Import local pour éviter l'import circulaire
+            try:
+                organization = Organization.objects.get(subdomain=organization_subdomain)
+            except Organization.DoesNotExist:
+                organization = None
+        else:
+            organization = self.get_organization()
+        if organization:
+            queryset = queryset.filter(organization=organization)
+        return queryset
+
+    def get_serializer_class(self):
+        """Return appropriate serializer based on action"""
+        if self.action == 'create':
+            return EmployeeInvitationCreateSerializer
+        elif self.action == 'verify':
+            return EmployeeInvitationVerifySerializer
+        elif self.action == 'accept':
+            return EmployeeAcceptInvitationSerializer
+        return EmployeeInvitationSerializer
+
+    def get_permissions(self):
+        """
+        Public access for verify and accept actions.
+        HR Admin required for all other actions.
+        """
+        if self.action in ['verify', 'accept']:
+            return [AllowAny()]
+        return super().get_permissions()
+
+    def create(self, request, *args, **kwargs):
+        """
+        Créer et envoyer une invitation.
+
+        POST /api/hr/invitations/
+        Body: {
+            "email": "employee@example.com",
+            "role_id": "uuid",
+            "first_name": "John",
+            "last_name": "Doe",
+            "department_id": "uuid",  // optional
+            "position_id": "uuid",     // optional
+            "invitation_message": "Welcome!"  // optional
+        }
+        """
+        # Récupère l'organisation depuis le paramètre de requête 'organization_subdomain'
+        organization_subdomain = self.request.query_params.get('organization_subdomain')
+        organization = None
+        if organization_subdomain:
+            from core.models import Organization  # Import local pour éviter l'import circulaire
+            try:
+                organization = Organization.objects.get(subdomain=organization_subdomain)
+            except Organization.DoesNotExist:
+                organization = None
+        else:
+            organization = self.get_organization()
+ 
+        serializer = self.get_serializer(
+            data=request.data,
+            context={'organization': organization}
+        )
+        serializer.is_valid(raise_exception=True)
+
+        # Get custom permission codes before save
+        custom_permission_codes = serializer.validated_data.pop('custom_permission_codes', [])
+
+        # Create invitation
+        invitation = serializer.save(
+            organization=organization,
+            invited_by=request.user
+        )
+
+        # Add custom permissions if provided
+        if custom_permission_codes:
+            permissions = Permission.objects.filter(code__in=custom_permission_codes)
+            invitation.custom_permissions.set(permissions)
+
+        # Send invitation email asynchronously
+        try:
+            from .tasks import send_invitation_email
+            send_invitation_email.delay(str(invitation.id))
+            logger.info(f"Invitation email task queued for {invitation.email}")
+        except Exception as e:
+            logger.error(f"Failed to queue invitation email: {e}")
+            # Don't fail the request if email fails to queue
+
+        return Response(
+            EmployeeInvitationSerializer(invitation).data,
+            status=status.HTTP_201_CREATED
+        )
+
+    @action(detail=True, methods=['post'], permission_classes=[IsHRAdmin])
+    def resend(self, request, pk=None):
+        """
+        Renvoyer une invitation (régénère le token et prolonge l'expiration).
+
+        POST /api/hr/invitations/{id}/resend/
+        """
+        invitation = self.get_object()
+
+        if invitation.status == EmployeeInvitation.InvitationStatus.ACCEPTED:
+            return Response(
+                {'error': 'Cette invitation a déjà été acceptée'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Regenerate token and extend expiration
+        invitation.resend()
+
+        # Send email again
+        try:
+            from .tasks import send_invitation_email
+            send_invitation_email.delay(str(invitation.id))
+            logger.info(f"Invitation email resent for {invitation.email}")
+        except Exception as e:
+            logger.error(f"Failed to resend invitation email: {e}")
+
+        return Response({
+            'message': 'Invitation renvoyée avec succès',
+            'invitation': EmployeeInvitationSerializer(invitation).data
+        })
+
+    @action(detail=True, methods=['post'], permission_classes=[IsHRAdmin])
+    def cancel(self, request, pk=None):
+        """
+        Annuler une invitation.
+
+        POST /api/hr/invitations/{id}/cancel/
+        """
+        invitation = self.get_object()
+
+        if invitation.status != EmployeeInvitation.InvitationStatus.PENDING:
+            return Response(
+                {'error': 'Seules les invitations en attente peuvent être annulées'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        invitation.mark_as_cancelled()
+
+        return Response({
+            'message': 'Invitation annulée avec succès'
+        })
+
+    @action(detail=False, methods=['get'], url_path='verify/(?P<token>[^/.]+)', permission_classes=[AllowAny])
+    def verify(self, request, token=None):
+        """
+        Vérifier la validité d'un token d'invitation (route publique).
+
+        GET /api/hr/invitations/verify/{token}/
+
+        Returns:
+        {
+            "valid": true,
+            "email": "employee@example.com",
+            "organization_name": "My Company",
+            "role_name": "Employee",
+            "first_name": "John",
+            "last_name": "Doe",
+            "expires_at": "2026-04-20T12:00:00Z"
+        }
+        """
+        try:
+            invitation = EmployeeInvitation.objects.get(token=token)
+        except EmployeeInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invitation invalide'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        # Check if expired
+        if invitation.is_expired:
+            invitation.mark_as_expired()
+            return Response(
+                {
+                    'error': 'Invitation expirée',
+                    'expired': True
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Check status
+        if invitation.status != EmployeeInvitation.InvitationStatus.PENDING:
+            return Response(
+                {
+                    'error': f"Invitation {invitation.status}",
+                    'status': invitation.status
+                },
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # Return invitation details
+        return Response({
+            'valid': True,
+            'email': invitation.email,
+            'organization_name': invitation.organization.name,
+            'role_name': invitation.assigned_role.name if invitation.assigned_role else None,
+            'first_name': invitation.first_name,
+            'last_name': invitation.last_name,
+            'expires_at': invitation.expires_at
+        })
+
+    @action(detail=False, methods=['post'], url_path='accept/(?P<token>[^/.]+)', permission_classes=[AllowAny])
+    def accept(self, request, token=None):
+        """
+        Accepter une invitation et créer le compte employee (route publique).
+
+        POST /api/hr/invitations/accept/{token}/
+        Body: {
+            "password": "SecurePass123!",
+            "password_confirm": "SecurePass123!",
+            "first_name": "John",
+            "last_name": "Doe",
+            "phone": "+33612345678",  // optional
+            "date_of_birth": "1990-01-01",  // optional
+            "address": "123 rue Example",  // optional
+            "city": "Paris",  // optional
+            "country": "France",  // optional
+            "emergency_contact": "Jane Doe +33..."  // optional
+        }
+
+        Returns:
+        {
+            "message": "Compte créé avec succès",
+            "employee": {...},
+            "access": "jwt_access_token",
+            "refresh": "jwt_refresh_token"
+        }
+        """
+        # 1. Retrieve and validate invitation
+        try:
+            invitation = EmployeeInvitation.objects.get(token=token)
+        except EmployeeInvitation.DoesNotExist:
+            return Response(
+                {'error': 'Invitation invalide'},
+                status=status.HTTP_404_NOT_FOUND
+            )
+
+        if not invitation.is_valid:
+            return Response(
+                {'error': 'Invitation expirée ou invalide'},
+                status=status.HTTP_400_BAD_REQUEST
+            )
+
+        # 2. Validate request data
+        serializer = self.get_serializer(data=request.data)
+        serializer.is_valid(raise_exception=True)
+
+        # 3. Create/update employee and membership in transaction
+        try:
+            with transaction.atomic():
+                from .models import EmployeeMembership
+
+                # Check if employee with this email already exists
+                existing_employee = Employee.objects.filter(email=invitation.email).first()
+
+                if existing_employee:
+                    # Employee exists - check if already in this organization
+                    existing_membership = EmployeeMembership.objects.filter(
+                        employee=existing_employee,
+                        organization=invitation.organization
+                    ).first()
+
+                    if existing_membership:
+                        return Response(
+                            {'error': 'Vous êtes déjà membre de cette organisation'},
+                            status=status.HTTP_400_BAD_REQUEST
+                        )
+
+                    # Add employee to this organization
+                    employee = existing_employee
+                    logger.info(f"Employee {employee.email} already exists, adding to organization {invitation.organization.name}")
+
+                else:
+                    from core.models import BaseUser
+                    existing_base_user = BaseUser.objects.filter(email=invitation.email).first()
+                    
+                    if existing_base_user:
+                        # User exists as admin, promote to employee
+                        employee = Employee(baseuser_ptr_id=existing_base_user.id)
+                        employee.__dict__.update(existing_base_user.__dict__)
+                        employee.save()
+                        
+                        logger.info(f"Existing BaseUser {employee.email} promoted to Employee")
+                    else:
+                        # Create new employee
+                        employee = Employee.objects.create_user(
+                            organization=invitation.organization,  # Legacy field
+                            email=invitation.email,
+                            password=serializer.validated_data['password'],
+                            first_name=serializer.validated_data.get('first_name', invitation.first_name or ''),
+                            last_name=serializer.validated_data.get('last_name', invitation.last_name or ''),
+                            phone=serializer.validated_data.get('phone', ''),
+                            date_of_birth=serializer.validated_data.get('date_of_birth'),
+                            address=serializer.validated_data.get('address', ''),
+                            city=serializer.validated_data.get('city', ''),
+                            country=serializer.validated_data.get('country', ''),
+                            emergency_contact=serializer.validated_data.get('emergency_contact', ''),
+                            is_active=True
+                        )
+                        logger.info(f"New employee {employee.email} created")
+
+                # Create membership for this organization
+                is_first_membership = not existing_employee
+                membership = EmployeeMembership.objects.create(
+                    employee=employee,
+                    organization=invitation.organization,
+                    department=invitation.department,
+                    position=invitation.position,
+                    assigned_role=invitation.assigned_role,
+                    employment_status='active',
+                    is_primary=is_first_membership  # First org is primary
+                )
+
+                # Copy custom permissions from invitation to employee
+                if invitation.custom_permissions.exists():
+                    employee.custom_permissions.add(*invitation.custom_permissions.all())
+
+                # Mark invitation as accepted
+                invitation.mark_as_accepted(employee)
+
+                logger.info(f"Employee {employee.email} accepted invitation for organization {invitation.organization.name}")
+
+                # Vérifier si l'employé a plusieurs organisations (multi-org)
+                total_memberships = employee.memberships.filter(
+                    organization__is_active=True
+                ).count()
+                is_multi_org = total_memberships > 1
+
+        except Exception as e:
+            logger.error(f"Error creating employee from invitation: {e}")
+            import traceback
+            traceback.print_exc()
+            return Response(
+                {'error': f'Erreur lors de la création du compte: {str(e)}'},
+                status=status.HTTP_500_INTERNAL_SERVER_ERROR
+            )
+
+        # 4. Générer la réponse selon le cas (multi-org ou non)
+        if is_multi_org:
+            # Cas multi-organisation : retourner la liste des organisations
+            # L'utilisateur devra sélectionner son organisation active
+            from authentication.serializers import OrganizationMembershipSerializer
+
+            memberships = employee.memberships.filter(
+                organization__is_active=True
+            ).select_related(
+                'organization',
+                'department',
+                'position',
+                'assigned_role'
+            ).order_by('-is_primary', 'organization__name')
+
+            organizations_data = OrganizationMembershipSerializer(memberships, many=True).data
+
+            # Générer des tokens temporaires (avec organisation de l'invitation)
+            # pour permettre l'appel à /select-organization/
+            from authentication.services import TokenService
+            temp_tokens = TokenService.generate_tokens_for_user(
+                employee,
+                user_type='employee',
+                organization=invitation.organization
+            )
+
+            logger.info(f"Multi-org detected for {employee.email}, returning organization selection")
+
+            return Response({
+                'message': 'Invitation acceptée',
+                'requires_organization_selection': True,
+                'employee_id': str(employee.id),
+                'email': employee.email,
+                'first_name': employee.first_name,
+                'last_name': employee.last_name,
+                'organizations': organizations_data,
+                'access': temp_tokens['access'],
+                'refresh': temp_tokens['refresh']
+            }, status=status.HTTP_201_CREATED)
+
+        else:
+            # Cas simple : une seule organisation, auto-login direct
+            from authentication.services import TokenService
+            tokens = TokenService.generate_tokens_for_user(
+                employee,
+                user_type='employee',
+                organization=invitation.organization
+            )
+
+            # Sérialiser
+            from authentication.serializers import EmployeeUserResponseSerializer
+            employee_data = EmployeeUserResponseSerializer(employee).data
+
+            return Response({
+                'message': 'Compte créé avec succès',
+                'requires_organization_selection': False,
+                'employee': employee_data,
+                'access': tokens['access'],
+                'refresh': tokens['refresh']
+            }, status=status.HTTP_201_CREATED)
 

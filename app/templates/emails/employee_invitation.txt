@@ -1,0 +1,26 @@
+Bonjour{% if invitation.first_name %} {{ invitation.first_name }}{% endif %},
+
+{{ inviter_name }} vous invite à rejoindre {{ organization_name }} en tant que {{ role_name }}.
+
+{% if invitation.invitation_message %}
+{{ invitation.invitation_message }}
+{% endif %}
+
+Pour accepter cette invitation et créer votre compte, veuillez cliquer sur le lien ci-dessous :
+
+{{ invitation_url }}
+
+Ce lien est valide pendant {{ days_until_expiry }} jours et expire le {{ expires_at|date:"d/m/Y à H:i" }}.
+
+Une fois votre compte créé, vous aurez accès à :
+- Votre espace personnel
+- Les outils de collaboration de l'équipe
+- Les ressources de l'entreprise
+
+Si vous n'avez pas demandé cette invitation, vous pouvez ignorer cet email en toute sécurité.
+
+Cordialement,
+L'équipe {{ organization_name }}
+
+---
+Cet email a été envoyé automatiquement, merci de ne pas répondre.

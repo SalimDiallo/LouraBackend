@@ -28,7 +28,7 @@ class LeaveService:
         """Retourne les demandes de congé d'une organisation."""
         from hr.models import LeaveRequest
         
-        queryset = LeaveRequest.objects.filter(employee__organization=organization)
+        queryset = LeaveRequest.objects.filter(employee__memberships__organization=organization).distinct()
         if status:
             queryset = queryset.filter(status=status)
         return queryset.order_by('-created_at')
@@ -165,7 +165,7 @@ class LeaveService:
         year = year or date.today().year
         
         requests = LeaveRequest.objects.filter(
-            employee__organization=organization,
+            employee__memberships__organization=organization,
             start_date__year=year
         )
         

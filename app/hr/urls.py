@@ -17,6 +17,7 @@ from .views import (
     PermissionViewSet,
     RoleViewSet,
     AttendanceViewSet,
+    EmployeeInvitationViewSet,
     # Stats views
     PayrollStatsView,
     HROverviewStatsView,
@@ -26,6 +27,7 @@ from .views import (
 # Create router for ViewSets
 router = DefaultRouter()
 router.register(r'employees', EmployeeViewSet, basename='employee')
+router.register(r'invitations', EmployeeInvitationViewSet, basename='invitation')
 router.register(r'departments', DepartmentViewSet, basename='department')
 router.register(r'positions', PositionViewSet, basename='position')
 router.register(r'contracts', ContractViewSet, basename='contract')

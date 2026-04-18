@@ -24,8 +24,8 @@ class RoleAdmin(admin.ModelAdmin):
 
 @admin.register(Employee)
 class EmployeeAdmin(admin.ModelAdmin):
-    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'department', 'assigned_role', 'employment_status', 'is_active']
-    list_filter = ['organization', 'department', 'assigned_role', 'employment_status', 'is_active']
+    list_display = ['email', 'first_name', 'last_name', 'employee_id', 'organization', 'is_active']
+    list_filter = ['organization', 'is_active']
     search_fields = ['email', 'first_name', 'last_name', 'employee_id']
     readonly_fields = ['id', 'created_at', 'updated_at', 'last_login']
     filter_horizontal = ['custom_permissions']
@@ -34,10 +34,10 @@ class EmployeeAdmin(admin.ModelAdmin):
             'fields': ('email', 'first_name', 'last_name', 'phone', 'avatar_url')
         }),
         ('Organisation', {
-            'fields': ('organization', 'employee_id', 'department', 'position', 'contract')
+            'fields': ('organization', 'employee_id', 'contract')
         }),
         ('Emploi', {
-            'fields': ('hire_date', 'termination_date', 'manager', 'assigned_role', 'employment_status')
+            'fields': ('manager',)
         }),
         ('Permissions', {
             'fields': ('custom_permissions',),

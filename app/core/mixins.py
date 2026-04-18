@@ -191,7 +191,7 @@ class OrganizationQuerySetMixin(OrganizationResolverMixin):
         )
         
         if self.view_permission and not skip_permission_check:
-            if not employee.has_permission(self.view_permission):
+            if not employee.has_permission(self.view_permission, request=self.request):
                 return queryset.none()
         
         org = getattr(employee, 'organization', None)
@@ -216,7 +216,7 @@ class OrganizationCreateMixin(OrganizationResolverMixin):
         # Vérifier la permission pour Employee
         if user_type == 'employee' and self.create_permission:
             employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
-            if not employee.has_permission(self.create_permission):
+            if not employee.has_permission(self.create_permission, request=self.request):
                 raise serializers.ValidationError({'permission': 'Permission refusée'})
         
         # Résoudre l'organisation
@@ -242,7 +242,7 @@ class ActivationMixin:
         # Employee vérifie la permission
         if user_type == 'employee' and self.activation_permission:
             employee = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
-            return employee.has_permission(self.activation_permission)
+            return employee.has_permission(self.activation_permission, request=self.request)
         
         return True
     

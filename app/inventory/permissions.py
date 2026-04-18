@@ -201,7 +201,7 @@ class SalePermission(BaseCRUDPermission):
             # Vérifier si la vente a déjà été payée (partiellement ou totalement)
             if obj.payment_status in ('partial', 'paid'):
                 # Nécessite la permission spéciale
-                return user.has_permission('inventory.modify_paid_sales')
+                return user.has_permission('inventory.modify_paid_sales', request=request)
 
         # Pour les autres cas, autoriser si l'utilisateur a la permission de base
         return True

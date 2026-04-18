@@ -34,18 +34,20 @@ class OrganizationViewSet(viewsets.ModelViewSet):
         user = self.request.user
         user_type = getattr(user, 'user_type', None)
 
-        # Employee: retourne son organisation
-        if user_type == 'employee':
-            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
-            org = getattr(concrete, 'organization', None)
-            if org:
-                return Organization.objects.filter(id=org.id)
-            return Organization.objects.none()
+        from django.db.models import Q
 
-        # Admin: retourne ses organisations
+        if user_type == 'employee':
+            return Organization.objects.filter(employee_memberships__employee_id=user.id).distinct()
+
         if user_type == 'admin':
-            concrete = user.get_concrete_user() if hasattr(user, 'get_concrete_user') else user
-            return Organization.objects.filter(admin=concrete)
+            # An admin user might also be an employee in other organisations
+            # So we check `admin_id=user.id` OR `employee_memberships__employee_id=user.id`
+            if hasattr(user, 'employee'):
+                return Organization.objects.filter(
+                    Q(admin_id=user.id) | Q(employee_memberships__employee_id=user.id)
+                ).distinct()
+            else:
+                return Organization.objects.filter(admin_id=user.id).distinct()
 
         return Organization.objects.none()
 
@@ -220,6 +222,8 @@ class OrganizationViewSet(viewsets.ModelViewSet):
 class CategoryViewSet(viewsets.ModelViewSet):
     """ViewSet for viewing categories (read-only)"""
     # permission_classes = [IsAuthenticated]
+    pagination_class = None  # Désactive la pagination pour lister toutes les catégories
+
     queryset = Category.objects.all()
     serializer_class = CategorySerializer
 
@@ -236,7 +240,7 @@ class ModuleViewSet(viewsets.ReadOnlyModelViewSet):
     permission_classes = [IsAuthenticated]
     queryset = Module.objects.filter(is_active=True)
     serializer_class = ModuleSerializer
-
+    pagination_class = None  # Désactive la pagination pour lister tous les modules
     
 
     @action(detail=False, methods=['get'])
@@ -355,7 +359,7 @@ class OrganizationModuleViewSet(viewsets.ModelViewSet):
     """
     permission_classes = [IsAuthenticated]
     serializer_class = OrganizationModuleSerializer
-
+    pagination_class = None  # Désactive la pagination pour lister tous les modules d'organisation
     def get_queryset(self):
         """Return modules for organizations accessible by the current user"""
         user = self.request.user

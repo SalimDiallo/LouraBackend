@@ -222,7 +222,7 @@ class EmployeeService:
         1. Custom permissions
         2. Role permissions
         """
-        return employee.has_permission(permission_code)
+        return employee.has_permission(permission_code, request=self.request)
     
     @staticmethod
     def get_employee_stats(organization) -> Dict[str, Any]:
